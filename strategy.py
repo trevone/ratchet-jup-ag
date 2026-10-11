@@ -206,7 +206,8 @@ class DcaStrategy:
                 self._tp_atr = lvs.atr
             res = smart_tps(pos.side, pos.avg_entry, pos.size, prices, [x.close_pct for x in tp_cfg.ladder],
                             pos.tp_hits, lvs, self.smart_tp_params(), atr=self._tp_atr, market=price, fade=fade,
-                            prev_faded=prev_faded, tp1_ratio=ratio, fade_floor_tp1=tp_cfg.tp_fade_floor_at_tp1)
+                            prev_faded=prev_faded, tp1_ratio=ratio, fade_floor_tp1=tp_cfg.tp_fade_floor_at_tp1,
+                            tp1_level=tp_cfg.tp1_mode == "level", tp2_from_tp1_ratio=tp_cfg.tp2_from_tp1_ratio)
             self.last_tp = res
             prices = list(res.prices)
         elif ratio is not None and len(prices) >= 2:

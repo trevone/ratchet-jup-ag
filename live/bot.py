@@ -1509,6 +1509,12 @@ class Bot:
                 if expired:
                     log.info("timer expired but remainder at net %+.3f%s; holding (TPs stay, DCA active)", net,
                              f" / {pg_note}" if pg_note else "")
+            retp = self.dir / "RETP_NOW"   # one-shot manual TP re-place (Grok Bot / owner), via the normal placement path
+            if retp.exists():
+                retp.unlink(missing_ok=True)
+                log.warning("RETP_NOW: re-placing TP ladder once on the open position (manual request)")
+                self.sync_tp_ladder(pos)
+                return
             if self.cfg.tp.smart_tp2 and getattr(self.cfg.tp, "tp_periodic", True):
                 try:
                     self.check_tps(pos, st, price)

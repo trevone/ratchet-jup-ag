@@ -43,7 +43,10 @@ tp_swing_buffer_atr = 0.05     # faded TP2 = max(fee floor, TP1 + gap, best pric
 # TP1 rule (Trevor 2026-10-08 06:51 MT, "be profit aware"): TP1 = avg + tp1_ratio x (actual smart TP2 - avg) on every
 # position (scope "all"; "after_add" = only after an add); the above-water TP1 (avg + fees + deep_buffer) is OFF in ratio
 # mode. tp1_mode = "ladder" restores levels[0].dist + above-water. Fee floor / tp_min_gap_usd / never-past-market still apply.
-tp1_mode = "ratio"
+# TP rules (Trevor 2026-10-11 06:08 MT, do not change without his say-so): TP1 front-runs the nearest analyst level
+# (main + fine) beyond avg that clears fee floor/market gap, set once at open/add; TP2 = avg + (TP1-avg)/0.6. See STRATEGY.md.
+tp1_mode = "level"
+tp2_from_tp1_ratio = 0.6
 tp1_ratio = 0.6
 tp1_ratio_scope = "all"
 tp_fade_floor_at_tp1 = true    # a faded TP2 never goes inside TP1 (pre-fade 60% level) + tp_min_gap_usd

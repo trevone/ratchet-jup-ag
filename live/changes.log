@@ -759,3 +759,8 @@ Files: config.py, live/bot.py, live/trim.py, configs/live_100.toml, live_eth.tom
 2026-10-10 18:45 MT quickcheck: quiet
 2026-10-10 19:01 MT [cfg] trim_arm_dist_pct 0.01 -> 0.0065 all bots (Trevor 19:00)
 2026-10-10 19:10 MT  Code put under git and pushed to private repo https://github.com/trevone/ratchet-jup-ag (README.md, SETTINGS.md, .gitignore excludes secrets/state/logs/ledgers). No bot restarts.
+2026-10-10 20:37 MT quickcheck: quiet
+2026-10-10 21:38 MT quickcheck: quiet
+2026-10-10 23:45 MT quickcheck: quiet
+2026-10-11 04:38 MT quickcheck: quiet
+2026-10-11 06:15 MT TP rule (Trevor 06:08): tp1_mode=level on SOL/ETH/BTC - TP1 front-runs nearest level beyond avg (fee floor/market gap), set once at open/add; TP2=avg+(TP1-avg)/0.6; no auto TP moves; RETP_NOW one-shot re-place; open SOL/ETH/BTC TPs re-placed

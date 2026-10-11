@@ -68,7 +68,8 @@ def test_config_keys_and_validation():
 @pytest.mark.parametrize("path", [SOL_LIVE, BTC_LIVE, ETH_LIVE])
 def test_live_configs_use_ratio_rule(path):
     t = load_config(path).tp
-    assert t.tp1_mode == "ratio" and 0.0 < t.tp1_ratio < 1.0 and t.tp1_ratio_scope in ("all", "after_add")
+    # Trevor 2026-10-11: live bots use the level rule (TP1 at nearest level, TP2 = avg + (TP1 - avg) / 0.6)
+    assert t.tp1_mode == "level" and t.tp2_from_tp1_ratio == 0.6 and t.tp_periodic is False
     assert t.tp_fade_floor_at_tp1 is True and t.smart_tp2 is True
 
 
@@ -99,7 +100,7 @@ def test_ratio_honours_res_min_touches():
 
 def test_btc_scaled_ratio_matches_live_example():
     """BTC long $100.50 avg 83035.32, TP2 83406.95 (under 3-touch R 83448.13 - 0.1 ATR) -> TP1 ~83258."""
-    c = scale_config(load_config(BTC_LIVE, ["live.dry_run=true"]), 82300.0, None)
+    c = scale_config(load_config(BTC_LIVE, ["live.dry_run=true", 'tp.tp1_mode="ratio"']), 82300.0, None)
     s = DcaStrategy(c)
     lv = Levels((82191.8,), (83448.13, 84355.2), 411.797, res_touches=(3, 3))
     s.levels_provider = lambda now: lv

@@ -4,6 +4,15 @@ Owner reference for Trevor’s three live bots. Numbers from `configs/live_100.t
 
 ---
 
+## TP rules (Trevor 2026-10-11, do not change without his say-so)
+
+Applies identically to all three bots (SOL, ETH, BTC); only per-asset unit scaling differs. Config: `[tp] tp1_mode = "level"`, `tp2_from_tp1_ratio = 0.6`, `tp_periodic = false`.
+
+- **TP1 is set ONCE** when a position is opened or added to. It goes just before (front-run on the profit side by `tp_res_buffer_atr` x 1h ATR) the nearest support (shorts) / resistance (longs) / analyst level beyond the average in the profit direction. Analyst levels come from `market-analysis/latest.json` (`eth/`, `btc/`) via `dca_levels.py`; both the main supports/resistances and `levels.fine` are considered, and the nearest qualifying level is used. TP1 must NOT move until the next add.
+- **TP2 = avg + (TP1 - avg) / 0.6** (longs; mirrored for shorts), so TP1 sits ~60% of the way from the average to TP2.
+- **TP2 only moves when Grok Bot (the monitoring agent) decides there is more profit to be made.** No automatic process moves TP1 or TP2 between adds (no periodic re-place, no fade, no guard moving TPs). A one-shot manual re-place via the normal placement path: `touch live/RETP_NOW` (or `live/eth/`, `live/btc/`).
+- Safety floors kept: each TP must net >= fees (`tp_min_net_usd` fee floor) and stay beyond market by `tp_market_gap`; if the nearest level is inside the fee floor (or market gap), the next level out is used. No qualifying level -> ladder TP1 (or its fee floor), TP2 by the same 0.6 rule.
+
 ## 1. Goal and philosophy
 
 Grow each bot’s own coin (SOL / Wormhole ETH / WBTC) with small, fee-aware profits. JupSOL is a stake bucket from daily withdrawals, never margin.

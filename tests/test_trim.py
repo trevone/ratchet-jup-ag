@@ -82,12 +82,12 @@ def test_config_default_off_and_eth_btc_off():
     assert load_config("configs/default.toml").trim.enabled is False
     for f in ("live_eth", "live_btc"):                                     # 17:13 MT: all three bots aligned
         e = load_config(f"configs/{f}.toml")
-        assert (e.trim.enabled, e.trim.trim_trigger, e.trim.trim_arm_dist_pct) == (True, "distance_level", 0.01)
+        assert (e.trim.enabled, e.trim.trim_trigger, e.trim.trim_arm_dist_pct) == (True, "distance_level", 0.0065)
         assert e.profit_guard.enabled and e.profit_guard.min_trade_profit_sol == 0.001
     assert load_config("configs/default.toml").profit_guard.enabled is False
     c = load_config(LIVE).trim
     assert (c.enabled, c.trim_after_hours, c.trim_clock, c.trim_min_net_usd, c.trim_min_gain_pct) == (True, 4.0, "last_add", 0.25, 0.005)
-    assert (c.trim_trigger, c.trim_arm_dist_pct, c.trim_level_tol_atr) == ("distance_level", 0.01, 0.1)
+    assert (c.trim_trigger, c.trim_arm_dist_pct, c.trim_level_tol_atr) == ("distance_level", 0.0065, 0.1)
     for f in ("live_100", "live_eth", "live_btc"):
         t = load_config(f"configs/{f}.toml").trim
         assert (t.trim_level_front_run_atr, t.trim_level_front_run_pct) == (0.15, 0.0)
@@ -378,7 +378,9 @@ def test_pg_never_moves_tps_tracking_only(bot, caplog):
     """Owner rule 2026-10-08 18:02 MT: the profit guard never moves TPs (was: raised them); it only logs."""
     pos = bot.chain_position(state())
     pg_bot(bot, 0.47)                                       # deposited more SOL than the TPs would bring back
-    targets = bot.strategy.tp_targets(pos, price=108.6)
+    from strategy import TpTarget
+    targets = tuple(TpTarget(pos.avg_entry + pos.side * d, t.close_pct)   # tight TPs (level-rule TPs may clear the guard)
+                    for d, t in zip((0.3, 0.5), bot.strategy.tp_targets(pos, price=108.6)))
     with caplog.at_level("INFO"):
         assert bot.pg_tp_guard(pos, targets, "placement") == targets
         assert bot.pg_tp_guard(pos, targets, "periodic") == targets

@@ -173,8 +173,9 @@ class TakeProfitConfig:
     tp_swing_buffer_atr: float = 0.05    # faded TP2 = max(fee floor, best price - this many ATR)
     tp_res_min_touches: int = 0          # >= 2: TP2 cap skips analyst levels with fewer touches (0/1 = every level caps)
     # --- TP1 placement rule (Trevor 2026-10-08 06:51 MT: "be profit aware"); defaults keep backtests unchanged ---
-    tp1_mode: Literal["ladder", "ratio"] = "ladder"   # ladder: TP1 = levels[0].dist (+ above-water TP1 after deep adds);
+    tp1_mode: Literal["ladder", "ratio", "level"] = "ladder"   # ladder: TP1 = levels[0].dist (+ above-water TP1 after deep adds);
                                          # ratio: TP1 = avg + tp1_ratio x (actual TP2 - avg), above-water TP1 OFF
+    tp2_from_tp1_ratio: float = 0.6      # level mode (Trevor 2026-10-11): TP1 sits at this fraction of TP2 distance
     tp1_ratio: float = 0.6               # ratio mode: TP1 at this fraction of the (smart) TP2 distance from avg
     tp1_ratio_scope: Literal["all", "after_add"] = "all"   # ratio applies to every position, or only after >= 1 add
     tp_fade_floor_at_tp1: bool = False   # momentum fade never pulls TP2 inside TP1 (pre-fade) + tp_min_gap_usd
@@ -199,7 +200,9 @@ class TakeProfitConfig:
             raise ValueError("tp.tp_res_min_dist_frac must be in [0, 1)")
         if not 0.0 < self.tp1_ratio < 1.0:
             raise ValueError("tp.tp1_ratio must be in (0, 1)")
-        if self.tp1_mode not in ("ladder", "ratio") or self.tp1_ratio_scope not in ("all", "after_add"):
+        if not 0.0 < self.tp2_from_tp1_ratio < 1.0:
+            raise ValueError("tp.tp2_from_tp1_ratio must be in (0, 1)")
+        if self.tp1_mode not in ("ladder", "ratio", "level") or self.tp1_ratio_scope not in ("all", "after_add"):
             raise ValueError("tp.tp1_mode must be ladder|ratio and tp.tp1_ratio_scope all|after_add")
 
     @property
