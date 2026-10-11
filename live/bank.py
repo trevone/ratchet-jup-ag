@@ -99,7 +99,7 @@ def update_hwm(b: dict[str, Any], flat: bool, debt_native: float = 0.0) -> bool:
     """HWM only rises and only while flat (and nothing pending): hwm = max(hwm, bal - fee debt). True if raised."""
     if not flat:
         return False
-    v = round(b["bal"] - debt_native, 9)
+    v = round(b["bal"] - debt_native - loan_outstanding(b), 9)   # JupSOL rescue loan is a liability, never HWM
     if v > b["hwm"] + 1e-12:
         old = b["hwm"]
         b["hwm"] = v
@@ -119,7 +119,7 @@ def close_value_native(side: int, size: float, avg: float, margin: float, price:
 
 
 def equity(b: dict[str, Any], close_native: float, debt_native: float = 0.0) -> float:
-    return b["bal"] - debt_native + close_native
+    return b["bal"] - debt_native - loan_outstanding(b) + close_native
 
 
 def withdraw_amount(b: dict[str, Any], fraction: float, min_native: float) -> tuple[float, float]:
@@ -127,7 +127,7 @@ def withdraw_amount(b: dict[str, Any], fraction: float, min_native: float) -> tu
     when the free balance cannot cover it."""
     gain = max(0.0, b["hwm"] - b["wd_mark"])
     amt = round(fraction * gain, 9)
-    if amt <= 0 or amt < min_native or amt > b["bal"] + 1e-12:
+    if amt <= 0 or amt < min_native or amt > b["bal"] - loan_outstanding(b) + 1e-12:
         return 0.0, gain
     return amt, gain
 
@@ -139,6 +139,36 @@ def apply_withdrawal(b: dict[str, Any], amt_in: float, why: str = "") -> None:
     b["wd_mark"] = b["hwm"]
     b["totals"]["withdrawn"] = round(b["totals"].get("withdrawn", 0.0) + amt_in, 9)
     note(b, "withdraw", -amt_in, why)
+
+
+# ------------------------------------------------------------------ JupSOL rescue loan (Trevor 2026-10-11)
+def loan_outstanding(b: dict[str, Any]) -> float:
+    return float((b.get("loan") or {}).get("principal", 0.0))
+
+
+def loan_open(b: dict[str, Any], amt: float, jupsol: float, margin_pct: float, why: str = "") -> None:
+    """Lent JupSOL arrives as own coin: bal rises, a liability of the same size is booked; hwm / wd_mark untouched."""
+    ln = b.get("loan") or {"principal": 0.0, "jupsol": 0.0, "hwm_at_open": b["hwm"], "opened": None, "n": 0}
+    ln["principal"] = round(ln["principal"] + amt, 9)
+    ln["jupsol"] = round(ln.get("jupsol", 0.0) + jupsol, 9)
+    ln["margin_pct"] = margin_pct
+    ln["opened"] = ln["opened"] or str(datetime.now(timezone.utc).replace(tzinfo=None))[:19] + "Z"
+    ln["n"] = ln.get("n", 0) + 1
+    b["loan"] = ln
+    b["bal"] = round(b["bal"] + amt, 9)
+    note(b, "loan_in", amt, why)
+
+
+def loan_repay(b: dict[str, Any], paid: float, why: str = "") -> None:
+    """Repaid to JupSOL (principal + margin): bal drops by paid, liability cleared. The margin is a cost of the rescue;
+    hwm is untouched (it only rises again when flat from real profit)."""
+    ln = b.get("loan") or {}
+    b["bal"] = round(b["bal"] - paid, 9)
+    done = (b.get("loans_done") or []) + [{**ln, "repaid": round(paid, 9),
+                                           "closed": str(datetime.now(timezone.utc).replace(tzinfo=None))[:19] + "Z"}]
+    b["loans_done"] = done[-10:]
+    b.pop("loan", None)
+    note(b, "loan_repay", -paid, why)
 
 
 def withdraw_min_native(cost_pct: float, network_sol: float, factor: float, sol_px: float, coin_px: float) -> float:

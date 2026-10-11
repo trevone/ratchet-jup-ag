@@ -201,3 +201,15 @@ Kill files: per-bot `live/{,eth/,btc/}KILL`; global `live/KILL_ALL`. `close_all_
 ---
 
 Last updated 2026-10-08 22:27 MT
+
+## JupSOL rescue (Trevor 2026-10-11)
+
+When a bot's open position is within **3%** of liquidation (`live/rescue_cfg.json` trigger_pct), JupSOL is **lent** to that bot
+(the one exception to "JupSOL is never margin"): JupSOL -> SOL (stake unstake path) -> ETH / WBTC (own-coin swap path);
+part is deposited as extra collateral (increase with sizeUsd 0, shorts swapped to USDC by the keeper as usual) to push liq
+toward `target_pct` 10% (max `collateral_share` 60% of the loan unless needed to clear the trigger), the rest is credited to
+the bot's balance as add budget. Booked as a **liability** `bank.loan` (principal, JupSOL in, hwm_at_open): excluded from
+HWM, profit guard equity and withdrawals. Out of rungs -> `rescue.sh extend` (+6 `ladder_max_rungs`, original saved) or a manual
+add via `rescue.sh add`. When flat the bot auto-repays principal x (1 + `repay_margin_pct` 5%) (+ `repay_profit_share`) to
+JupSOL and restores settings. JupSOL too small (full JupSOL pushes liq < 2 pts or < 10% of collateral) -> **EMERGENCY**:
+notify Trevor. Tool: `live/rescue.sh` (dry run by default); steps: `RESCUE_PLAYBOOK.md`.

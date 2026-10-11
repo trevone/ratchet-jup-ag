@@ -1222,6 +1222,12 @@ class Bot:
         flat = pos is None and b.get("window", 0) == 0 and not self._busy(st, self.asset == "SOL")
         if flat and b.get("book_pend") and not b.get("pend"):
             self.bank_book_pending(sol_px, cpx)
+        if flat and bankmod.loan_outstanding(b) > 0 and not b.get("pend"):   # JupSOL rescue: repay + restore settings
+            try:
+                from live import rescue
+                rescue.auto_repay(self)
+            except Exception as e:   # noqa: BLE001 - retried next tick
+                log.warning("RESCUE auto-repay failed (retry next tick): %s", e)
         if bankmod.update_hwm(b, flat, bankmod.fee_debt_native(b, sol_px, cpx)):
             log.info("BANK HWM raised (flat): %s", bankmod.status_line(b, cpx, sol_px))
         self.save()

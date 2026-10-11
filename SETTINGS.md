@@ -49,3 +49,8 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 | [bot] | asset / share / state_dir | SOL / 0.5 / live | ETH / 0.25 / live/eth | BTC / 0.25 / live/btc | Market, wallet share, state dir |
 | [ledger] | guard_only_underwater | true | true | true | Trevor 2026-10-11: profit-guard close only while price is on the losing side of avg; TP timer unchanged |
 | [ledger] | withdraw_cost_pct / withdraw_network_sol / withdraw_fee_factor | 0.001 / 0.00005 / 2 | 0.003 / 0.0001 / 2 | 0.003 / 0.0001 / 2 | Trevor 2026-10-11: replaces withdraw_min_usd 0.50; withdraw when amount_usd > factor x est. cost, else carry |
+| rescue_cfg.json | trigger_pct / target_pct | 3 / 10 | 3 / 10 | 3 / 10 | Trevor 2026-10-11: JupSOL rescue when liq within 3%; collateral aims liq 10% away |
+| rescue_cfg.json | collateral_share / keep_jupsol / haircut_pct | 0.6 / 0 / 1 | same | same | Share of loan to collateral (rest = bank credit); JupSOL kept back; swap-cost haircut |
+| rescue_cfg.json | repay_margin_pct / repay_profit_share | 5 / 0 | same | same | Repay to JupSOL when flat: principal x 1.05 (+ share of profit over loan-time HWM) |
+| rescue_cfg.json | emergency_min_push_pct / emergency_min_collat_pct | 2 / 10 | same | same | EMERGENCY (notify Trevor) if all JupSOL pushes liq < 2 pts or < 10% of collateral |
+| rescue_cfg.json | extend_rungs | 6 | 6 | 6 | `rescue.sh extend`: temp +ladder_max_rungs, auto-restored on repay |
