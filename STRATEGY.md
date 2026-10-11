@@ -154,6 +154,9 @@ Close value in own coin: collateral + PnL − fees − slippage (− ~0.2% USDC�
 
 ## 9. Daily withdrawal and ops cadence
 
+**Trevor 2026-10-11 06:53 MT - no fixed minimum:** the old $0.50 minimum is gone. The 00:05 MT withdrawal (50% of HWM gain) is sent whenever amount_usd > `withdraw_fee_factor` (2) x estimated cost, where cost = amount_usd x `withdraw_cost_pct` + `withdraw_network_sol` x SOL price (SOL->JupSOL: 0.1% + 0.00005 SOL; ETH/WBTC->JupSOL: 0.3% + 0.0001 SOL). Smaller amounts are carried forward as before. Same logic on all three bots.
+
+
 | Cadence | Action |
 |---------|--------|
 | Daily **00:05** MT | Per bot: **50%** (`withdraw_fraction`) of HWM gain since last withdrawal → **JupSOL** (SOL stakes; ETH/WBTC swap coin → JupSOL directly). Balance and HWM reduced by the amount; &lt; **$0.50** carries over. Each bot’s balance logged in coin and USD. ETH/BTC settle SOL fee debt when due. |

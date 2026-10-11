@@ -765,3 +765,4 @@ Files: config.py, live/bot.py, live/trim.py, configs/live_100.toml, live_eth.tom
 2026-10-11 04:38 MT quickcheck: quiet
 2026-10-11 06:15 MT TP rule (Trevor 06:08): tp1_mode=level on SOL/ETH/BTC - TP1 front-runs nearest level beyond avg (fee floor/market gap), set once at open/add; TP2=avg+(TP1-avg)/0.6; no auto TP moves; RETP_NOW one-shot re-place; open SOL/ETH/BTC TPs re-placed
 2026-10-11 06:40 MT guard_only_underwater=true on SOL/ETH/BTC (Trevor 06:31): profit guard close only while underwater; HWM-drop-on-withdrawal confirmed already in bank.apply_withdrawal (test added)
+2026-10-11 07:00 MT daily withdrawal: $0.50 minimum replaced by fee-based minimum (amount_usd > 2x est. swap+network cost; withdraw_cost_pct/withdraw_network_sol/withdraw_fee_factor) on SOL/ETH/BTC (Trevor 06:53); push pending until 00:05 run confirmed

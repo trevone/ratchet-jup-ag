@@ -205,5 +205,8 @@ window_ticks = 3
 withdraw_enabled = true         # daily: withdraw_fraction x HWM gain since last withdrawal -> JupSOL (replaces old SOL nightly stake)
 withdraw_time_mt = "00:05"
 withdraw_fraction = 0.5
-withdraw_min_usd = 0.50         # smaller amounts carried (swap fee waste)
+# Trevor 2026-10-11 06:53 MT: no $0.50 minimum; withdraw when amount_usd > withdraw_fee_factor x est. cost (SOL->JupSOL stake: ~0.1% route/stake fee, ~0.00005 SOL network)
+withdraw_cost_pct = 0.001
+withdraw_network_sol = 0.00005
+withdraw_fee_factor = 2.0
 fee_settle_min_sol = 0.005      # ETH/BTC: settle SOL network-fee debt (coin -> SOL) above this

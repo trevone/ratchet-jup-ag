@@ -48,3 +48,4 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 | [withdraw] | enabled | true | false | false | Legacy SOL daily stake job (SOL bot only) |
 | [bot] | asset / share / state_dir | SOL / 0.5 / live | ETH / 0.25 / live/eth | BTC / 0.25 / live/btc | Market, wallet share, state dir |
 | [ledger] | guard_only_underwater | true | true | true | Trevor 2026-10-11: profit-guard close only while price is on the losing side of avg; TP timer unchanged |
+| [ledger] | withdraw_cost_pct / withdraw_network_sol / withdraw_fee_factor | 0.001 / 0.00005 / 2 | 0.003 / 0.0001 / 2 | 0.003 / 0.0001 / 2 | Trevor 2026-10-11: replaces withdraw_min_usd 0.50; withdraw when amount_usd > factor x est. cost, else carry |

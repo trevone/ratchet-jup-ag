@@ -430,7 +430,11 @@ class LedgerConfig:
     withdraw_enabled: bool = True           # daily HWM-gain withdrawal to JupSOL (replaces the old SOL-bot nightly stake)
     withdraw_time_mt: str = "00:05"
     withdraw_fraction: float = 0.5
-    withdraw_min_usd: float = 0.50          # skip (carry) smaller amounts: swap fee waste
+    # Trevor 2026-10-11 06:53 MT: no fixed $ minimum; withdraw when amount_usd > withdraw_fee_factor x est. cost
+    # (est. cost = amount_usd x withdraw_cost_pct [route fee + impact] + withdraw_network_sol x SOL price), else carry.
+    withdraw_cost_pct: float = 0.002
+    withdraw_network_sol: float = 0.0001
+    withdraw_fee_factor: float = 2.0
     fee_settle_min_sol: float = 0.005       # ETH/BTC: settle SOL network-fee debt (native -> SOL swap) above this
 
     def __post_init__(self) -> None:

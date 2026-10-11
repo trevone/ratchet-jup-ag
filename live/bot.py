@@ -1279,7 +1279,7 @@ class Bot:
             return   # retried next tick
         sol_px, cpx = self.sol_price(st), self.coin_px(st)
         coin, dec = b["coin"], bankmod.DECIMALS[b["coin"]]
-        amt, gain = bankmod.withdraw_amount(b, lc.withdraw_fraction, lc.withdraw_min_usd / cpx)
+        amt, gain = bankmod.withdraw_amount(b, lc.withdraw_fraction, bankmod.withdraw_min_native(lc.withdraw_cost_pct, lc.withdraw_network_sol, lc.withdraw_fee_factor, sol_px, cpx))
         rec: dict[str, Any] = {"date": str(now.astimezone(bankmod.MT).date()), "gain": round(gain, 9), "amount": amt}
         if amt > 0 and self.asset == "SOL" and float(st["wallet"]["sol"]) - amt < self.live.sol_fee_reserve + self.cfg.withdraw.stake_fee_buffer_sol:
             rec["skip"], amt = "SOL reserve", 0.0
@@ -1320,7 +1320,7 @@ class Bot:
                 self.save()
                 return
         elif gain > 0:
-            rec.setdefault("skip", f"below min ${lc.withdraw_min_usd:.2f} (carried)")
+            rec.setdefault("skip", f"not worth {lc.withdraw_fee_factor:g}x est. swap/network cost (carried)")
         if self.asset != "SOL" and b.get("fee_sol", 0.0) >= lc.fee_settle_min_sol:
             want = min(b["fee_sol"] * sol_px / cpx, b["bal"])
             args = sweepmod.sweep_args(self.cfg, bankmod.MINT[coin], int(want * 10 ** dec), bankmod.MINT["SOL"])

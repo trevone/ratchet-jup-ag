@@ -141,6 +141,15 @@ def apply_withdrawal(b: dict[str, Any], amt_in: float, why: str = "") -> None:
     note(b, "withdraw", -amt_in, why)
 
 
+def withdraw_min_native(cost_pct: float, network_sol: float, factor: float, sol_px: float, coin_px: float) -> float:
+    """Smallest withdrawal (native) worth sending: amount_usd > factor x (amount_usd x cost_pct + network_sol x SOL px)
+    (Trevor 2026-10-11 06:53 MT; replaces the fixed $0.50 minimum)."""
+    k = 1.0 - factor * cost_pct
+    if k <= 0:
+        return float("inf")
+    return factor * network_sol * sol_px / k / coin_px
+
+
 def due(now: datetime, time_mt: str, last_date: str | None) -> bool:
     local = now.astimezone(MT)
     hh, mm = map(int, time_mt.split(":"))
