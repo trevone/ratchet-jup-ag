@@ -1,0 +1,67 @@
+# Base layer for every run; presets and --set overrides merge on top.
+# Fractions are decimals (0.08 = 8%). Optional params (default null = disabled) are
+# simply omitted: market.start/end, trend.warmup_bars, stops.margin_loss_pct,
+# stops.price_stop_pct, stops.daily_loss_pct, stops.max_hours_in_trade.
+name = "default"
+sides = "both"                 # long | short | both
+
+[market]
+symbol = "SOLUSDT"
+base_tf = "1h"
+
+[trend]
+tf = "4h"
+ma_type = "ema"                # ema | sma
+length = 200
+
+[signal]
+tf = "1h"
+rsi_method = "wilder"          # wilder | ema | sma
+rsi_length = 14
+oversold = 30.0
+overbought = 70.0
+
+[sizing]
+mode = "equity_pct"            # equity_pct | fixed_usd
+initial_margin_pct = 0.10
+initial_margin_usd = 1000.0
+
+[dca]
+max_adds = 4
+trigger_mode = "price_abs"     # price_abs (USD) | price_pct
+trigger_pct = 0.04
+trigger_dist = 2.0
+reference = "avg_entry"        # avg_entry | last_entry
+require_signal = true
+allow_after_partial = true
+margin_mult = 1.0
+margin_growth = 1.0
+lev_start = 2.0
+lev_step = 0.5
+lev_cap = 4.0
+
+[tp]
+mode = "price_abs"             # price_abs (USD) | price_pct | margin_pct
+pct = 0.08                     # used only when levels is empty (single 100% level)
+# dist: distance from anchor (USD for price_abs). close_pct: CUMULATIVE share closed.
+levels = [{ dist = 1.0, close_pct = 0.5 }, { dist = 1.5, close_pct = 1.0 }]
+anchor = "avg_entry"           # avg_entry (re-anchors after adds) | first_entry
+move_stop_to_breakeven_after_partial = false
+close_remainder_after_min = 30.0   # omit to disable
+timer_require_profit = true
+
+[stops]
+trend_flip_exit = false
+daily_period = "1D"
+
+[costs]
+open_fee = 0.0006
+close_fee = 0.0006
+borrow_per_hour = 0.0001
+slippage = 0.0002
+
+[risk]
+maintenance_ratio = 0.01
+
+[account]
+start_equity = 10000.0

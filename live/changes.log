@@ -1,0 +1,761 @@
+2026-10-07 09:40 MT  hourly check-in (analyst outlook 09:36: 4h range ADX 18.7, 1h downtrend ADX 34.4, 1h ATR $0.82, prefers short, pause_new_entries=true)
+  - dca.trigger_dist 0.50 -> 0.85: analyst DCA spacing = max(1h ATR $0.82, 0.5x 4h ATR); $0.50 adds would stack inside 1h noise during a 1h downtrend.
+  - tp.close_remainder_after_min 30 -> 55: analyst estimate of time to travel TP2 at the 1h ATR pace.
+  - live/bot.py guard fix: the $10 min_collateral_usd check now applies to opens only (matched live_broker.py and the config comment); before this, every $5 DCA add would have been skipped. Backup: live/bot.py.bak-20261007-0938.
+  - TP ladder 0.75/1.25 -> 0.50/0.75 attempted and REVERTED: TP1 116.40 was already below market (116.43), Jupiter rejected it (TriggerPriceSlippage) and the bot's safety halt wrote KILL. Restored 0.75/1.25 (TPs 116.65 / 117.15 on the open long, re-placed 09:42 after one StaleOraclePrice retry), removed the KILL I caused, restarted bot.
+  - Not changed: side (bot's 4h EMA200 filter still says long; analyst prefers short), leverage (5x start already at analyst's 5-8x low end), no pause (KILL would also block DCA adds on the open long).
+
+2026-10-07 10:36 MT  hourly check-in (analyst outlook 10:33: 4h range ADX 19.9, 1h downtrend ADX 35.4, 1h ATR $0.84, prefers short, pause_new_entries=false)
+  - Trade closed: first live long ($52.50 5x, avg 115.904) hit TP1 116.65 at 09:46 and TP2 117.15 at 10:06. Wallet 0.891808 SOL before the open -> 0.893123 SOL now (+0.00132 SOL net after Jupiter fees, tx fees and the 09:41 TP cancel/re-place churn). Flat, no open requests.
+  - tp.levels 0.75/1.25 -> 0.50/0.75 (50% / rest): analyst TP1 ~0.6x 1h ATR for quicker turnover; applied now because the bot is flat, so no live TP trigger can end up past the market. Backup: configs/live_100.toml.bak-20261007-1036 (state backup live/state.json.bak-20261007-1036). Bot restarted 10:36, flat state preserved.
+  - Not changed: DCA $0.85 / $5 adds, timer 55 min, leverage 5x start +2x step (cap 30x) all already match the analyst; sides stays "both" (4h EMA200 filter is still up, so only 15m RSI<30 longs can open; forcing short-only would block every entry under the filter).
+
+2026-10-07 12:06 MT  15-min check-in (analyst 12:00: 4h range ADX 19.9, 1h downtrend ADX 36.2, 1h ATR $0.85, FOMC minutes pause 11:30-12:30, PAUSE_UNTIL 13:00 blocks fresh opens only)
+  - Fill: TP1 116.89 hit ~12:05 on the 11:30 long ($52.50 5x, avg 116.294). Half closed, realised +$0.134 gross. Remaining $26.25 with TP2 117.19 on-chain (verified), 55-min timer from 12:05. Liq far away (~5x on remainder).
+  - No settings changes: mid-position, and TPs 0.60/0.90 were set wider than analyst's 0.50/0.75 on purpose to clear fees.
+2026-10-07 12:35:26 removed PAUSE_UNTIL early: analyst lifted FOMC pause at 12:34 (window ended 12:30)
+
+2026-10-07 12:58 MT  Trevor-approved: S/R DCA, collateral cap removed, daily withdraw enabled (backups *.bak-20261007-1252, /workspace/sol-bot-backup-20261007-1252.tar.gz)
+  - dca.mode="levels" (dca_levels.py): adds at analyst supports (h1+h4) 0.5-2x 1h ATR below last fill, else fixed $0.85; latest.json >45 min old -> fixed.
+    Size: new avg -> 1x ATR below next resistance (broken supports count); if unreachable, halve the avg-to-fill gap; clamp [$3, wallet-reserve];
+    shrunk until liq is below the next add level. Lev 5,+2,cap 30. After each add: fresh TP1 50% / TP2 100% on whole position (tp_hits reset);
+    deep adds (loss > 1 ATR): TP1 = avg + 12bps fees + $0.15, TP2 = min(avg+0.90, next resistance - 0.05).
+  - live.max_collateral_usd / max_position_usd -> 1e12 (off). Available = wallet SOL - 0.02, re-read every tick. Notional ceiling redundant with max_leverage 30.
+  - withdraw.enabled=true 00:05 MT: realized net SOL from trades.csv since last run (+carry), min(net_sol, net_sol_est) per trade; allowed with an open
+    position if wallet - reserve - fee - next planned add covers it; else / <0.01 SOL / market request pending -> carried. Ledger adds mid-trade withdrawals back.
+  - Bot restarted 12:58 MT, state.json unchanged, open long + TP2 117.19 untouched.
+
+2026-10-07 13:05 MT  15-min check-in (analyst 13:03: 4h range ADX 19.9, 1h downtrend ADX 36.7, RSI1h 29.8, 1h ATR $0.86; no pause windows)
+  - Long remainder $26.25 @116.294 (~5x, coll $5.23), oracle 116.06, gross ~-$0.05. TP2 117.19 trigger on-chain (verified). Timer expired, holding (not in profit).
+  - Next planned add 115.69 (h4 support) $3 x7 -> avg 116.03, liq ~96.97 (~16% below), effective ~5.7x on whole position: in line with analyst's 3-5x caution. No changes.
+
+2026-10-07 13:23 MT  15-min check-in (analyst 13:14: 4h range ADX 19.9, 1h downtrend ADX 36.7, RSI1h 29.8, 1h ATR $0.86; no pause windows; prefers short, TP 0.5/0.75)
+  - Bot healthy (pid 482532), oracle fresh 116.34. Long remainder $26.25 @116.294 (~5x, coll $5.23), near breakeven (timer net -0.03 and improving). TP2 117.19 trigger on-chain (verified).
+  - Next planned add 115.69 $3 x7, liq ~97 (well below h4 support 112.99). Wallet 0.8445 SOL. No changes; retune toward analyst TPs only when flat.
+
+2026-10-07 13:36 MT  15-min check-in (analyst 13:29: 4h range ADX 19.9, 1h downtrend ADX 36.7, RSI1h 29.8, 1h ATR $0.86; no pause windows; prefers short, TP 0.5/0.75)
+  - Bot healthy (pid 482532), oracle fresh 116.00, no stuck requests. Long remainder $26.25 @116.294 (~5x, coll $5.23), gross ~-$0.07; timer expired, holding (not in profit).
+  - TP2 117.19 trigger on-chain (verified). Next planned add 115.69 (h4 support) $3 x7, liq ~97. Wallet 0.8445 SOL. No changes; retune toward analyst TPs/side when flat.
+
+2026-10-07 13:52 MT  15-min check-in (analyst 13:44: 4h range ADX 19.9, 1h downtrend ADX 36.7, RSI1h 29.8, 1h ATR $0.86; no pause windows; prefers short, TP 0.5/0.75)
+  - Bot healthy (pid 482532), oracle fresh 115.76 (age 2s), no stuck market requests. Long remainder $26.25 @116.294 (~5x, coll $5.23), gross ~-$0.12; timer expired, holding (not in profit).
+  - TP2 117.19 trigger on-chain (verified). Price nearing planned add 115.69 (h4 support) $3 x7 -> avg ~116.03, liq ~97 (well below h4 support 112.99). Wallet 0.8445 SOL. No changes.
+
+2026-10-07 14:07 MT  15-min check-in (analyst 14:04: 4h flipped range->downtrend ADX 21.1, 1h downtrend ADX 37.5, RSI1h 28.2, 1h ATR $0.84; no pause windows; prefers short, TP 0.5/0.75)
+  - Bot healthy (pid 482532), oracle fresh 115.96 (age 3s), only open request is TP2 trigger 117.19 (verified on-chain). Long remainder $26.25 @116.294 (~5x, coll $5.23), gross ~-$0.08; timer expired, holding (not in profit).
+  - Planned add 115.69 (h4 support) $3 x7 -> avg ~116.03, liq ~97 (well below h4 support 112.99): kept despite 4h flip; risk low, no adds beyond plan. Wallet 0.8445 SOL. No changes; retune side/TPs toward analyst when flat.
+
+2026-10-07 14:21 MT  15-min check-in (analyst 14:19: 4h downtrend ADX 21.1, 1h downtrend ADX 37.5, RSI1h 28.2, 1h ATR $0.84; no pause windows; low-impact news only)
+  - Bot healthy (pid 482532), oracle fresh 116.27 (age 1s), only open request is TP2 trigger 117.19 (verified on-chain). Long remainder $26.25 @116.294 (~5x, coll $5.23), ~breakeven (timer net -0.03); holding, not in profit.
+  - Planned add 115.69 (h4 support) $3 x7 -> avg ~116.03, liq ~97 (well below h4 support 112.99). Wallet 0.8445 SOL. No KILL/PAUSE. No changes.
+
+2026-10-07 14:35 MT  15-min check-in (analyst 14:32: 4h downtrend ADX 21.1, 1h downtrend ADX 37.5, RSI1h 28.2, 1h ATR $0.84; no pause windows; prefers short, TP 0.5/0.75)
+  - Bot healthy (pid 482532), oracle fresh 116.15 (age 2s), only open request is TP2 trigger 117.19 (verified on-chain). Long remainder $26.25 @116.294 (~5x, coll $5.23), ~breakeven (timer net -0.05); holding, not in profit.
+  - Planned add 115.69 (h4 support) $3 x7 -> avg ~116.03, liq ~97 (well below h4 support 112.99). Wallet 0.8445 SOL. No KILL/PAUSE. No changes.
+
+2026-10-07 14:47 MT  15-min check-in (analyst 14:42: 4h downtrend ADX 21.1, 1h downtrend ADX 37.5, RSI1h 28.2, 1h ATR $0.84; no pause windows; low-impact news only)
+  - Bot healthy (pid 482532), oracle fresh 116.04 (age 3s), only open request is TP2 trigger 117.19 (verified on-chain). Long remainder $26.25 @116.294 (~5x, coll $5.23), slightly red (timer net -0.09); holding, not in profit.
+  - Planned add 115.69 (h4 support) $3 x7 -> avg ~116.03, liq ~97 (well below h4 support 112.99). Wallet 0.8445 SOL. No KILL/PAUSE. No changes.
+
+2026-10-07 15:02 MT  15-min check-in (analyst 15:02: 4h downtrend ADX 21.1, 1h downtrend ADX 38.2, RSI1h 33.1, 1h ATR $0.83; no pause windows; prefers short, TP 0.5/0.75)
+  - Bot healthy (pid 482532), oracle fresh 116.05 (age 2s), only open request is TP2 trigger 117.19 (verified on-chain). Long remainder $26.25 @116.294 (~5x, coll $5.23), slightly red (timer net -0.065); holding, not in profit.
+  - Planned add 115.69 (h4 support) $3 x7 -> avg ~116.03, liq ~97 (well below h4 support 112.99). Wallet 0.8445 SOL. No KILL/PAUSE. No changes.
+
+2026-10-07 15:20 MT  15-min check-in (analyst 15:18: 4h downtrend ADX 21.1, 1h downtrend ADX 38.2, RSI1h 33.1, 1h ATR $0.83; no pause windows; prefers short, TP 0.5/0.75)
+  - Bot healthy (pid 482532), oracle fresh 116.07 (age 4s), only open request is TP2 trigger 117.19 (verified on-chain). Long remainder $26.25 @116.294 (~5x, coll $5.23), slightly red (timer net -0.07); holding, not in profit.
+  - Planned add 115.69 (h4 support) $3 x7 -> avg ~116.03, liq ~97 (well below h4 support 112.99). Wallet 0.8445 SOL. No KILL/PAUSE. No changes.
+
+2026-10-07 15:30 MT  15-min check-in (analyst 15:28: 4h downtrend ADX 21.1, 1h downtrend ADX 38.2, RSI1h 33.1, 1h ATR $0.83; no pause windows; prefers short, TP 0.5/0.75)
+  - Bot healthy (pid 482532), oracle fresh 115.89 (age 5s), only open request is TP2 trigger 117.19 (verified on-chain). Long remainder $26.25 @116.294 (~5x, coll $5.23), slightly red (timer net -0.12); holding, not in profit.
+  - Price ~$0.20 above planned add 115.69 (h4 support) $3 x7 -> avg ~116.03, liq ~97 (well below h4 support 112.99). Wallet 0.8445 SOL. No KILL/PAUSE. No changes.
+
+2026-10-07 15:49 MT  15-min check-in (analyst 15:39: 4h downtrend ADX 21.1, 1h downtrend ADX 38.2, RSI1h 33.1, 1h ATR $0.83; no pause windows; prefers short, TP 0.5/0.75)
+  - Add #1 filled 15:45 at ~115.40 (h1 support 115.44): +$21 size ($3 margin x7). Long now $47.25 @115.897, coll $8.21 (~5.8x), oracle 115.46 (age 3s), uPnL ~-$0.18.
+  - Bot re-laddered TPs from new avg: TP1 116.50 (50%), TP2 116.80 (rest); both verified on-chain above market, no stray requests. Liq est ~$96-97, far below h4 support 112.99.
+  - Wallet 0.8147 SOL free. Bot healthy (pid 482532). No KILL/PAUSE. No settings changes (holding long; changes deferred until flat).
+
+2026-10-07 16:04 MT  15-min check-in (analyst 15:54: 4h downtrend ADX 21.1, 1h downtrend ADX 38.2, RSI1h 33.1, 1h ATR $0.83; no pause windows; prefers short, lev 5-8x, TP 0.5/0.75, DCA 0.85)
+  - Bot healthy (pid 482532), 16:00 bar processed, oracle fresh 115.62 (age 2s). Long $47.25 @115.897, coll $8.21 (~5.8x), uPnL ~-$0.11. Not in profit; holding.
+  - On-chain TPs match plan: TP1 116.50 (50%), TP2 116.80 (rest), both above market; no stray requests.
+  - Next add: fixed trigger 114.55 (h1 support list empty after 115.44 swing low broke) $3 x9 -> avg ~115.40, liq ~99.1, well below h4 support 112.99. Wallet 0.8147 SOL free. No KILL/PAUSE. No changes (deferred until flat).
+
+2026-10-07 16:19 MT  15-min check-in (analyst 16:08: 4h downtrend ADX 21.1, 1h downtrend ADX 39.3, RSI1h 29.5, 1h ATR $0.835; no pause windows)
+  - PROBLEM: 16:15 bar's next-add plan was ALL-IN: fixed trigger 114.55, margin $91.91 x9 (~$827 notional, whole wallet). Cause: the broken h1 support 115.44 became the "next resistance", so target avg (115.44 - 1 ATR = 114.605) sat only $0.06 above the trigger and the size formula blew up, clamped only by available.
+  - CHANGE: new dca.max_add_frac = 0.25 (code: dca_levels.plan_add, config.DcaConfig default 1.0 = old behavior, strategy passes it). One add now uses at most 25% of free collateral, keeping ammo for h4 supports 112.99/112.48. Same trigger now plans $22.98 x9 -> avg ~114.80, liq ~101.9 (vs all-in liq ~102.6 with the whole wallet at stake).
+  - Backups: *.bak-20261007-1618 (dca_levels.py, config.py, strategy.py, configs/live_100.toml, live/state.json). Bot restarted 16:18:55 (new pid 579847), state preserved.
+  - On-chain after restart: long $47.25 @115.897, coll $8.21, oracle 115.67 (age 3s), uPnL ~-$0.09; TP1 116.50 / TP2 116.80 present above market, no stray requests. Wallet 0.8147 SOL. No KILL/PAUSE.
+
+2026-10-07 16:36 MT  15-min check-in (analyst 16:33: 4h downtrend ADX 21.1, 1h downtrend ADX 39.3, RSI1h 29.5, 1h ATR $0.835; no pause windows; events all low impact)
+  - Bot healthy: wrapper pid 482530, bot pid 589763 restarted 16:34:52 (hash ffada73b) after the 16:30 ladder-budgeting + target-guard edits (configs/live_100.toml, dca_levels.py, strategy.py, config.py, live/bot.py; backups *.bak-20261007-1630). That edit has no changes.log entry of its own yet; not made by this check-in.
+  - On-chain: long $47.25 @115.897, coll $8.21 (~5.8x), oracle 115.98 (age 1s), uPnL ~+$0.03 gross (not net positive after fees). TP1 116.50 / TP2 116.80 present above market, no stray requests. Wallet 0.8147 SOL. No KILL/PAUSE.
+  - Next add trigger 114.55 (~$1.43 below). No changes this check-in.
+
+2026-10-07 16:50 MT  DCA sizing root-cause fix + ladder budgeting (Trevor: use the whole wallet across the ladder, not on the 2nd add)
+  - ROOT CAUSE: the sizing target (dca_levels.opposing_level) took any level above the add price, incl. the broken h1 support 115.44, so with an add at 114.55 the wanted avg (target - 1 ATR = 114.605) was $0.06 above the fill and the size formula went toward infinity (16:15 plan $91.91 x9).
+    FIX: target = nearest RESISTANCE >= dca.min_target_gap_atr (0.5) ATR above the add price; supports are never used (dca.target_flipped_supports=false). Guard: wanted avg >= dca.min_avg_gap_atr (0.25) ATR above the fill, else fallback avg - dca.fallback_avg_frac (0.5) * (avg - fill).
+  - LADDER: free collateral (wallet - 0.02 SOL reserve - $0.10/rung fee reserve) split over the remaining rungs with weights 1, 1.5, 2.25... (dca.ladder_weight_mult); the deep rung takes the remainder. Rungs = analyst supports 0.5-2 ATR apart, else 0.85 spacing, chained down to an anchored deep level (deepest analyst support 6-12 ATR below the first entry, else first entry - 8 ATR = 109.61 now). Each add = its rung budget (dca.ladder_sizing="budget"; "min" = min(formula, budget)), $3 floor, recomputed every bar. Leverage per rung 5x +2 per add (cap 30); notional = collateral x leverage.
+  - LIQ: kept liq-before-add check, now liq must sit >= dca.liq_buffer_atr (2.0) ATR below the next rung (open fee taken off collateral); the add is shrunk otherwise.
+  - max_add_frac 0.25 -> 1.0 (off; the ladder budgets instead, still available as an extra cap).
+  - Planned (16:47, 0.8147 SOL, $92.09 free): 114.55 $4.40 x9 -> avg 115.28 liq 99.7 | 112.99 $6.60 x11 -> 114.23 / 101.7 | 112.48 $9.91 x13 -> 113.44 / 103.2 | 111.63 $14.86 x15 -> 112.64 / 104.1 | 110.78 $22.29 x17 -> 111.84 / 104.7 | deep 109.61 $33.43 x19 -> 110.90 / 104.8 (total $91.49).
+  - Bot log now prints the projected ladder ("ladder rung N ...") every bar. New tests: tests/test_dca_sizing.py (11 pass); tests/test_withdraw.py 8 pass.
+  - Backups: *.bak-20261007-1630 (dca_levels.py, strategy.py, config.py, configs/live_100.toml, live/bot.py, live/state.json), live/state.json.bak-20261007-1647, live/changes.log.bak-20261007-1650.
+  - Restarts: 16:34:52 (intermediate version), 16:47:18 final (pid 597341, wrapper 482530, hash 20360ebc), state.json preserved. Position $47.25 @115.897 coll $8.21 and TPs 116.50/116.80 untouched.
+
+2026-10-07 16:51 MT  15-min check-in (analyst 16:45: 4h downtrend ADX 21.1, 1h downtrend ADX 39.3, RSI1h 29.5, 1h ATR $0.835; no pause windows; events all low impact)
+  - Bot healthy: wrapper pid 482530, bot pid 597341 (hash 20360ebc, restarted 16:47:18 after the ladder-budgeting fix). No KILL/PAUSE.
+  - On-chain: long $47.25 @115.897, coll $8.21 (~5.8x, est. liq ~96.9), oracle 115.95 (age 2s), uPnL ~+$0.03 gross (not net positive after fees). TP1 116.50 / TP2 116.80 present above market, no stray requests. Wallet 0.8147 SOL.
+  - Next add rung 114.55 ($4.40 x9 planned). No changes this check-in.
+
+2026-10-07 17:02 MT  15-min check-in (analyst 16:53: 4h downtrend ADX 21.1, 1h downtrend ADX 39.3, RSI1h 29.5, 1h ATR $0.835; no pause windows; events all low impact)
+  - Bot healthy: wrapper pid 482530, bot pid 597341 (hash 20360ebc), 17:00:56 bar processed. No KILL/PAUSE.
+  - On-chain: long $47.25 @115.897, coll $8.21 (~5.8x, est. liq ~96.9), oracle 116.00 (age 2s), uPnL ~+$0.04 gross (not net positive after fees). TP1 116.50 / TP2 116.80 present above market, no stray requests. Wallet 0.8147 SOL.
+  - Ladder: 114.55 $4.41 x9 | 112.99 $6.61 x11 | 112.48 $9.91 x13 | 111.63 $14.87 x15 | 110.78 $22.31 x17 | deep 109.61 $33.46 x19 (worst-case liq ~104.8). No changes this check-in.
+
+2026-10-07 17:14 MT  15-min check-in (analyst 17:09: 4h downtrend ADX 21.1, 1h downtrend ADX 40.2, RSI1h 34.8, 1h ATR $0.814; no pause windows; events all low impact)
+  - Bot healthy: wrapper pid 482530, bot pid 597341 (hash 20360ebc), 17:00:56 bar processed. No KILL/PAUSE.
+  - On-chain: long $47.25 @115.897, coll $8.21 (~5.8x, est. liq ~96.9), oracle 116.03 (age 1s), uPnL ~+$0.05 gross (not meaningfully net positive after fees). TP1 116.50 / TP2 116.80 present above market, no stray requests. Wallet 0.8147 SOL.
+  - Ladder unchanged (114.55 first rung; worst-case liq ~104.8). No changes this check-in.
+
+2026-10-07 17:32 MT  15-min check-in (analyst 17:27: 4h downtrend ADX 21.1, 1h downtrend ADX 40.2, RSI1h 34.8, 1h ATR $0.814; no pause windows; events all low impact)
+  - Bot healthy: wrapper pid 482530, bot pid 597341 (hash 20360ebc), 17:30:21 bar processed. No KILL/PAUSE.
+  - On-chain: long $47.25 @115.897, coll $8.21 (~5.8x, est. liq ~96.9), oracle 116.34 (age 1s), uPnL ~+$0.18 gross (~+$0.15 after close fee). TP1 116.50 / TP2 116.80 present above market, no stray requests. Wallet 0.8147 SOL.
+  - Price lifting toward TP1 ($0.16 away); no news threat, so no early close. Ladder unchanged (114.55 first rung; worst-case liq ~104.9). No changes this check-in.
+
+2026-10-07 17:45 MT  15-min check-in (analyst 17:27: 4h downtrend ADX 21.1, 1h downtrend ADX 40.2, RSI1h 34.8, 1h ATR $0.814; no pause windows; events all low impact)
+  - Bot healthy: wrapper pid 482530, bot pid 597341 (hash 20360ebc), 17:30:21 bar processed. No KILL/PAUSE.
+  - On-chain: long $47.25 @115.897, coll $8.21 (~5.8x, est. liq ~96.9), oracle 116.20 (age 1s), uPnL ~+$0.12 gross (~+$0.09 after close fee). TP1 116.50 / TP2 116.80 present above market, no stray requests. Wallet 0.8147 SOL.
+  - Price eased back from 116.34; no news threat, so no early close. Ladder unchanged (114.55 first rung; worst-case liq ~104.9). No changes this check-in.
+
+2026-10-07 18:06 MT  15-min check-in (analyst 18:01: 4h downtrend ADX 22.4, 1h downtrend ADX 40.4, RSI1h 38.4, 1h ATR $0.788; no pause windows; overnight med-impact Iran/oil headlines, analyst says keep leverage low end)
+  - Bot healthy: wrapper pid 482530, bot pid 597341 (hash 20360ebc, started 16:47), 18:00:58 bar processed. No KILL/PAUSE. JupSOL staking change appears in progress (ledger.py edited 18:05, stake.ts present); bot not yet restarted onto it, left untouched by this check-in.
+  - On-chain: long $47.25 @115.897, coll $8.21 (~5.8x, est. liq ~96.9), oracle 116.17 (age 2s), uPnL ~+$0.11 gross (~+$0.08 after close fee). TP1 116.50 / TP2 116.80 present above market, no stray requests. Wallet 0.8147 SOL, JupSOL 0.
+  - Analyst leans short, but position is a long near breakeven; no direction or settings change while in a position. Ladder unchanged (114.55 first rung; worst-case liq ~104.9). Daily withdraw not due until 00:05 MT. No changes this check-in.
+
+2026-10-07 18:12 MT  Daily realized profit -> JupSOL stake bucket (Trevor approved 2026-10-07 17:59 MT)
+  - withdraw.mode = "stake_jupsol" (live). "send" (or legacy "realized_profit_sol") = old SOL send to the locked address.
+    Same amount logic: ledger realized net SOL since the last run + carry, 0.01 minimum (withdraw.min_send_sol), losses/smaller
+    amounts carried, allowed with a position open only if native SOL - 0.02 reserve - stake_fee_buffer_sol - next add covers it.
+    Swap SOL -> JupSOL (jupSoLa...x93v) via Jupiter Swap API v1 /quote + /swap-instructions (api.jup.ag/swap/v1, keyless, then
+    lite-api.jup.ag fallback; lite-api answered 429 at test time; v1 is marked deprecated in favour of v2 /build but still serves).
+    Signed in-process by live/src/send.ts (simulated CU limit, Helius medium priority fee, rebroadcast, confirmed; never re-signed).
+    Safety checks in live/src/stake.ts: mints locked, Jupiter v6 program only, output to the bot's own token account only,
+    SOL transfers only into its own wSOL ATA, slippage <= stake_max_slippage_bps (hard max 300), price impact <= max.
+    The wSOL ATA (receiving account of the on-chain TPs) is re-created in the same tx after Jupiter's cleanup closes it.
+  - New config keys [withdraw]: mode, amount, stake_mint, stake_slippage_bps=50, unstake_slippage_bps=50, stake_max_slippage_bps=100,
+    stake_max_price_impact_pct=0.5, stake_only_direct_routes=false, stake_fee_buffer_sol=0.003, stake_api_bases.
+  - Accounting: margin/ladder = native SOL only (bot.margin_sol = getBalance; JupSOL is in state.stake, never margin). Stake ops go to
+    live/stake_ledger.csv + ledger_summary.json["stake"] (net_sol/realized profit untouched). With a trade open, each op's exact wallet
+    change (tx meta: native + wSOL) is booked as external_out_sol in ledger_open.json, so it is not a trade loss/deposit/withdrawal.
+    Daily stake advances withdraw_cutoff and zeroes the carry (never counted again). day_start_equity reduced by staked SOL.
+  - Oversight CLI live/stake.py: status | stake <sol> | unstake <jupsol|all> | send-to-withdraw <jupsol|all> (locked address only);
+    moving commands simulate unless --yes; --dry-run = quote + simulate. Bot bar log line now shows native SOL + JupSOL + bucket totals.
+  - INCIDENT 18:07-18:08 MT: while developing, the existing tests/test_withdraw.py (send-mode tests, no stake stub) picked up the new
+    live stake default and fired 4 REAL swaps from the bot wallet (2 test runs x 0.012 + 0.010 SOL = 0.044 SOL -> 0.036306194 JupSOL,
+    funds stayed in the bot wallet). Fixed: tests/conftest.py blocks all TS CLI/subprocess calls, unsets JUP_LIVE and redirects the
+    ledger files to a temp dir; test_withdraw pinned to mode "send". Reversed 18:09 MT with `stake.py unstake all --yes`
+    (0.036306194 JupSOL -> 0.043999186 SOL, tx 5d3MmwMu2WM3mCtHDonY7AciLay1x8d8AKuFri612MDP8R5qm3U693WwAiqT85sWRjbN3DhPTfmD2UPhk765vZ4o).
+    Net cost ~0.00152 SOL, of which ~0.00149 is the JupSOL token-account rent (stays in that account, needed anyway). Rows marked in stake_ledger.csv.
+  - Owner deposit 0.02 SOL at 18:08:47 MT (tx 244T8CzPmFYJFc4D7WDek1mgfi3SHvboYmef5FnUhL6GE2ywmpYopYrsVMiuFB2DrX4xAmVKXFfFpC7DaoiHZxWQ,
+    from HTUB9HzU...): booked as external (-0.02) in ledger_open.json so the open trade's net_sol is not inflated; never staked.
+  - Live test (code path, not daily trigger) 18:10:45 MT: 0.002 SOL -> 0.001650244 JupSOL, wallet -0.002005262 SOL,
+    https://solscan.io/tx/5Rp6JBxMP5KPXAneWsEDYMdeyNV7GCeZfrFUQLpUDXMSX1VdmfNoegw386BrE8sfMm3AtixsGCRUDcvFhFS9b1Jz (left staked).
+    Native SOL 0.833216048 -> 0.831210786. Realized net_sol 0.001315074 and withdraw carry 0.001315074 unchanged.
+  - Tests: 32 pass (test_withdraw 8, test_dca_sizing 11, new test_stake 13).
+  - Backups *.bak-20261007-1802: config.py, configs/live_100.toml, live/{bot,withdraw,ledger}.py, live/src/{cli,send,jup}.ts,
+    tests/test_withdraw.py, live/{changes.log,state.json,ledger_open.json,ledger_summary.json,withdraw_state.json,trades.csv};
+    live/stake_ledger.csv.bak-20261007-1809, live/state.json.bak-20261007-1811, live/ledger_open.json.bak-20261007-1811-prerestart.
+    New files: live/src/stake.ts, live/stake.py, live/stake_ledger.csv, tests/test_stake.py, tests/conftest.py.
+  - Restart 18:11:17 MT: bot pid 644466 (wrapper 482530), state.json kept. jup.ts not changed.
+
+2026-10-07 18:24 MT  First entry scales with the wallet + scaled daily stake/withdraw minimum (approved by Trevor 18:24 MT)
+  - New [entry] section (config.EntryConfig; strategy.initial_margin): first_collateral_mode = "pct" ("fixed" = old [sizing]
+    $10.50), first_collateral_pct = 0.10 of free native-SOL collateral ((wallet SOL - 0.02 reserve) x price, re-read at each
+    fresh open, so deposits are picked up), first_collateral_min_usd = 10.50 (floor, Jupiter TP min), first_collateral_max_usd
+    optional (omitted = off), fee_reserve_usd = 0.10 (first entry <= free - $0.10). Only fresh opens; open long untouched.
+  - Ladder unchanged: adds budget from the free collateral re-read after the open (native SOL only), per-rung fee reserve,
+    liq-buffer check as before, so first entry + ladder + fees <= free collateral (tests/test_entry_sizing.py).
+  - [withdraw] (Trevor 18:26 MT, replaces a short-lived min_send_pct idea that never ran live): stake_jupsol mode no longer
+    uses the 0.01 SOL minimum. It stakes ALL realized profit when profit > min_stake_fee_mult (3.0) x (stake_fee_est_sol
+    0.00001 + profit x stake_slippage_bps 50) and >= min_stake_floor_sol 0.0005 -> effective minimum 0.0005 SOL now; less
+    is carried. Send mode keeps min_send_sol 0.01. (WithdrawConfig.min_stake_sol / min_amount_sol; record logs min_amount_sol.)
+    Note: the current carry 0.001315074 SOL is above 0.0005, so the next daily run (00:05 MT) stakes it if free SOL covers it.
+  - [withdraw] require_next_add_cover = false (Trevor 18:27 MT; stake_jupsol only): the daily stake runs whether or not a
+    trade is open; free SOL no longer has to cover stake + next add. Only hard check: native SOL after the swap >=
+    sol_fee_reserve 0.02 + stake_fee_buffer_sol 0.003; if the profit does not fit, stake what fits (>= min) and carry the rest
+    (withdraw_amount_sol require_next_add_cover/allow_partial; record logs carry_after). true = old all-or-nothing rule.
+    Send mode unchanged. In-flight market requests still defer the run (unchanged).
+  - bot.py: flat withdraw headroom uses the planned first entry (was sizing.initial_margin_usd); status log line
+    "next first-entry plan: ..." at start and on every bar.
+  - Examples (price 116.29): 0.831 SOL wallet -> free $94.31, first $10.50 x5 (floor), ladder from $83.71 (8 rungs $3.00..$28.10);
+    $300 wallet -> free $297.67, first $29.77 x5, ladder from $267.80 (8 rungs $5.42..$92.62).
+  - Tests: 46 pass (32 old incl. 2 test_stake cases updated for the 0.0005 floor / partial stake; 14 new in tests/test_entry_sizing.py);
+    conftest chain block unchanged.
+  - Backups *.bak-20261007-1824: config.py, strategy.py, dca_levels.py (not changed), configs/live_100.toml, live/bot.py,
+    live/withdraw.py, live/changes.log, live/state.json, tests/test_dca_sizing.py, tests/test_withdraw.py (not changed);
+    *.bak-20261007-1826: config.py, configs/live_100.toml, live/withdraw.py, live/changes.log, live/state.json,
+    tests/test_entry_sizing.py, tests/test_withdraw.py, tests/test_stake.py;
+    *.bak-20261007-1827: config.py, configs/live_100.toml, live/withdraw.py, live/changes.log, tests/test_{stake,withdraw,entry_sizing}.py.
+  - Restarts: 18:25:58 and 18:27:01 MT (interim builds), final after the require_next_add_cover change; state.json kept.
+2026-10-07 19:06 MT (15-min check-in)
+  - Fill: TP1 116.50 hit 19:02 on the 2-entry long (avg 115.897). Half ($23.62) closed; Jupiter realised +$0.123 gross
+    (position realised 0.134 -> 0.257). Est. net ~+$0.109 after the 0.06% close fee (~+$0.095 incl. that half's open fee),
+    ~+0.0009 SOL. Wallet 0.8312 -> 0.8711 SOL. Remainder $23.63 (coll $4.11), TP2 116.80 on-chain (verified), 55-min
+    timer to ~19:57 (closes only in profit). No TP2 extension: analyst 1h/4h downtrend, H1 resistance 117.18. No settings change.
+2026-10-07 19:33 MT (15-min check-in)
+  - Healthy: bot loop 19:31, oracle age 3s, no KILL/PAUSE. Long remainder $23.63 (coll $4.11) avg 115.897, oracle 116.42 (in profit);
+    TP2 116.80 trigger on-chain (verified). Post-TP1 timer to ~19:57 (closes only in profit). Analyst fresh (19:27), 1h/4h downtrend,
+    no event pauses; no TP2 extension (trend against, H1 resistance 117.18). No settings change (position open).
+2026-10-07 19:53 MT (15-min check-in)
+  - Healthy: bot loop 19:45, oracle age 1s, no KILL/PAUSE, no stuck requests. Long remainder $23.63 (coll $4.11) avg 115.897, oracle 116.15
+    (in profit, remainder net est ~+$0.04); TP2 116.80 trigger on-chain (verified). Post-TP1 timer expires ~19:57 (bot closes only if net > 0).
+    Analyst fresh (19:45), 1h/4h downtrend, no event pauses; no TP2 extension. No settings change (position open).
+2026-10-07 20:07 MT (15-min check-in)
+  - Close: post-TP1 timer closed the long remainder ($23.63) at 19:58 MT (oracle ~116.0, bot est net +$0.005 on the remainder); TP2 116.80 cancelled.
+    Trade booked: 2 entries, avg 115.897, exits TP1 12:05 MT / TP1 19:02 / timer 19:58. Ledger net +0.000668 SOL (~+$0.078) after
+    Jupiter fees ~$0.088, borrow ~$0.007, network 0.00042 SOL. Wallet 0.9103 SOL. On-chain verified flat: no positions, no open requests.
+  - Healthy: bot loop 20:00, oracle age 1s, no KILL/PAUSE. Analyst fresh (20:02), 1h/4h downtrend, H4 support 115.69 / H1 115.32,
+    no event pauses. Next first entry $10.50 x5. No settings change.
+2026-10-07 20:08 MT  raise first-entry leverage 5x -> 7x (Trevor approved 20:08 MT)
+  - Flat verified before edit: state.json side=0 n_entries=0; bot log 20:00 pos=None after tp_timer close 19:58;
+    no ledger_open.json; on-chain flat per 20:07 check-in.
+  - configs/live_100.toml [dca] lev_start = 5.0 -> 7.0. Unchanged: lev_step = 2.0, lev_cap = 30.0 (ladder 7x, 9x, 11x, ... 30x).
+  - Analyst-driven event leverage reduction: NOT present as a config key / auto feature. Analyst latest.json publishes
+    recommendation.leverage_range and event notes ("keep leverage low end"); bot only consumes levels + PAUSE_UNTIL for
+    fresh-open pauses. Manual/operator still owns any leverage cut for events.
+  - Backup: configs/live_100.toml.bak-20261007-2008. state.json kept (md5 unchanged across restart).
+  - Tests: 46 passed (.venv/bin/python -m pytest -q tests); tests/conftest.py chain block unchanged.
+  - Restart: killed bot child 657451 only; wrapper 482530 relaunched bot PID 705496 at 20:10:08 MT (hash 8f8c9e3a).
+  - Confirm log: next first-entry plan: collateral $10.50 x7 notional $73.50 [pct 10.0% of free $103.32 = $10.33, floor $10.50, cap off];
+    ladder budget after open ~$92.82. (First-entry plan line does not log estimated liquidation; liq appears on add/ladder lines.)
+2026-10-07 20:12:43 MT TP retune while flat: TP1 +0.60->+0.50 (50%), TP2 +0.90->+0.75, per Trevor's ask to tighten and analyst 18:01 suggestion; at 7x TP1 half still nets ~$0.12 after fees. Backup configs/live_100.toml.bak-20261007-2012
+2026-10-07 20:19 MT  15-min check-in: flat since 19:58 tp_timer close (+0.000668 SOL). Bot running (PID 712611, restarted 20:18 hash 44711fa6 with idle-clock feature, change entry pending from in-progress build). No KILL/PAUSE. Analyst fresh (20:13), no event pause windows, only low-impact news. Wallet 0.910 SOL, next entry $10.50 x7. No settings change.
+2026-10-07 20:33 MT  smart TP2 / TP1 sanity + idle RSI loosening (Trevor approved 20:14 MT)
+  - Reason: last trade's TP2 116.80 missed twice by a hair (peak 116.66, H1 resistance 117.18); bot sat flat with RSI just
+    above the 45 entry line. Flat verified before edit and restart: state.json side=0, no ledger_open.json, no KILL/PAUSE_UNTIL.
+  - Smart TPs ([tp] smart_tp2 = true), at open, after each add and every tp_check_min (1 min) while a position is open:
+    TP2 = min(avg + 0.75, nearest analyst resistance above avg - tp_res_buffer_atr 0.1 x 1h ATR) (mirror: support for shorts);
+    each TP floored so its closing chunk nets >= tp_min_net_usd $0.05 after 6+6 bps fees; TP1 kept tp_min_gap_usd $0.05 inside
+    TP2 and above its own floor; momentum fade: best price reached tp_near_miss_frac 85% of TP2's distance, then pulled back
+    > tp_fade_atr 0.3 ATR or 15m RSI fell >= tp_fade_rsi_drop 8 pts from its post-placement high -> TP2 pulled to
+    max(fee floor, best - tp_swing_buffer_atr 0.05 ATR) (never pushed out). Periodic re-place only if a TP moves >= tp_min_move
+    $0.05, only triggers this bot placed (or exactly one per pending level after a restart) are touched, and a target that is not
+    >= tp_market_gap $0.02 beyond market is never placed (placement clamps, periodic check keeps the existing trigger). Every
+    adjustment logged as "TP adjust (<ctx>): <reason>" / "TPn re-place a -> b".
+  - Idle loosening ([signal] idle_enabled = true): flat >= idle_after_min 60 -> long < 48 / short > 52; +idle_step_min 30 ->
+    long < 50 / short > 50 (idle_long_rsi_steps [48, 50], idle_short_rsi_steps [52, 50], caps idle_max_long_rsi 50 /
+    idle_min_short_rsi 50). Resets on entry. Trend filter, PAUSE_UNTIL and KILL unchanged. Idle clock = state.json flat_since
+    (seeded from the last trades.csv close 01:58:40Z = 19:58 MT). Logged per bar: "entry thresholds: ...".
+  - Files: config.py, strategy.py, dca_levels.py, live/bot.py, configs/live_100.toml, tests/test_smart_tp_idle.py (new).
+    Backups *.bak-20261007-2016 (config.py, strategy.py, dca_levels.py, live/bot.py, configs/live_100.toml, live/changes.log,
+    live/state.json). state.json gains flat_since + tp_* keys; bot now ignores unknown state keys (old bot.py would not).
+  - Tests: 85 passed (46 old + 28 new in test_smart_tp_idle.py + 11 in test_multi_asset.py from a concurrent multi-asset build);
+    conftest chain block unchanged.
+  - Restart: bot child 707301 -> 712611 (20:18 MT, hash 44711fa6), then 712611 -> 727693 (20:32:49 MT, adds a startup thresholds
+    line); wrapper 482530 kept; state.json kept. Log: "entry thresholds now: long RSI < 45 / short RSI > 55 (base 45/55; idle 34 min,
+    step 0/2)" -> step 1 at ~20:59 MT, step 2 at ~21:29 MT.
+2026-10-07 20:33 MT  15-min check-in: flat since 19:58 (34 min). Bot running (PID 727693, restarted 20:32 hash 44711fa6), loop OK, no KILL/PAUSE. Analyst fresh (20:32), no event pause windows; 4h above EMA200 (longs only), entry RSI<45 with idle loosening armed. Wallet 0.910 SOL, next entry $10.50 x7. No settings change.
+2026-10-07 20:45 MT  15-min check-in: SOL flat since 19:58 (46 min). Bot running (PID 739841, restarted 20:43 hash c7d5f988 with multi-asset budget, SOL share 50% of total $205.79 = $102.89 after new wallet SOL; ETH/BTC bots live with open positions). No KILL/PAUSE. Analyst fresh (20:42), no event pause windows, low-impact news only; 4h above EMA200 (longs only), last RSI 54.8 vs <45 entry, idle loosening steps at 60/90 min. Analyst suggests TP1/TP2 $0.05 tighter; skipped as marginal (TPs retuned 20:12). Next entry $10.50 x7. No settings change.
+2026-10-07 20:53 MT  MULTI-ASSET BUILD: ETH + BTC Jupiter Perps bots next to SOL on the same wallet (Trevor approved 20:23 MT; 50/25/25)
+  - Architecture: one codebase, 3 processes. SOL = configs/live_100.toml (state_dir live, paths unchanged); ETH = configs/live_eth.toml
+    (live/eth/: state.json, ledger_open.json, trades.csv, ledger_summary.json, logs/bot.log + logs/wrapper.log, KILL, PAUSE_UNTIL,
+    bot.pid; wrapper live/run_eth.sh); BTC = configs/live_btc.toml (live/btc/..., live/run_btc.sh). live/KILL_ALL stops all;
+    live/PAUSE_UNTIL also pauses ETH/BTC fresh opens (extra_pause_files).
+  - TS (live/src, backups *.bak-20261007-2035 / -2040): MARKETS SOL/ETH/BTC, positionPda(owner, side, market), readState(market)
+    -> openRequests filtered to THIS market (no cross-bot TP cancels) + allOpenRequests + allPositions (with collateralUsd),
+    buildIncrease (SOL input + jupiterMinimumOut swap to ETH/WBTC/USDC custody), buildDecrease(market), positionFlows (per-position
+    SOL ledger), stake.ts "sweep" swap direction (input locked to USDC/ETH/WBTC, output native SOL, slippage capped).
+  - desiredMint finding (read-only simulations on third-party positions): SOL market accepts desiredMint=SOL (also for USDC-collateral
+    shorts); ETH/BTC markets REJECT desiredMint=SOL (InvalidMint 6018) for trigger AND market decreases. Fix 20:40: ETH/BTC decreases
+    receive the collateral mint (ETH/WBTC for longs, USDC for shorts) and live/sweep.py swaps it back to SOL right away
+    (Jupiter Swap API, same buildSwap checks as stake.ts, slippage = withdraw.unstake_slippage_bps capped by stake_max_slippage_bps);
+    swap SOL booked into the trade (sweep_sol) or as a sweep row if the trade is already booked. Simulation of the default shape on
+    ETH long/short + BTC long/short: all OK.
+  - Python: config.py [bot] (asset, share, state_dir, extra_pause_files, global_kill_path, sweep_enabled, sweep_min_usd) + [scale]
+    (pct/ATR distances per asset) + withdraw.trade_files; live/budget.py (free = share x (native SOL value + all bots' open collateral
+    - reserve) - own collateral, capped at native free); asset_scale.py (own 1h ATR scaling, own-ATR level fallback); live/flows.py;
+    live/sweep.py; ledger.py (per-bot dirs, position flows net_sol, sweep rows, asset/position columns); withdraw.py (one daily stake
+    over all 3 trades.csv with per-file cutoffs; any bot's in-flight market request defers); bot.py wiring. Backups *.bak-20261007-2035.
+  - Deposits: budgets read the live wallet each loop; realized profit comes only from per-position flows (txs touching that position
+    since its open tx) + sweep swaps, so deposits / other bots / stake swaps never count; withdraw keeps min(net_sol, net_sol_est).
+  - SOL: [bot] share = 0.5 (+ trade_files for all 3 bots); restarted while flat 20:35:51 (727693 -> 731692), 20:43 (-> 739841),
+    wrapper 482530 kept, state.json kept.
+  - ETH/BTC dry runs 20:36 (simulated opens OK), then live 20:42:18 MT (dry_run=false via gen_asset_configs.py --live; dry-run state
+    saved as state.json.dryrun-20261007-2042). Natural signals opened at once: ETH SHORT $10.50x7 avg 2580.50 (sig 2h7FASXR...),
+    BTC LONG $10.50x7 avg 83162.98 (sig 4FchzNhR...), both TPs placed.
+  - Tests: 110 passed at build time (tests/test_multi_asset.py), conftest chain block unchanged.
+2026-10-07 20:53 MT  BTC + ETH TP retune (Trevor 20:44 / 20:46 MT) + weak-level filter + analyst null-levels guard
+  - configs/live_btc.toml + live_eth.toml [tp]: levels TP1 0.0043 -> 0.0030 (50%), TP2 0.0065 -> 0.0075 (100%); new
+    tp_res_min_touches = 2 (SOL default 0 = unchanged). Reason: BTC TP2 was capped under a weak 1h resistance 83641.9 (1 touch).
+    live/patches/gen_asset_configs.py updated so regeneration keeps this (regenerated output identical to the edited files).
+  - Code: dca_levels.py Levels.sup_touches/res_touches (from analyst <kind>_touches; a level adds touches of other-TF levels within
+    0.25 x 1h ATR = analyst merge rule; unknown = strong); smart-TP2 cap skips levels with < tp_res_min_touches; fee floor,
+    fade/near-miss pull-in, market-gap rules unchanged. config.py TakeProfitConfig.tp_res_min_touches; strategy.py passes it.
+  - Analyst 20:48: null / missing / empty h1/h4 levels -> treated exactly like a stale file (None -> own-ATR spacing on ETH/BTC,
+    existing behaviour on SOL; smart TP2 = plain avg + dist), one warning per file, never raises (also AttributeError caught).
+  - Backups: config.py, strategy.py, dca_levels.py, configs/live_btc.toml, configs/live_eth.toml, live/changes.log, live/btc/state.json,
+    live/eth/state.json, tests/test_multi_asset.py, gen_asset_configs.py *.bak-20261007-2046; dca_levels.py.bak-20261007-2049.
+  - Tests: 117 passed (new tests/test_tp_touches.py; test_multi_asset make_bot forces dry_run now that configs are live).
+  - BTC restart 20:47:57 (child 737590 -> 746503), state.json kept: TP1 83520.58 -> 83412.47 (cancel 4saWEsrx..., place
+    4DKqc7sE...), TP2 83606.19 -> 83786.71 (cancel 3M6B8cRz..., place 31iyfbTC...). 2-touch cap level 84355.2 (h1, merged with h4
+    84432.6) does not bind; fee floor 83376.05. Restarted again 20:49:18 for the null guard (-> 748226): no re-place needed.
+  - ETH restart 20:49:18 (737591 -> 748227), state.json kept: TP1 2569.41 -> 2572.76 (cancel 37ZhB6GA..., place pHwWCd6H...),
+    TP2 2564.74 -> 2561.15 (cancel 5NsSNdZD..., place 35u9pT5a...). No ETH support has >= 2 touches -> no cap; fee floor 2573.90
+    (TP1 2572.76 just inside it).
+  - On-chain check 20:51: BTC triggers 83412.47 + 83786.71, ETH 2572.76 + 2561.15, SOL none; allOpenRequests = 4 (no duplicates).
+  - SOL restarted while flat 20:51:10 (739841 -> 750354) only to pick up the null-levels guard (a null SOL analyst file would
+    otherwise raise every tick); state.json md5 unchanged; wrapper 482530 kept.
+2026-10-07 20:53 MT  Deposit recorded as capital: 0.897040601 SOL at 20:39:36 MT from 59su4N4u... (sig 3cMbLxUM...) -> live/capital.csv
+  (new, informational). Stake/withdraw never read wallet deltas: realized_all over the 3 trades.csv at 20:52 = -0.001244 SOL
+  (SOL file only), so the 00:05 stake cannot count the deposit.
+2026-10-07 20:59 MT  15-min check-in: all 3 bots alive (SOL 750354, ETH 748227, BTC 748226), logs fresh, no KILL/PAUSE, no errors. SOL flat since 19:58 (61 min), RSI<45 entry, idle loosening due. ETH short 1x @2580.50 now 2578.78 (TP1 2572.76 / TP2 2561.15, best 2578.72). BTC long 1x @83163 now 83112 (TP1 83412.47 / TP2 83786.71, best 83226.5). On-chain triggers 2+2+0, no duplicates; 7x liq ~14% away, first adds ~ETH 2596.6 / BTC 82751. Analyst files fresh (20:47), no new high-impact events. Trevor's TP1=60% of TP2 rule not yet applied (only for next trades/tuning; open trades untouched). No settings change.
+2026-10-07 21:21 MT  SOL TP1 +$0.50 -> +$0.45 (TP2 +$0.75 kept) per Trevor's 20:57 rule (TP1 = 60% of TP2 distance; next trades).
+  New SOL long opened 21:15:23 @115.807 (1 entry, $73.50 7x) after the 20:51 rule, so it counts as a next trade. Backups
+  configs/live_100.toml.bak-20261007-2120 + live/state.json.bak-20261007-2120. SOL child restarted 750354 -> 769226 (wrapper
+  482530 kept, state.json kept); bot cancelled TP1 116.31 and placed 116.26 itself; TP2 116.56 untouched.
+2026-10-07 21:25 MT  ETH TP1 0.30% -> 0.45% (TP2 0.75% kept), same rule. Open ETH short already hit TP1, so only its TP2 is
+  pending and unchanged (2561.15); applies from the next ETH trade. Backups configs/live_eth.toml.bak-20261007-2124 +
+  live/eth/state.json.bak-20261007-2124; ETH child restarted 748227 -> 771967, state kept, no re-place.
+  BTC PENDING: set BTC TP1 0.30% -> 0.45% and restart only once BTC is flat (open BTC long must keep its 0.30% TP1 per Trevor).
+2026-10-07 21:27 MT  15-min check-in: all 3 bots alive (SOL 769226, ETH 771967, BTC 748226), no KILL/PAUSE; one transient BTC
+  RPC tick error 21:10 (Helius index overloaded), recovered. ETH TP1 FILLED 21:06 @2572.76 (first ETH close): $5.30 USDC
+  swept to SOL (0.045589 SOL out incl. 0.001488 parked as rent in the recreated wSOL ATA; owner +0.044101), ~+0.0005 SOL net on
+  the half; ETH remainder $36.75 short, now ~2568, TP2 2561.15 (best 2567.10), timer ends ~22:01 if net positive. SOL long
+  @115.807 now ~115.86, TP 116.26/116.56. BTC long @83163 now ~82821 (-0.41%), first add 82720.30, TPs 83412.47/83786.71
+  (best 83297). On-chain triggers 2+1+2 = 5, no duplicates. Analyst files fresh (21:09). Next high-impact: Waller 2-3 AM
+  (leverage-cut routine armed), 30y auction 11:00 MT.
+2026-10-07 21:29 MT  15-min check-in: 3 bots alive, no KILL/PAUSE, no new fills since 21:27 check. SOL long ~115.94 (avg 115.807, TP 116.26/116.56); ETH short rem ~2570 (TP2 2561.15); BTC long ~82910 (avg 83163, -0.30%, add 82720.30). Analyst files fresh (21:26). No changes.
+2026-10-07 21:46 MT  15-min check-in: 3 bots alive, no KILL/PAUSE, no new fills. SOL long ~115.87 (avg 115.807, TP 116.26/116.56, best 116.10); ETH short rem ~2567 (avg 2580.50, TP2 2561.15, best 2564.14, timer ~22:01); BTC long ~82780 (avg 83163, -0.46%, add 82720.30 close). On-chain triggers 2+1+2=5, no dupes. Analyst files fresh (21:26). No changes.
+2026-10-07 22:03 MT  15-min check-in: 3 bots alive, no KILL/PAUSE, no tracebacks. ETH short CLOSED: TP2 pulled in by fade logic 2561.15->2563.21 at 21:57, filled ~21:59; USDC 5.4366 swept -> +0.046995 SOL (sig 4aHzNe...), USDC ATA now 0 (swap-back OK both legs). Ledger books ETH trade net -0.002302 SOL (~-$0.27) but ~0.00298 SOL of that is refundable rent parked in empty USDC ATA (AJduc1...) + recreated wSOL ATA (HiCoAL...), 0.00148844 each; real trade result ~+0.0007 SOL (USDC back $10.74 on $10.50 collateral). Empty WBTC ATA (9SQT8Y...) also holds 0.00148844. Not closing ATAs while SOL/BTC TP triggers are open (they may pay into them); reclaim -> JupSOL when flat. SOL long ~115.67 (avg 115.807, TP 116.26/116.56, best 116.10, add 115.32, liq after add ~101.4); BTC long ~82670 (avg 83163, -0.59%, add 82720.30 on bar close, TP 83412.47/83786.71). On-chain triggers 2+2=4, no dupes. ETH flat, entry short RSI>55. BTC config TP1 still 0.30% (left as-is for open trade per Trevor; update to 0.45% when BTC is flat). Analyst files fresh (21:56). No setting changes.
+2026-10-07 22:17 MT  15-min check-in: 3 bots alive, no KILL/PAUSE (one transient Helius RPC 'index overloaded' error on BTC at 22:15, recovered same tick). BTC ADD #1 filled 22:16: $3.00 x9 ($27 notional) @82690.67 -> pos $100.50 avg 83035.32, coll $13.41, liq ~72.8k; TPs re-placed 83284.42 (50%) / 83658.08, old 2 cancelled. SOL long ~115.36 (avg 115.807, TP 116.26/116.56, best 116.10, add 115.32 on bar close, liq after add ~101.4). ETH flat (bot restarted 22:13/22:15 by parent work, TP1 now 0.45%), short RSI>55. On-chain triggers 2+2=4, no dupes. Analyst files fresh (22:10). No setting changes by check-in.
+2026-10-07 22:17 MT  TOKEN-ACCOUNT RENT FIX (accounting + persistent token accounts) + realized-gross fix (Trevor request 22:03 MT)
+  - Root cause (verified on-chain, read-only): rent-exempt minimum is 0.00148844 SOL per token account.
+    (1) live/src/jup.ts buildIncrease closed the owner's wSOL ATA at the end of EVERY open/add (createCloseAccountInstruction).
+        The next SOL TP placement / sweep re-created it and paid the rent again: ETH sweep BvycSChw (21:06) re-created wSOL ATA
+        HiCoAL (+0.00148844 parked); the 20:42 ETH/BTC opens and the 21:15 SOL open (3EgcEg) had closed it.
+    (2) The per-trade ledger counted that rent as a loss: position flows counted only native + wSOL lamports, so the USDC ATA
+        AJduc1 created by the ETH TP placement 2Vq4m85G (20:42, -0.00148844) and the WBTC ATA 9SQT8Y (BTC TP placement) were
+        trade costs; the sweep counted only native + wrapped atoms, so the re-created wSOL ATA rent was a swap cost.
+    The USDC/WBTC ATAs were NOT closed by swaps (Jupiter never closes the input account); Jupiter's wrapAndUnwrapSol cleanup does
+    close the wSOL ATA on every SOL-output swap (SPL wSOL can only be unwrapped by closing), but buildSwap re-creates it in the
+    same tx, so that is rent-neutral once the ATA is persistent.
+    (3) Separate under-count found: gross_pnl_usd was read from the already-closed position account (always 0), so net_sol_est
+        was fees-only and the daily stake's min(net_sol, net_sol_est) took it (ETH -0.000826, SOL trade 2 -0.001244).
+  - TS (live/src, used by every bot on its next CLI call; backups *.bak-20261007-2210; staged + simulated first):
+    jup.ts: buildIncrease no longer closes the wSOL ATA (persistent; a stray wrapped balance, if any, is unwrapped with close +
+      re-create in the same tx); OWNER_TOKEN_MINTS / ownerTokenAccounts (WSOL, USDC, ETH, WBTC ATAs); ownerTxDeltas;
+      positionFlows.netLamports now = native + lamports of all those ATAs (rent-neutral), new fields rentLamports,
+      legacyNetLamports (old formula), pnlUsd / feeUsd / decreases / liquidations / eventErrors (decoded DecreasePositionEvent /
+      LiquidateFullPositionEvent / IncreasePositionEvent of this position); readState closed side: realisedPnlUsd = null
+      (was a fake 0), raw value in closedAccountRealisedPnlUsd; buildCloseEmptyAtas (amount exactly 0, owner-locked).
+    stake.ts: txDeltas + rentDeltaLamports, tokenAccounts; readSweepTokens + exists, lamports and a WSOL entry (never swept);
+      readStake + ataLamports; buildSwap unchanged (wrapAndUnwrapSol kept; doc explains the same-tx re-create).
+    cli.ts: token-accounts (read-only), simulate-close-empty-atas / close-empty-atas (send needs send:true AND JUP_LIVE=1).
+    Simulations OK (nothing sent): ETH short + long increase, stray-unwrap tail, stake swap 0.002, close-empty-atas.
+    Live confirmation: BTC's own DCA add 22:16 (2iH73QwN) left wSOL ATA HiCoAL open at 0 (old code would have closed it).
+  - Python (backups *.bak-20261007-2210): live/sweep.py swap_sol_change / run_sweeps_detail (swap SOL = native + wrapped +
+    rentDeltaLamports; rent returned separately); live/flows.py flow_extras; live/ledger.py new trades.csv columns rent_sol,
+    gross_pnl_source, open-record key rent_sol, summary key token_rent_sol, on_flat(flows_rent_sol, events_gross_usd), gross
+    from program events, no fees-only net_sol_est when gross is unknown on position_flows (wallet_delta keeps the conservative
+    est); write_sweep_row(rent_sol); live/bot.py book_flat / sweep wiring. withdraw.py UNCHANGED (SOL bot keeps its code).
+    New live/reclaim_rent.py: closes EMPTY USDC/ETH/WBTC/wSOL ATAs and stakes the rent to JupSOL (source rent_reclaim, capital.csv
+    kind rent_reclaim); DRY RUN by default, refuses while any position/request is open (dry run 22:15: refused, 2 positions +
+    4 triggers; would reclaim 0.00446532 SOL). NOT run live. Token accounts NOT closed.
+  - Ledger corrections (backups *.bak-20261007-2210):
+    live/eth/trades.csv ETH short 20:42-21:59: net_sol -0.002302181 -> +0.000674699 (rent 0.00297688 reclassified as capital:
+      rent-neutral flows -0.091909460 + sweeps 0.045589449 + 0.046994710), gross 0 -> 0.356529 (TP1 +0.110262, TP2 +0.246267),
+      net_sol_est -0.000826343 -> 0.002256652, net_usd_at_close -0.2662 -> 0.078; header gains rent_sol, gross_pnl_source.
+    live/eth/ledger_summary.json net_sol 0.000674699, gross_pnl_usd 0.3565, token_rent_sol 0.00297688, corrections[] entry.
+    live/trades.csv SOL trade 2 (17:30Z-01:58Z): gross 0 -> 0.282731 (events), net_sol_est -0.001244059 -> 0.00119303; net_sol
+      unchanged 0.000667895 (= position flows, rent 0); header kept (running SOL bot has the old ledger code).
+      live/ledger_summary.json gross_pnl_usd 0.41 -> 0.6927.
+  - 00:05 MT stake dry run (read-only, copy of withdraw_state.json): carry 0.001315074 + SOL 0.000667895 + ETH 0.000674699 +
+    BTC 0 = 0.002657668 SOL >= min 0.0005, native 1.6075 -> would stake 0.002657668 SOL (before the fix: -0.002231166, nothing).
+  - Tests: new tests/test_token_rent.py (13); full suite 126 passed, 4 failed = pre-existing tests/test_smart_tp_idle.py
+    expectations of the old SOL TP1 0.50 (changed to 0.45 at 21:21). conftest.py unchanged (chain blocked).
+  - Restarts: ETH only (flat): 771967 -> 802462 (22:13:25), then -> 805199 (22:15) for the final ledger rule; wrapper 737585 kept.
+    SOL (769226) and BTC (748226) NOT restarted: their rent accounting comes from the TS CLI (instant); their next close books a
+    blank net_sol_est (gross unknown) so the stake uses the exact rent-neutral net_sol; rent_sol / event gross columns arrive
+    with their next natural restart.
+  - TP check 22:17: SOL 2 triggers (116.26 / 116.56), BTC 2 (83284.42 / 83658.08, re-placed by the bot itself after its
+    22:16 DCA add), no orphans.
+
+2026-10-07 22:19 MT TESTS: tests/test_smart_tp_idle.py independent of live tuning (backup tests/test_smart_tp_idle.py.bak-20261007-2218)
+  reason: 4 tests read configs/live_100.toml directly and broke when live TP1 moved 0.50 -> 0.45 (Trevor: TP1 ~60% of TP2).
+  change: PINNED override list (tp levels 0.50/0.75, all smart-TP tunables, 6 bps fees, RSI 45/55 + idle params, dry_run)
+          used by CFG, strat() and the bot fixture; test_live_keys split into test_pinned_fixture_values (exact values)
+          and test_live_keys (live keys exist, sane types/ranges). Test file only; no live code/config touched, no restart.
+  result: full suite 131 passed.
+2026-10-07 22:33 MT  15-min check-in: 3 bots alive, no KILL/PAUSE (one transient Helius 429 rate-limit tick error on BTC at 22:23, recovered next tick). No new fills since BTC add #1 (22:16). SOL long ~115.41 (avg 115.807, -0.34%, TP 116.26/116.56, best 116.10, add 115.32 on bar close, liq after add ~101.4). BTC long ~82826 (avg 83035.32, -0.25%, $100.50, coll $13.41, TP 83284.42/83658.08, best 82858.6, next add 82236.97). ETH flat, RSI 50.6, entry short RSI>55. On-chain triggers 2+2=4, no dupes. Analyst files fresh (22:30). No setting changes.
+2026-10-07 22:43 MT  15-min check-in: 3 bots alive, no KILL/PAUSE, no new errors since the 22:23 BTC 429 blip. No new fills. SOL long oracle ~114.68 (avg 115.807, -0.97%, TP 116.26/116.56, add rung 115.32 crossed -> add expected on 22:45 bar close, liq after add ~101.4). BTC long ~82542 (avg 83035.32, -0.59%, $100.50, TP 83284.42/83658.08, next add 82236.97). ETH flat ~2560.6, short-only filter, entry RSI>55. On-chain triggers 2+2=4, no dupes. Analyst files fresh (22:30); analyst suggests tighter TPs but Trevor's TP rules stand and open trades untouched. No setting changes.
+2026-10-07 22:58 MT  15-min check-in: 3 bots alive, no KILL/PAUSE, no new errors. FILL: SOL add #1 at 22:45 bar close (~114.52, $3.00 x9, $27 notional) -> long $100.50, coll $13.43, avg 115.460; TPs re-placed 115.75 (50%)/116.21, old pair cancelled. SOL oracle ~114.90 (-0.48%), next rung 114.47 ($3 x11 -> avg 115.375, liq ~102.3). BTC long ~82610 (avg 83035.32, -0.51%, $100.50), bot re-placed TP1 83284.42 -> 83242.12 at 22:46, TP2 83658.08, next add 82234.02. ETH flat ~2560, short-only, entry RSI>55. On-chain triggers 2+2=4, no dupes. Analyst files fresh (22:48). Waller speech leverage-cut routine armed for 02:07. No setting changes.
+2026-10-07 23:18 MT  15-min check-in: 3 bots alive, no KILL/PAUSE; transient blips only (SOL DNS tick error 23:00, recovered next tick). No new fills/closes. SOL long oracle ~115.41 (avg 115.460, -0.04%, $100.50, coll $13.43, 1 add; bot re-placed TP1 115.75 -> 115.91 at 23:03 per 60% rule, TP2 116.21; best since placement 115.46; next add 112.99 -> avg 114.84, liq ~101.9). BTC long ~82727 (avg 83035.32, -0.37%, $100.50, coll $13.41; smart TP2 pulled 83658.08 -> 83515.56 under 2-touch resistance 83554.80 at 23:02; TP1 flipped 83242.12 -> 83284.42 at 23:16 (reverse of the 22:46 move, minor churn, watch); best 82935.66; next add 82250.01). ETH flat ~2566, short-only, idle loosening to RSI>52 (rsi 48.4). On-chain triggers 2+2=4 (SOL 115.91/116.21, BTC 83284.42/83515.56), no dupes. Empty USDC/WBTC/wSOL ATAs (~0.0045 SOL rent) left for reclaim when all bots flat. Analyst files fresh (23:15). Next events: Waller 02:30 (leverage-cut routine 02:07), jobless claims 06:30. No setting changes.
+2026-10-07 23:28 MT  15-min check-in: 3 bots alive, no KILL/PAUSE, no new errors since the 23:00 SOL DNS blip. No new fills/closes. SOL long oracle ~115.64 (avg 115.460, +0.16%, $100.50, coll $13.43, 1 add; TP 115.91/116.21; best since placement 115.69). BTC long ~82913 (avg 83035.32, -0.15%, $100.50, coll $13.41; TP 83284.42/83515.56; best 82935.66; next add 82250.01). ETH flat ~2572, short-only, idle loosening RSI>52. On-chain triggers 2+2=4, no dupes. Analyst files fresh (23:28), no regime change; SOL TP1 kept at 60% rule (analyst 'widen' 0.45->0.50 noted, not applied); BTC TP2 kept per Trevor's 0.75% start with smart TP2 under 2-touch resistance. Next events: Waller 02:30 (leverage-cut routine 02:07), jobless claims 06:30. No setting changes.
+2026-10-08 00:03 MT  15-min check-in: 3 bots alive, no KILL/PAUSE. Box overloaded (load avg ~53 at 23:50) -> all 3 bots' state CLI timed out at 240s around 23:44-23:48 (one missed tick each), recovered 23:51-52; watch. FILL: ETH short opened 23:30:57 (idle loosening reached RSI>50 at 90 min idle; rsi 51.3) $10.50 x7 = $73.50 at 2569.45, TPs 2557.89 (50%)/2550.18 (0.45%/0.75% per 60% rule), next add 2581.77 ($3 x9 -> avg 2572.75), liq ~2890. ETH oracle ~2561.3 (+0.32%, best 2561.3). SOL long ~114.92 (avg 115.460, -0.47%, $100.50, TP 115.91/116.21, best 115.80, next add 112.99). BTC long ~82781 (avg 83035.32, -0.31%, $100.50, TP 83284.42/83515.56, best 83035.60, next add 82228.56). On-chain triggers 2+2+2=6, no dupes. Wallet 1.4568 SOL native. Analyst files fresh (23:42), no regime change. Next: Waller 02:30 (leverage-cut routine 02:07), jobless claims 06:30. No setting changes.
+2026-10-08 00:06 MT  15-min check-in (follow-up to the delayed 00:03 run): 3 bots alive, no KILL/PAUSE. Intermittent RPC tick errors continue under box load (load avg 25-37, system telemetry process, not the bots): SOL 23:54 no-RPC + 00:01 timeout, ETH 23:56 no-RPC, BTC 23:57 timeout; each recovered next tick, on-chain TPs unaffected. No new fills/closes. SOL long oracle ~115.05 (avg 115.460, -0.36%, TP 115.91/116.21, next add 112.99). ETH short ~2561.3 (avg 2569.45, +0.32%, TP1 2557.89 ~0.13% away, TP2 2550.18). BTC long ~82669 (avg 83035.32, -0.44%, TP 83284.42/83515.56, next add 82228.56). Analyst files fresh (00:01-00:03). Nightly 00:05 profit stake not yet logged; verify next run. No setting changes.
+2026-10-08 00:17 MT  15-min check-in: 3 bots alive, no KILL/PAUSE; box load back to normal (1-min load 0.2); no new tick errors since 23:57. Nightly profit stake done 00:06: 0.002658 SOL (0.001315 carried from 10-07 + 0.001343 new realized from SOL+ETH trades) -> 0.002193 JupSOL, carry 0; JupSOL bucket now 0.003843 (~0.00466 SOL). No new fills/closes. SOL long oracle ~115.32 (avg 115.460, -0.12%, $100.50, coll $13.43, 1 add; TP 115.91/116.21; best 115.80; next add 112.99 -> avg 114.84, liq ~101.9). ETH short ~2569.6 (avg 2569.45, flat; TP 2557.89/2550.18; best 2560.01, a 2.1 near-miss on TP1; next add 2581.77, liq ~2890). BTC long ~82864 (avg 83035.32, -0.21%, $100.50, coll $13.41; TP 83284.42/83515.56; best 83035.60; next add 82238.86). On-chain triggers 2+2+2=6, matching state, no dupes. Wallet 1.4541 SOL native. Analyst files fresh (00:01-00:03), no regime change. Next: Waller 02:30 (leverage-cut routine 02:07), jobless claims 06:30. No setting changes.
+2026-10-08 00:34 MT  15-min check-in: 3 bots alive, no KILL/PAUSE, no new tick errors since 23:57; box load normal (0.5). FILL: ETH TP1 hit 00:27 at 2557.89 (half, $36.75 closed; realised +$0.165 gross, ~+$0.12 / ~0.0010 SOL net after open+close fees); USDC 5.356 swept back to SOL 00:27:25 (0.046630 SOL via GoonFi V2, ok); wallet 1.4541 -> 1.5045 SOL native (extra ~0.0037 SOL likely trigger-request deposit refund). ETH runner short $36.75 coll $5.22 avg 2569.45, oracle ~2556.5 (+0.50%), TP2 2550.18 (0.25% away, 1-touch support 2552 just above, left as is; smart TP2/fade/timer active), rsi 42.5. SOL long ~114.69 (avg 115.460, -0.67%, $100.50, TP 115.91/116.21, best 115.80, next add 112.99). BTC long ~82508 (avg 83035.32, -0.63%, $100.50, TP 83284.42/83515.56, best 83035.60, next add ~82238). On-chain triggers 2+1+2=5 matching state, no dupes. Analyst files fresh (00:24). Next: Waller 02:30 (leverage-cut routine 02:07), jobless claims 06:30. No setting changes.
+2026-10-08 00:49 MT  15-min check-in: 3 bots alive, no KILL/PAUSE, no new errors since 23:57. No new fills/closes. SOL long oracle ~115.02 (avg 115.460, -0.38%, $100.50, coll $13.43, 1 add; TP 115.91/116.21; best 115.80; next add 112.99 -> avg 114.84, liq ~101.9). ETH short runner $36.75 ~2562.4 (avg 2569.45, +0.27%; TP2 2550.18; best 2553.63; next add 2581.77). BTC long ~82717 (avg 83035.32, -0.38%, $100.50, coll $13.41; TP 83284.42/83515.56; best 83035.60; next add 82226.48). BTC TP1 flip-flopped again 83284.42->83242.20 (00:31) ->83284.42 (00:46), ~42 vs 35.6 min-move, raw TP2 base alternating 83641.85/83658.08; harmless (tiny tx fees, price far below), watch. On-chain triggers 2+1+2=5 matching state, no dupes. Wallet 1.5045 SOL native. Analyst files fresh (00:46), no regime change. Next: Waller 02:30 (leverage-cut routine 02:07), jobless claims 06:30. No setting changes.
+2026-10-08 01:04 MT  15-min check-in: 3 bots alive, no KILL/PAUSE, no new errors since 23:57. No new fills/closes. SOL long oracle ~114.97 (avg 115.460, -0.43%, $100.50, coll $13.43, 1 add; TP 115.91/116.21; best 115.80; next add 112.99 -> avg 114.84, liq ~101.9). ETH short runner $36.75 ~2565.3 (avg 2569.45, +0.16%; TP2 2550.18; best 2553.63; next add 2581.77, liq ~2880). BTC long ~82715 (avg 83035.32, -0.39%, $100.50, coll $13.41; TP 83284.42/83515.56; best 83035.60; next add 82225.14). No TP1 churn since 00:46. On-chain triggers 2+1+2=5 matching state, no dupes. Wallet 1.5045 SOL native. Analyst files fresh (01:01), no regime change. Next: Waller 02:30 (leverage-cut routine 02:07), jobless claims 06:30. No setting changes.
+2026-10-08 01:16 MT  15-min check-in: 3 bots alive, no KILL/PAUSE, no errors since 23:57 (last bar ticks 01:00, next 01:15). No new fills/closes. SOL long oracle ~115.44 (avg 115.460, ~flat, $100.50, coll $13.43, 1 add; TP 115.91/116.21; best 115.80; next add 112.99). ETH short runner $36.75 ~2569.2 (avg 2569.45, flat; TP2 2550.18; best 2553.63; post-TP1 55-min timer due ~01:22, closes only if net>0, else holds). BTC long ~83028 (avg 83035.32, ~flat, $100.50, coll $13.41; TP 83284.42/83515.56; best 83035.60; next add 82225.14). On-chain triggers 2+1+2=5 matching state, no dupes. Wallet 1.5045 SOL native, JupSOL 0.003843. Analyst files fresh (01:10), no regime change. Next: Waller 02:30 (leverage-cut routine 02:07), jobless claims 06:30. No setting changes.
+2026-10-08 01:31 MT  15-min check-in: 3 bots alive, no KILL/PAUSE, no errors since 23:57. No new fills/closes. SOL long oracle ~115.54 (avg 115.460, +0.07%, $100.50, coll $13.43, 1 add; TP 115.91/116.21; best 115.80; next add 112.99 -> avg 114.84, liq ~101.9). ETH short runner $36.75 ~2570.3 (avg 2569.45, -0.03%; TP2 2550.18; best 2553.63; post-TP1 timer expired 01:22, remainder net ~-$0.04 so holding with TP2+DCA, as designed; next add 2581.77). BTC long ~83091 (avg 83035.32, +0.07%, $100.50, coll $13.41; TP 83284.42/83515.56; best 83085.73; next add 82228.19). On-chain triggers 2+1+2=5 matching state, no dupes. Wallet 1.5045 SOL native, JupSOL 0.003843. Analyst files fresh (01:28), no regime change. Next: Waller 02:30 (leverage-cut routine 02:07), jobless claims 06:30. No setting changes.
+2026-10-08 01:54 MT  15-min check-in: 3 bots alive, no KILL/PAUSE, no errors since 23:57 (last bar ticks 01:45). No new fills/closes. SOL long oracle ~115.01 (avg 115.460, -0.39%, $100.50, coll $13.43, 1 add; TP 115.91/116.21; best 115.86; next add 112.99 -> avg 114.84, liq ~101.9). ETH short runner $36.75 ~2569.9 (avg 2569.45, -0.02%; TP2 2550.18; best 2553.63; timer expired, remainder net ~-$0.05 so holding with TP2+DCA; next add 2581.77, liq ~2880). BTC long ~82973 (avg 83035.32, -0.08%, $100.50, coll $13.41; TP 83284.42/83515.56; NEAR-MISS: spiked to best 83283.28 between 01:31-01:45, $1.14 shy of TP1, now back down; next add 82211.96). On-chain triggers 2+1+2=5 matching state, no dupes. Wallet 1.5045 SOL native, JupSOL 0.003843. Analyst files fresh (01:42), no regime change. Next: Waller 02:30 (leverage-cut routine 02:07), jobless claims 06:30. No setting changes.
+2026-10-08 02:09 MT  15-min check-in: ETH short (2nd trade) remainder closed by post-TP1 timer at 01:59 (net est +0.002 at close; exits TP1@00:27 MT|tp_timer@01:59 MT). Swap-back of the $5.22 USDC payout FAILED (Jupiter swap API 429 on all 4 bases) and the flat ETH bot never retries USDC (flat bots only sweep their own long token), so the trade booked -0.044330 SOL. Fixed: dry-run sim then manual swap via the bot's own sweep code (sig 5XCvf66ysrigLnJsFL3PSQsDTGYNrR568X7wmeEDEVF8XBA6xQJjFSXzNSyunsaXcUp9hmD4g5wibnuhsfYEy1aT, +0.045405 SOL, booked as ETH sweep row) -> true trade net +0.001075 SOL (~$0.12); ETH ledger 3 rows, cumulative +0.001750 SOL. Code fix live/bot.py (bak-20261008-0207): Bot.sweep retries a failed swap 3x (10/30/60s backoff) before giving up; 131 tests pass; ETH restarted while flat 02:07 (state kept). SOL/BTC still on old code: restart each when flat (BTC matters, its shorts pay USDC). SOL long ~114.87 (avg 115.460, -0.51%, $100.50, 1 add; TP 115.91/116.21; best 115.86; next add now 114.09 new analyst level -> avg 115.12, liq ~102.1). BTC long ~82949 (avg 83035.32, -0.10%; TP 83284.42/83515.56; best 83283.28; next add 82191.80). On-chain triggers 2+0+2=4 matching state, no dupes. Wallet 1.5536 SOL native, JupSOL 0.003843. Analyst files fresh (02:00). Next: Waller 02:30 (leverage-cut routine 02:07), jobless claims 06:30. No setting changes.
+2026-10-08 02:16 MT SELF-HEALING SWEEP (replaces the 02:07 retry-3 patch; backups *.bak-20261008-0211)
+  reason: 01:59 ETH close paid $5.22 USDC, swap-back hit Jupiter 429 on every base, and the flat bot never retried (flat
+          bots only swept their own long token). The 02:07 patch retried 3x (sleeping up to 100 s inside the tick) and then gave up.
+  change: live/sweep.py self_heal() runs on EVERY tick of every bot (flat or in a position), sweeping any USDC / ETH / WBTC
+          above bot.sweep_min_usd to SOL (never JupSOL / wSOL).
+          - Each attempt pins one API base (withdraw.stake_api_bases: api.jup.ag, then lite-api.jup.ag). A pre-send
+            429 / 5xx / timeout is retried with backoff 2 s, 4 s (2 rounds per tick); after that the token goes into a
+            shared cross-tick backoff of 60/120/240/480/900 s, and retries never stop.
+          - Sent-but-unconfirmed is never re-sent in the same tick (the next balance read decides).
+          - Slippage / impact caps unchanged (sweep_args).
+          - One sweeper at a time: flock on live/sweep.lock. live/sweep_state.json holds per-token claim / backoff /
+            last sweep. A balance read taken before another bot's sweep of that token is skipped.
+          - Attribution, fixed when proceeds appear: ETH -> ETH bot, WBTC -> BTC bot, USDC -> open short (ETH>BTC>SOL,
+            approximate if two are short at once), else a just-closed unbooked short, else the latest closed short.
+            If that trade is open, only its own bot sweeps and books into ledger_open sweep_sol. Once booked, it becomes
+            a late 'sweep' row in that bot's trades.csv with the trade's open_sig / position. The owning bot sweeps at
+            once; another bot takes over after 300 s (written in the file's existing header layout).
+          - Price cache live/sweep_px_<TOKEN>.json so other bots can dust-check ETH / WBTC.
+          live/ledger.py: ledger.at() context, per-dir .ledger.lock around update / write_row, write_row(keep_header),
+          write_sweep_row(open_sig, position, keep_header).
+          live/bot.py: Bot.sweep -> sweep.self_heal (retry-3 loop removed); chain() stamps st["_read_at"]. TS unchanged.
+  tests:  new tests/test_sweep_self_heal.py (18). conftest also redirects sweep.ROOT to tmp (chain block unchanged).
+          test_multi_asset::test_sweep_books_into_trade updated: ETH tokens seen while short -> late row for the earlier
+          long trade; USDC -> the open short (same 0.042 total, asserted). Full suite 149 passed.
+  restarts: ETH only (flat, state.json kept, backup state.json.bak-20261008-0213): 917200 -> 923726 (02:14:01), ticking
+          cleanly. SOL (769226) and BTC (748226) NOT restarted: both long (SOL $100.50, BTC $100.50), triggers 2+2
+          (SOL 115.91/116.21, BTC 83284.42/83515.56) at 02:13; they run old sweep code until restarted while flat.
+          Until then the ETH bot takes over any of their booked-trade leftovers after 300 s. Wallet USDC/ETH/WBTC all 0 at 02:13.
+2026-10-08 02:16 MT  Waller-speech risk guard (routine, one-off): [dca] lev_start 7.0 -> 5.0 in configs/live_100.toml, live_eth.toml, live_btc.toml
+          (backups *.toml.bak-20261008-0216; changes.log.bak-20261008-0216). Reason: Fed Gov. Waller speaks ~02:30 MT; lower first-entry
+          leverage on any new trade opened around the event. lev_step 2 / lev_cap 30 unchanged.
+  restarts: ETH only (flat, state.json kept, backup state.json.bak-20261008-0216): 923726 -> 926029 (02:16:41); log confirms
+          next first-entry plan $10.50 x5. SOL (769226) and BTC (748226) NOT restarted: both long with open TPs; they keep 7x
+          in memory for any new first entry until their next safe (flat) restart. Restore to 7.0 at/after 03:30 MT by the same routine.
+2026-10-08 02:19 MT  15-min check-in: 3 bots alive (SOL 769226, BTC 748226, ETH 923726 on new sweep code since 02:14), no KILL/PAUSE, no new errors (ETH 429 sweep failure fixed at 02:06). No new fills/closes. SOL long oracle ~114.91 (avg 115.460, -0.48%, $100.50, coll $13.43, 1 add; TP 115.91/116.21 under 116.96 R; best 115.86; next add 114.09/112.99, liq ~101.9). BTC long ~82946 (avg 83035.32, -0.11%, $100.50, coll $13.41; TP 83284.42/83515.56 under 83554.8 R; best 83283.28; next add 82191.80). ETH flat since 01:59, RSI 48.4, thresholds 45/55. On-chain triggers 2+0+2=4 matching state, no dupes. Wallet 1.5536 SOL native (incl. the 02:06 +0.0454 USDC swap-back), USDC/ETH/WBTC 0, JupSOL 0.003843. Analyst files fresh (02:11): SOL/ETH/BTC 1h+4h downtrend. Waller speech 02:30; leverage-cut routine was editing configs at 02:16, so no config changes from this check-in. Pending SOL/BTC restart + BTC TP1 0.45% + rent reclaim still wait for flat. Neither open trade net positive, so no early close.
+2026-10-08 02:38 MT  15-min check-in: 3 bots alive (SOL 769226, BTC 748226, ETH 926029), loops ticking (last bars 02:30), no KILL/PAUSE, no new errors. No fills/adds/closes. SOL long oracle ~114.67 (avg 115.460, -0.68%, $100.50, coll $13.43; TP 115.91/116.21, best 115.86; next add 114.09, liq ~102). BTC long ~82739 (avg 83035.32, -0.36%, $100.50, coll $13.41; TP 83284.42/83515.56, best 83283.28; next add 82191.80). ETH flat, RSI 47.2, thresholds 45/55 (idle 30 min). On-chain triggers 2+2+0 match state, no dupes. Wallet 1.5536 SOL, no non-SOL proceeds logged since 01:59. Analyst files fresh (02:28). Post-Waller drift lower; lev_start stays 5 (leverage-cut routine restores at 03:30; analyst suggests 3-5x until 15:00 MT on selloff/oil risk). No config changes. Pending SOL/BTC restart, BTC TP1 0.45%, rent reclaim still wait for flat. Neither trade net positive, no early close.
+2026-10-08 02:40 MT  Waller-speech risk guard (routine, 2:37 slot): no-op. lev_start already 5.0 in all three configs (set 02:16). ETH flat, already running 5x since 02:16 restart (926029). SOL (769226) and BTC (748226) still long with open TPs, not restarted. Restore to 7.0 due at/after 03:30 MT.
+2026-10-08 02:42 MT  15-min check-in: 3 bots alive (SOL 769226, BTC 748226, ETH 926029), last bars 02:30 (next 02:45), no KILL/PAUSE, no errors. No fills/adds/closes since 02:38 check-in. SOL long avg 115.460 $100.50 (TP 115.91/116.21, next add 114.09); BTC long avg 83035.32 $100.50 (TP 83284.42/83515.56, next add 82191.80); ETH flat RSI 47.2. Wallet 1.5536 SOL. Analyst files fresh (02:28). No config changes; pending SOL/BTC restart, BTC TP1 0.45%, rent reclaim still wait for flat.
+2026-10-08 03:06 MT  15-min check-in: 3 bots alive (SOL 769226, BTC 748226, ETH 926029), last bars 02:45 (logged 03:00), no KILL/PAUSE, no errors, no TP-check mismatches. No fills/adds/closes. SOL long oracle ~114.89 (avg 115.460, -0.50%, $100.50, 1 add; TP 115.91/116.21, best 115.86; next add 114.09, liq ~102). BTC long ~82824 (avg 83035.32, -0.25%, $100.50; TP 83284.42/83515.56, best 83283.28; next add 82191.80). ETH flat, RSI 42.5, downtrend so shorts only (>52, idle 60 min). Wallet 1.553595 SOL, JupSOL 0.003843, no non-SOL proceeds. Analyst files fresh (02:58), 1h+4h downtrend on all three; next scheduled high-impact event CPI Oct 14. No config changes; pending SOL/BTC restart, BTC TP1 0.45%, rent reclaim still wait for flat. Neither trade net positive, no early close.
+2026-10-08 03:13 MT  15-min check-in: 3 bots alive (SOL 769226, BTC 748226, ETH 926029), last bars 02:45 (logged 03:00, next 03:15), no KILL/PAUSE, no new errors. No fills/adds/closes since 03:06. SOL long avg 115.460 $100.50 (oracle ~114.89, TP 115.91/116.21, next add 114.09); BTC long avg 83035.32 $100.50 (~82824, TP 83284.42/83515.56, next add 82191.80); ETH flat RSI 42.5. Wallet 1.553595 SOL, JupSOL 0.003843. Analyst files fresh (02:58). No config changes; lev_start 5 restore to 7 due 03:30 via guard routine; pending SOL/BTC restart, BTC TP1 0.45%, rent reclaim still wait for flat. No early close (neither trade net positive).
+2026-10-08 03:14 MT  Waller-speech risk guard (routine, 3:07 slot, fired 03:14): no-op. lev_start already 5.0 in all three configs (set 02:16); no restarts. SOL/BTC still long with open TPs; ETH flat on 5x. Restore to 7.0 due at the 03:37 run.
+2026-10-08 03:30 MT  15-min check-in: 3 bots alive (SOL 769226, BTC 748226, ETH 926029), last bars 03:00 (logged 03:15, next 03:30), no KILL/PAUSE, no new errors since 23:57. No fills/adds/closes. On-chain: 2 positions (SOL long $100.50 coll $13.43, BTC long $100.50 coll $13.41) + 4 TP triggers (SOL 115.91/116.21, BTC 83284.42/83515.56), match state, no dupes. SOL oracle ~114.94 (avg 115.460, -0.45%, best 115.86, next add 114.09); BTC ~82942 (avg 83035.32, -0.11%, best 83283.28, next add 82191.80); ETH flat RSI 47.7, shorts >52. Wallet 1.553595 SOL, USDC/ETH/WBTC 0, JupSOL 0.003843. Analyst files fresh (03:27); next scheduled high-impact CPI Oct 14 (analyst still suggests 3-5x until 15:00 MT on selloff/oil risk; lev restore is the guard routine's call at 03:37). No config changes; pending SOL/BTC restart, BTC TP1 0.45%, rent reclaim still wait for flat. Neither trade net positive, no early close.
+2026-10-08 03:46 MT  Waller-speech risk guard (routine, 3:37 slot, fired 03:46): RESTORE [dca] lev_start 5.0 -> 7.0 in configs/live_100.toml,
+          live_eth.toml, live_btc.toml (backups *.toml.bak-20261008-0346; changes.log.bak-20261008-0346). Reason: event window over.
+          lev_step 2 / lev_cap 30 unchanged. NO restarts: all three bots now hold positions. SOL long (769226, 2 entries, TP 115.91/116.21),
+          BTC long (748226, 2 entries, TP 83284.42/83515.56), and ETH opened a new short at 03:45:42 (926029, $10.50 x5 from the
+          02:16 lev cut, avg 2566.37, TP 2554.82/2549.86). Running processes keep their in-memory first-entry leverage (SOL/BTC 7x,
+          ETH 5x) until each bot's next safe (flat) restart, which picks up 7x from config. Guard routine deleted after this run.
+2026-10-08 03:48 MT  15-min check-in: 3 bots alive (SOL 769226, BTC 748226, ETH 926029), last bars 03:30 (logged 03:45), no KILL/PAUSE, no new errors since 23:57. NEW FILL: ETH short opened 03:45:40 at 2566.37, $52.50 size, coll $10.45 (0.0912 SOL), 5x (lev_start still 5 from Waller guard), on idle-loosened threshold (RSI 50.3 > 50, idle 105 min); TPs 2554.82 (50%, -0.45%) / 2549.86 (100%, smart TP2 pulled in above 2-touch 1h support 2548.34); entry sits just above 4h support 2563.33; next add 2581.77 (1h R, 2 touches). SOL long avg 115.460 $100.50 (oracle ~115.13, -0.29%, TP 115.91/116.21, best 115.86, next add 114.09). BTC long avg 83035.32 $100.50 (~83083, +0.06%, TP 83284.42/83515.56, best 83283.28, next add 82191.80). On-chain: 3 positions + 6 TP triggers (2 each), match state, no dupes. Wallet 1.454909 SOL native, USDC/ETH/WBTC 0, JupSOL 0.003843. Analyst files fresh (03:39), no pause windows; analyst ETH rec TP1 $9/TP2 $14 vs live $11.55/$16.51 (TP1 ~70% of TP2 after smart pull-in) - left as placed, not worth a mid-trade re-place. No config changes; pending SOL/BTC restart, BTC TP1 0.45%, rent reclaim still wait for flat. No trade net positive after fees, no early close.
+2026-10-08 04:08 MT  15-min check-in: 3 bots alive (SOL 769226, BTC 748226, ETH 926029), last bars 03:45 (logged 04:00, next 04:15), no KILL/PAUSE, no new errors. No fills/adds/closes. On-chain: 3 positions + 6 TP triggers (SOL 115.91/116.21, ETH 2554.82/2549.86, BTC 83284.42/83515.56), match state, no dupes. SOL long avg 115.460 $100.50 (oracle ~115.04, -0.36%, best 115.86, next add 114.09). ETH short avg 2566.37 $52.50 (~2565.40, +0.04%, best 2563.55, next add 2581.77). BTC long avg 83035.32 $100.50 (~83058, +0.03%, best 83283.28, next add 82191.80). Wallet 1.454909 SOL native, USDC/ETH/WBTC 0, JupSOL 0.003843. Analyst files fresh (04:00); next scheduled event 30y auction 11:00 MT (med, analyst suggests 3-5x 10:45-11:30). No config changes; none net positive after fees, no early close. Pending SOL/BTC/ETH flat restarts, BTC TP1 0.45%, rent reclaim still wait for flat.
+2026-10-08 04:13 MT  15-min check-in: 3 bots alive (SOL 769226, BTC 748226, ETH 926029), last bars 03:45 (logged 04:00, next 04:15), no KILL/PAUSE, no new errors. No fills/adds/closes since 04:08. SOL long avg 115.460 $100.50 (~115.03, -0.37%, TP 115.91/116.21, best 115.86, next add 114.09). ETH short avg 2566.37 $52.50 (~2563.75, +0.10%, TP 2554.82/2549.86, best 2563.55, next add 2581.77). BTC long avg 83035.32 $100.50 (~83042, +0.01%, TP 83284.42/83515.56, best 83283.28, next add 82191.80). On-chain TP set verified at 04:08 (6 triggers, no dupes); no state changes since. Analyst files fresh (04:09). No config changes; none net positive after fees, no early close. Pending SOL/BTC/ETH flat restarts, BTC TP1 0.45%, rent reclaim still wait for flat.
+2026-10-08 04:31 MT  15-min check-in: 3 bots alive (SOL 769226, BTC 748226, ETH 926029), no KILL/PAUSE, no errors. ETH TP1 FILLED 04:27:22 at 2554.82 (half, size 52.50 -> 26.25; ~+$0.118 gross, ~+$0.087 after open/close fees on that half, ~+0.0008 SOL; final net booked at trade close). Swap-back OK: sweep 04:27:29 USDC $5.32 -> +0.046473 SOL (sig 4DicCt...), USDC now 0. ETH runner TP2 kept at 2549.86 (just above 2-touch 1h support 2548.34; next support 2533.10; 4h RSI 26 oversold, 1h MACD hist +3.5 -> no extension through 2x-tested support per Trevor's ETH rule); runner ~+$0.10 at oracle 2556.27, net positive. SOL long avg 115.460 $100.50 (oracle 114.50, -0.84%, TP 115.91/116.21, next add 114.09). BTC long avg 83035.32 $100.50 (oracle 82765, -0.33%, TP 83284.42/83515.56, next add 82191.80). On-chain: 3 positions + 5 TP triggers (SOL 2, BTC 2, ETH TP2 only), no dupes. Wallet 1.505106 SOL, USDC/ETH/WBTC 0, JupSOL 0.003843. Analyst files fresh (04:23). Next event 06:30 jobless claims (med). No config changes, no early close. Pending flat restarts, BTC TP1 0.45%, rent reclaim still wait for flat.
+2026-10-08 04:49 MT  15-min check-in + FIX: SOL bot HALTED 04:31:53 (KILL "TP1 re-place failed"): smart-TP fade pull-in cancelled TP1 115.91 and the new 115.75 placement failed with Jupiter Custom 6003 = StaleOraclePrice (transient), leaving the SOL long with TP2 116.21 only and DCA adds blocked. Fixed ~04:46: placed TP1 115.75 ($50.25, sig b7tasq88...) manually, moved KILL to live/KILL.cleared-20261008-0450, bot adopted on-chain triggers [115.75, 116.21] at 04:46:22 and resumed (no add missed: low while halted 114.30 vs add 114.09). Code: live/bot.py place_tp now retries StaleOraclePrice (6003) up to 2x with 5s waits instead of halting (backup bot.py.bak-20261008-0451, 149 tests pass); SOL/BTC pick it up at their flat restarts.
+  - ETH TP2 FILLED 04:43 at 2549.86: short closed, trade net +0.002260 SOL (~$+0.26) after fees (TP1 04:27 + TP2 04:43); swap-back OK, USDC $5.38 -> +0.047026 SOL (sig cKpgWJA9...). ETH flat with no requests -> restarted ETH child (926029 -> 999970, state.json kept, backup state.json.bak-20261008-0452); log confirms first-entry plan $10.50 x7, hash fce58112. ETH pending-maintenance item done.
+  - SOL long avg 115.460 $100.50 (oracle ~114.46, -0.87%, TP 115.75/116.21, next add 114.09). BTC long avg 83035.32 $100.50 (~82665, -0.45%, TP 83284.42/83515.56, next add 82191.80). On-chain: SOL 2 + BTC 2 triggers, ETH 0, no dupes. Analyst files fresh (04:40). Next event 06:30 jobless claims (med). No config changes, no early close. Pending: SOL/BTC flat restarts, BTC TP1 0.45%, rent reclaim.
+2026-10-08 05:05 MT  15-min check-in: 3 bots alive (SOL 769226, BTC 748226, ETH 999970), last bars 10:45Z logged 05:00-05:01, no KILL/PAUSE, no new errors since the 04:31 halt fix. No fills/adds/closes since 04:49. SOL long avg 115.460 $100.50 (oracle 114.255, -1.04%, TP 115.75/116.21, best 115.86, next add 114.09 -> avg 115.118, liq after add 102.12). BTC long avg 83035.32 $100.50 (~82684, -0.42%, TP 83284.42/83515.56, best 83283.28, next add 82191.80). ETH flat, 7x first-entry plan $10.50, RSI 36.7 (no trigger). No non-SOL proceeds since 04:43 sweep. Analyst files fresh (04:58). Next: 06:30 jobless claims (med, analyst: avoid new opens 06:25-06:45; no auto-pause, only ETH could open, $10.50 size, left as is). No config changes, no early close (none net positive). Pending: SOL/BTC flat restarts, BTC TP1 0.45%, rent reclaim.
+2026-10-08 05:18 MT FIX: BTC bot HALTED 05:12:42 (KILL "TP2 cancel failed"). Periodic smart TP moved TP2 83515.56 -> 83406.95 (under 2-touch R 83448.13 - 0.1 ATR); the cancel of AgAMDPRt... "failed" with Custom 3012 (AccountNotInitialized).
+  root cause: send.ts escalation race, not a stale address. The cancel was sent, not seen confirmed within 5 s, and re-signed at 3x priority. Both versions landed in the SAME slot 454527833 (same blockhash): the escalated one 2fNQnY8g... (fee 6378) closed the request OK, then the original hSqeyJcF... (fee 5460) hit 3012 because the account was already closed. sendBuilt returns sigs[0] (the original) when both confirm, so the bot saw ok=false and halted with TP2 already cancelled (BTC long TP1-only, adds blocked).
+  on-chain check 05:13: BTC long unchanged $100.50, coll $13.41, avg 83035.31 (no fill); requests: only TP1 83284.42 (E3sJ5jHP...); AgAMD... gone. Note: with TP2 missing, the bot would only have logged "TP check skipped: 1 trigger vs 2 levels" after a plain KILL clear, so TP2 had to be placed first.
+  restore: dry-run sim OK, then placed TP2 83406.95 entire (sig 2rvy7X4u..., request HDAp3qKM..., fee 8005 lamports booked to BTC ledger, plus the missed 6378 of the escalated cancel). Moved live/btc/KILL -> live/btc/KILL.cleared-20261008-0514. Bot (748226, no restart) logged "TP check: adopted on-chain triggers [83284.42, 83406.95]" 05:14:51, bar 11:00Z at 05:16:04 (add plan 82191.80 intact). 05:17:06 the bot itself moved TP1 83284.42 -> 83241.99 (above-water TP1 = avg + fees + deep_buffer 107.08, since price is > 1 ATR under avg; cancel+place OK, sig P7Y72CVX...). BTC on-chain now: TP1 83241.99 ($50.25) + TP2 83406.95 (entire), no dupes.
+  code: live/bot.py (backup bot.py.bak-20261008-0514; tests/test_smart_tp_idle.py.bak-20261008-0514): new Bot.cancel_request(): retries StaleOraclePrice 6003 up to 2x (5 s), like place_tp; on any other failure re-reads the chain: request still there -> "failed" (halt as before); gone + size unchanged -> treated as cancelled (logs the 3012) and the new trigger is placed; gone + size changed -> "filled", nothing placed, next tick reconciles (no halt). check_tps and cancel_all use it. 5 new tests (3012 gone/still-there/filled, 6003 retry + 3x-6003 halt, cancel_all) -> 154 pass, no chain access. ETH restarted onto the new code while flat with no requests (999970 -> 1018613, state.json kept, backup state.json.bak-20261008-0517, hash fce58112). SOL (769226) / BTC (748226) keep old code until their flat restarts.
+  SOL: no add yet. 10:45Z bar closed 114.41 (> 114.09); analyst update 05:12 (price 113.53) dropped 114.09 from supports (it lists supports < price only), so at the 11:00Z close 113.65 the bot's plan had already moved to 112.99 (-> avg 114.840, liq 101.87). SOL long $100.50 avg 115.460, coll $13.43, liq ~101.19; on-chain TPs 115.75 (TP1 $50.25) / 115.76 (entire; fade pull-in 05:13, TP1 kept since its move 0.04 < 0.05), no dupes. Wallet 1.5558 SOL. No config changes, no closes.
+2026-10-08 05:22 MT  15-min check-in (routine run, alongside the 05:14 BTC halt fix already logged above): SOL 769226, BTC 748226, ETH alive; no KILL/PAUSE. On-chain 05:19: SOL 2 triggers 115.75/115.76, BTC 2 triggers 83241.99/83406.95, ETH 0; no dupes; USDC/ETH/WBTC 0. SOL long avg 115.460 $100.50 (oracle ~113.29, -1.9%, next add 112.99 after the analyst dropped 114.09; runner collapsed onto TP1 by the 05:13 fade pull-in, whole exit ~115.75 nets ~+$0.08). BTC long avg 83035.32 $100.50 (~82360, -0.8%, next add 82191.80, 0.2% away). ETH flat, RSI 29 (no short trigger). Analyst files fresh (05:12).
+  FIX (churn): BTC TP1 flipped 83284.42 <-> ~83242 five times since 22:46 (above-water TP1 toggling as price hovers ~1 ATR under avg; each flip = cancel + place, and a failed cancel is what halted BTC at 05:12). strategy.py (backup strategy.py.bak-20261008-0519): once above-water TPs engage for a position (same side, entry count, avg) they stay latched until the position changes; live smart-TP only (smart_tp2), backtests unchanged. New tests/test_aw_hysteresis.py (3) -> 157 pass. ETH (flat, no requests) restarted 05:20 to load it (state.json kept, backup state.json.bak-20261008-0526). SOL/BTC pick it up at their pending flat restarts. No config changes, no early close (none net positive).
+2026-10-08 05:31 MT CODE (Trevor approved 05:19): live/src/send.ts sendBuilt now reports the copy that SUCCEEDED when several re-signed copies of a tx land (the 05:12 BTC halt cause: the escalated cancel succeeded, the original failed 3012 in the same slot, and sigs[0] = the failure was returned). Failure is reported only if no copy succeeded; with >1 copy and only failures seen, it re-polls up to 4x 1.5 s (searchTransactionHistory) for a sibling still landing. Same "prefer success" pick on the blockhash-expiry path. Fee is read from the reported sig. Backup send.ts.bak-20261008-0520.
+  safety: no build step (CLI runs src via npx tsx, picked up by each new CLI call). Type-checked (tsc --noEmit, same flags as baseline: clean) and checked offline against a mock connection with a throwaway keypair (no RPC): both land/original failed -> escalated success reported; only failure lands -> failure after grace; single success unchanged; late original success -> success. Swapped atomically 05:20:24 (temp file + mv) with no CLI send in flight (last bot tx 05:17:13, next bars 05:30).
+  verify: read-only CLI after the swap: state BTC OK (triggers 83241.99/83406.95, size $100.50), simulate-cancel OK (sim only, not sent), token-accounts OK; tsc on live src clean; pytest 157 pass (154 + 3 from test_aw_hysteresis.py added 05:20 by the parallel churn fix). 11:15Z bars ticked normally at 05:30-05:31 on SOL (769226), BTC (748226) and ETH (1023100, restarted 05:20:35 by the churn-fix session); no WARNING/ERROR since; no KILL. No fund moves, no closes.
+2026-10-08 05:38 MT  15-min check-in: SOL 769226, BTC 748226, ETH 1023100 alive, bars ticked 05:30-05:31, no KILL/PAUSE, no WARNING/ERROR since 05:17. On-chain: SOL 2 triggers 115.75/115.76, BTC 2 triggers 83241.99/83406.95, ETH none; no dupes; USDC/WBTC/WSOL token accounts empty (rent only), ETH ATA absent. SOL long avg 115.460 $100.50 (oracle ~113.33, -1.8%, next add 112.99 ~0.3% away). BTC long avg 83035.32 $100.50 (~82394, -0.8%, next add 82191.80 ~0.25% away; TP2 83406.95 ~ analyst's tighter TP2). ETH flat (RSI no trigger). Analyst files fresh (05:29), no event pause; next med event US jobless claims 06:30. No tuning, no closes (none net positive); pending SOL/BTC flat restarts still waiting.
+2026-10-08 05:44 MT  15-min check-in: SOL 769226, BTC 748226, ETH 1023100 alive, last bars 05:30-05:31 (next 05:45), no KILL/PAUSE, no WARNING/ERROR since 05:17. On-chain: SOL 2 triggers 115.75/115.76, BTC 2 triggers 83241.99/83406.95, ETH none; no dupes; USDC/WBTC/WSOL 0 (rent only), ETH ATA absent. SOL long avg 115.460 $100.50 (oracle 113.53, -1.7%, next add 112.99 ~0.5% away). BTC long avg 83035.32 $100.50 (82569, -0.6%, next add 82191.80 ~0.5% away). ETH flat. Analyst files fresh (05:29). No tuning, no closes; pending SOL/BTC flat restarts still waiting.
+2026-10-08 06:10 MT  15-min check-in: SOL 769226, BTC 748226, ETH 1023100 alive, bars ticked 06:00-06:01, no KILL/PAUSE; one transient BTC kline fetch HTTP 500 at 06:00:05, recovered on retry 06:01 (no action). On-chain: SOL 2 triggers 115.75/115.76, BTC 2 triggers 83241.99/83406.95, ETH none; no dupes; USDC/WBTC/WSOL 0 (rent only), ETH ATA absent. SOL long avg 115.460 $100.50 (oracle 113.13, -2.0%, next add 112.99 ~0.1% away, liq ~101.2). BTC long avg 83035.32 $100.50 (82348, -0.8%, next add 82191.80 ~0.2% away). ETH flat (RSI ~31, downtrend, no short trigger). Analyst files fresh (05:57); next med event US jobless claims 06:30, next high CPI Oct 14. No tuning, no closes (none net positive); pending SOL/BTC flat restarts still waiting.
+2026-10-08 06:25 MT  15-min check-in: SOL 769226, BTC 748226, ETH 1023100 alive, bars ticked 06:15, no KILL/PAUSE, no new WARNING/ERROR since the 06:00 BTC kline 500. On-chain: SOL 2 triggers 115.75/115.76, BTC 2 triggers 83241.99/83406.95, ETH none; no dupes; USDC/WBTC/WSOL 0 (rent only), ETH ATA absent. SOL long avg 115.460 $100.50 (oracle 113.22, -1.9%, next add 112.99 ~0.2% away; 15m close 113.01 just held it). BTC long avg 83035.32 $100.50 (82423, -0.7%, next add 82191.80 ~0.3% away). ETH flat (RSI ~30, downtrend, thresholds loosened to 50/50 at 92 min idle). Analyst files fresh (06:17); US jobless claims 06:30 (med). No tuning, no closes (none net positive); pending SOL/BTC flat restarts still waiting.
+2026-10-08 06:42 MT  15-min check-in: SOL 769226, BTC 748226, ETH 1023100 alive, bars ticked 06:30-06:31, no KILL/PAUSE, no WARNING/ERROR. FILL: SOL add #2 (entry 3) 06:30:27 at ~112.79 (15m close 112.92 < 112.99 rung), margin $3.00 x11 = $33 notional (0.0266 SOL, sig MT3SeJaQ...); on-chain now long $133.50 avg 114.764 coll $16.39 (~8.1x, liq ~101-102). Bot cancelled both old TPs and placed above-water TP1 115.05 ($66.75, avg+fees+0.15) + TP2 115.51 entire (avg+0.75, under 1h res 115.76); on-chain 2 triggers, no dupes. Oracle 112.76 (-1.7%), next rung 112.48 (4h support, 0.24 away), deep 107.38. BTC long avg 83035.32 $100.50 (oracle 82307, -0.9%, next add 82191.80 ~0.14% away); triggers 83241.99/83406.95, no dupes. ETH flat (RSI ~30, short-only, thresholds 50/50). USDC/WBTC/WSOL 0, ETH ATA absent; wallet 1.5292 SOL. Analyst files fresh (06:30), no event pause. No tuning, no closes; pending SOL/BTC flat restarts still waiting.
+2026-10-08 06:57 MT  15-min check-in: SOL 769226, BTC 748226, ETH 1023100 alive, bars ticked 06:45-06:46, no KILL/PAUSE, no WARNING/ERROR. No fills/adds/closes since 06:42. On-chain 06:56: SOL long $133.50 avg 114.764 coll $16.39 (oracle 112.54, -1.9%), triggers 115.05/115.51; BTC long $100.50 avg 83035.31 coll $13.41 (oracle 82259, -0.9%, next add 82191.80 ~0.08% away), triggers 83241.99/83406.95; ETH flat (RSI ~28, short-only 50/50), 0 triggers; no dupes. USDC/WBTC/WSOL 0 (rent only), ETH ATA absent; wallet 1.529165 SOL, JupSOL 0.003843. SOL next add 111.94 (log 06:45). Analyst files fresh (06:45). NOTE: the 06:51 TP1 60%-ratio change (strategy.py + all 3 configs edited 06:53-06:54) is being applied by a parallel session; SOL/BTC on-chain TP1s are still the old above-water 115.05 / 83241.99 and the SOL/BTC processes still run pre-change code, so this check-in made no TP/config/restart changes to avoid colliding with it. No closes (none net positive).
+2026-10-08 07:05 MT TP1 60% RATIO RULE + FADE FLOOR, all bots (Trevor 06:51 MT: "if you move the tp tight like that after risk then you
+          risking for not much reward ... be profit aware"). Backups *.bak-20261008-0653 (strategy.py, dca_levels.py, config.py,
+          configs/live_100|btc|eth.toml, tests/test_aw_hysteresis.py, tests/test_smart_tp_idle.py, live/patches/gen_asset_configs.py).
+  code:   config.py [tp] new keys: tp1_mode ("ladder" default = old behaviour incl. above-water | "ratio"), tp1_ratio (0.6),
+          tp1_ratio_scope ("all" | "after_add"), tp_fade_floor_at_tp1 (bool), tp_res_min_dist_frac (0 = off, see below).
+          dca_levels.smart_tps: ratio mode TP1 = avg + tp1_ratio x (TP2 after the resistance cap, before any fade - avg),
+          mirror for shorts; fee floor (each half nets >= tp_min_net_usd), tp_min_gap_usd and never-past-market unchanged.
+          Fade floor: a faded TP2 = max(swing target, pre-fade ratio TP1 + tp_min_gap_usd); the fade never pushes TP2 out.
+          strategy.tp_targets: above-water TP1 (avg + fees + deep_buffer) and its 05:19 hysteresis latch are OFF when
+          tp1_mode = ratio (kept for ladder mode / backtests). Non-smart path also honours the ratio.
+  config: all 3 live configs: tp1_mode = "ratio", tp1_ratio = 0.6, tp1_ratio_scope = "all", tp_fade_floor_at_tp1 = true.
+          BTC levels[0] 0.0030 -> 0.0045 (ladder fallback only; ratio already gives 0.45% of a 0.75% TP2) -> the pending
+          "BTC TP1 to 0.45% when flat" item is superseded/DONE. Generator line updated to 0.0045.
+  item 3 (trim of heavy positions): there is NO partial-reduce/trim logic in the bots (only full closes: margin/price stop
+          (both OFF), post-TP1 timer (only if net > 0), KILL close_all_on_kill (false), trend_flip_exit (false)). Danger rules
+          only gate ADDS: require_liq_beyond_next_level + liq_buffer_atr 2.0 (post-add liq >= 2 ATR beyond the next rung,
+          else the add shrinks/skips). Nothing fires early, nothing changed.
+  note:   the 05:13 SOL squeeze (TP 115.75/115.76) came from the RESISTANCE CAP (new 1h R 115.76 only +0.30 above avg 115.46 ->
+          TP2 115.676 -> fee floors), not from the fade target (115.82). The fade floor alone would not change that case.
+          Optional knob tp_res_min_dist_frac (default 0 = OFF, not enabled): TP2 cap ignores levels closer to avg than this x the
+          plain TP2 distance (0.6 would have given 115.91/116.21, faded 115.91/115.96). Needs Trevor's OK to enable.
+  tests:  new tests/test_tp1_ratio.py (19); test_smart_tp_idle.py / test_aw_hysteresis.py pinned to tp1_mode=ladder (they verify the
+          ladder/above-water rules). Full suite 176 passed (157 + 19), no chain access.
+  restarts (each right after the 07:00 bar tick, child idle with no CLI in flight; state.json backed up *.bak-20261008-0701xx-prerestart,
+          ledger_open.json *.bak-20261008-0701-prerestart): ETH (flat, 0 requests) 1023100 -> 1082454; SOL 769226 -> 1082514;
+          BTC 748226 -> 1082609 (with live/btc/KILL set 07:01 first). SOL/BTC now also run the pending code (self-healing sweep,
+          6003 retry, cancel 3012 fix, send.ts success pick, ledger rent/event columns).
+          SOL: new process adopted state, then itself re-placed TP1 115.05 -> 115.21 at 07:01:24 (cancel 3LQ3dibU..., place
+          3KRnDLY7..., $66.75); TP2 115.51 (avg + 0.75, R 115.76 - 0.087 = 115.67 not binding) untouched.
+          BTC: target TP1 83258.30 moved only 16.3 < tp_min_move 35.3, so the bot would have kept 83241.99 -> manual re-place while
+          KILL present: live/patches/replace_tp1_20261008.py (dry run 06:59 + 07:02 sims OK), cancel 83241.99 (4vNnMd4q...) then
+          place 83258.30 $50.25 (ESzDJgzr...), fees booked to the BTC ledger; KILL -> live/btc/KILL.cleared-20261008-0702;
+          bot adopted [83258.3, 83406.95] at 07:03:32, no re-place (matches new rule). TP2 83406.95 = R 83448.13 (3 touches) - 0.1 ATR.
+  on-chain 07:03: SOL long $133.50 avg 114.764 coll $16.39: 2 triggers 115.21 (TP1 $66.75) / 115.51 (entire). Est. net if both hit
+          +$0.179 + $0.354 = +$0.53 (was +$0.44 with 115.05). BTC long $100.50 avg 83035.31 coll $13.41: 2 triggers 83258.30
+          (TP1 $50.25) / 83406.95 (entire). Est. net +$0.075 + $0.164 = +$0.24 (was +$0.23). ETH flat, 0 triggers. No dupes.
+          (6+6 bps open/close fee est, excl. borrow and network fees.) Wallet 1.5291 SOL (reserve 0.02 intact). No closes, no fund moves.
+  pending-maintenance: no routine prompt file on disk; "BTC TP1 0.45% when flat" is done by this change; "SOL/BTC flat restarts" done.
+07:52 MT hourly quickcheck: quiet
+10:27 MT hourly quickcheck + FIX: SOL bot HALTED 09:30:12 (KILL "add not confirmed on-chain"): add $241.63 (0.1479 SOL coll, 15x, sig 2SEKng1w...) DID fill; the bot's immediate chain read lagged the keeper. On-chain: SOL long $426.46 avg 110.977 coll $36.23 (fill ~108.88); old TPs 114.29/114.59 still sized for $184.83.
+  fix: stopped wrapper 482530/child 1082514, backups state.json/ledger_open.json .bak-20261008-1024, state.json n_entries 4->5, last_size 426.46, last_leverage 15, last_entry 108.88, tp_hits 0; ledger.update(add_entry, fee 6032, size 426.46, avg 110.977). Restarted run_bot.sh (wrapper 1183219, child 1183222) with KILL present, verified state loaded, KILL -> KILL.cleared-20261008-1025. Bot re-placed TPs 10:25: TP1 111.43 ($213.23, 60% rule) + TP2 111.73 entire; on-chain 2 triggers, no dupes. Next add 108.03 ($4.56 x17, liq after ~102.7). No code change (known gap: add confirmation should poll/retry like cancel_request; not changed per minimal-changes rule).
+  BTC: add 10:01 normal, long $172.50 avg 82331.75 coll $19.33, TPs 82702.24/82949.23. ETH flat. Wallet 1.2912 SOL. No closes, no fund moves.
+2026-10-08 13:20 MT FEATURE: time-based per-add trim, SOL only (Trevor's request/design 13:00 MT) + tolerant add/trim confirmation (known 09:30 gap).
+  code: live/trim.py (new, pure helpers); live/bot.py (lots per entry/add in state.json: time, fill price from Jupiter's size/avg
+          change, size, collateral, lev; maybe_trim/execute_trim; overall-net TP guard; confirm_size); config.py [trim] (TrimConfig,
+          default OFF); live/ledger.py (side "trim" rows with on-chain realized + lot-based gain, net_sol 0 / not counted as trades;
+          trade rows gain trims / trim_onchain_pnl_usd / trim_lot_gain_usd / true_result_usd / true_result_sol); quickcheck.sh PAT += TRIM.
+          Backups *.bak-20261008-1308 (config.py, live/bot.py, live/ledger.py, live/quickcheck.sh, configs/live_100.toml).
+  rule:   [trim] enabled=true (SOL only; ETH/BTC configs untouched -> off), trim_after_hours 4.0, trim_clock "last_add" (wait counts from
+          the most recent add, or the open if no adds; any net-positive moment restarts it), trim_min_net_usd 0.25, trim_min_gain_pct
+          0.005, trim_network_usd 0.02, trim_check_min 1, trim_max_per_day 0 (off). Eligible -> every add lot (never the first entry)
+          whose own gain >= 6+6 bps + network est + $0.25 and >= 0.5 % closes at market for exactly its size in ONE decrease
+          (collateralUsdDelta 0: collateral stays). Lots removed, n_entries/last_entry/last_leverage = last remaining lot (rungs re-arm),
+          TPs cancelled + re-placed for the new size (ratio rule). Skips: position net positive, tp_hits > 0, lots total != chain size,
+          non-trigger request in flight, KILL. Once a trade has trims, TP1/TP2 are raised if needed so the WHOLE trade (trims' on-chain
+          realized + TP chunks - 12 bps on everything opened - network) nets >= $0.25 ("TP adjust ... overall-net guard" log).
+          Accounting: Jupiter books a trim against the avg (real money = on-chain realized); lot-based gain is the per-add attribution.
+  confirm: increase and trim decrease re-read the chain up to 5x 3 s before halting (failed result re-checked 2x: an escalated copy may
+          have landed); trim failure with no size change = warning, halt after 3 in a row; any exception after the decrease = halt.
+  tests:  tests/test_trim.py (19) -> 195 passed (176 + 19), no chain access. Backtest: skipped (backtester has no per-lot partial
+          closes; more than a modest change).
+  lots:   current long rebuilt from on-chain IncreasePositionEvents (live/patches/lot_fills_20261008.ts, read-only) = bot.log increase
+          ok:true lines = ledger (7 entries, $581.00, coll 44.72): 21:15 115.807 $73.50 (first) | 22:45 114.527 $27 | 06:30 112.694 $33 |
+          07:45 111.519 $51.33 | 09:30 108.880 $241.63 | 11:00 107.517 $76.49 (fill; 108.51 was the slippage cap) | 12:00 106.440 $78.05.
+          live/patches/seed_lots_20261008.py wrote them into state.json. Last add 12:00:55 -> trim-eligible from 16:00:55 MT.
+  restart: SOL right after the 13:15 bar (no CLI in flight): 1183219/1183222 -> wrapper 1267189 / child 1267191; state.json /
+          ledger_open.json backed up *.bak-20261008-1315-prerestart, state kept (+lots). TPs 110.33/110.63 kept (2 on-chain, no dupes).
+          ETH/BTC not restarted (old code; the confirmation fix reaches them at their next safe restart; trim stays off there).
+  verify: 13:30 bar ticked on the new code (trim status line: eligible 16:00 MT, 7 lots, thresholds 106.97 / 108.05 / 109.42 ...), no WARNING/ERROR; on-chain 13:29: long $581 avg 109.882 coll 44.72, exactly 2 triggers 110.33 / 110.63, no market request; wallet 1.2106 SOL. No trim yet (not eligible before 16:00:55 MT).
+2026-10-08 13:33 MT MANUAL TRIM (Trevor 13:31 MT 'lock in those partials for both sol and btc'): stopped SOL wrapper 1267189 / child 1267191 (between ticks, no CLI in flight); backups state.json/ledger_open.json/trades.csv/ledger_summary.json .bak-20261008-1333; dry run (simulate-decrease $154.54 lots #6/#7) ok. Executing via live/patches/manual_trim_20261008.py = Bot.execute_trim (bot's own trim path, time gate bypassed only).
+2026-10-08 13:35 MT MANUAL TRIM BTC: stopped BTC wrapper 737586 / child 1082609 (no CLI in flight); backups live/btc state.json/ledger_open.json + configs/live_btc.toml .bak-20261008-1336. Lots rebuilt from on-chain IncreasePositionEvents: 02:42Z 83162.98 $73.50 (first), 04:15Z 82689.75 $27, 13:45Z 81843.55 $33, 16:01Z 80972.44 $39 (total $172.50, avg check 82331.75 = chain). Dry-run simulate-decrease $39.00 ok at oracle 81746.60 (only the 16:01 lot qualifies; 13:45 gain -0.10 skipped). live_btc.toml [trim] enabled with trim_after_hours=1e6 (auto trim off; guard + lot tracking on). Executing.
+2026-10-08 13:37 MT MANUAL TRIM DONE (Trevor 13:31 MT "lock in those partials", both bots; time gate bypassed via live/patches/manual_trim_20261008.py = Bot.execute_trim; simulate first, price re-checked at send).
+  SOL: closed lots #6 11:00 MT (17:00Z) @107.5169 $76.49 + #7 12:00 MT (18:00Z) @106.4396 $78.05 = $154.54 in ONE decrease, collateral stays. Fill 109.0059 (realisedPnl). Per-lot true gain: 11:00 ~+$0.95, 12:00 ~+$1.77, combined lot-based +2.7551 USD (fees 0.1861 incl network); Jupiter-booked realized -1.2326 USD (net of close fee -1.3259). 09:30 lot @108.880 $241.63 gain -0.0154 at the 109.0127 pre-send oracle -> NOT closed. New position: long $426.46 avg 109.8823 coll $43.3644 (liq ~98.77). TPs re-placed 110.33 ($213.23) / 110.63 (entire); guard not raised (whole trade at TPs ~+0.34 > 0.25 floor). State: n_entries 5, last_entry 108.880, 5 lots, trim row in trades.csv. Restarted run_bot.sh wrapper 1278610 / child 1278612. Verified 13:36: exactly 2 on-chain triggers, no KILL.
+  BTC: lots rebuilt from on-chain IncreasePositionEvents (02:42Z 83162.98 $73.50 first, 04:15Z 82689.75 $27, 13:45Z 81843.55 $33, 16:01Z 80972.44 $39). Closed only the 16:01Z lot $39.00 (others negative at send oracle 81754.20). Fill 81750.25. Lot-based true gain +0.3270 USD (fees 0.0477); Jupiter-booked realized -0.2755 USD (net of close fee -0.2997). New position: long $133.50 avg 82331.75 coll $19.0228 (liq ~70,649). TPs re-placed 82702.24 ($66.75) / 82949.23 (entire); guard not raised. First TP placement was interrupted mid-flight (one trigger 82702.24 landed); re-ran sync_tp_ladder (cancelled it, re-placed both). State: n_entries 3, last_entry 81843.55, last_size 133.50, lots seeded. configs/live_btc.toml [trim] enabled with trim_after_hours=1e6 (auto trim stays off; overall-net guard + lot tracking on). Restarted run_btc.sh wrapper 1281657 / child 1281659. Verified 13:36: exactly 2 on-chain triggers, no KILL.
+  ETH untouched. No fund moves; wallet 1.2105 SOL (reserve 0.02 intact). No code change to bot.py (only new one-off script + BTC config), tests not re-run.
+13:52 MT hourly quickcheck: events=prior manual trims (SOL -154.54 lots #6/#7, BTC -39 lot #4) already logged 13:37; bots up bars fresh TPs ok ETH flat
+2026-10-08 13:54 MT
+lev: all bots lev_start 5 lev_step 1 lev_cap 20 max_leverage 20 (new trades; open SOL/BTC keep size, next add uses new step/cap from last_leverage). Requested by Trevor 13:54 MT.
+2026-10-08 13:55 MT bots restarted after lev change
+14:46 MT hourly quickcheck EVENTS: SOL trim 14:12 closed $241.63 lot@108.88 exit~109.45 (lot gain +$0.99, jup realised -$0.94) then add 14:16 +$156.83@109.53 lev14 → long $341.66 avg109.72 coll$53.35 TPs 110.54/111.08; ETH new short 14:15 $52.50@2469.53 lev5 coll$10.45 TPs 2458.42/2451.01; BTC unchanged $133.50 coll$19.02; SOL one state-read timeout 14:26 recovered; wrappers up bars fresh wallet 1.005 SOL
+2026-10-08 17:11 MT
+trim trigger (SOL only, Trevor 17:06 MT): time gate replaced by [trim] trim_trigger = "distance_level" ("time" still selectable). ARM when price > trim_arm_dist_pct (0.03 = 3 %) against the avg (long <= avg*(1-x), short >= avg*(1+x)); sticky until flat (state.json trim_armed / trim_arm_px / trim_arm_time, reset on flat/open). While armed, TRIGGER when price is at/through an analyst resistance (long) / support (short) within trim_level_tol_atr (0.1) x 1h ATR (same latest.json via levels_provider) -> every eligible add (unchanged rule: not first entry, >= 0.5 %, >= $0.25 net) closed in one market decrease via execute_trim. Stale/missing levels -> no trim (warning). Bar status line: armed/not, arm price, next/at level, eligible lots. Files: config.py, live/bot.py, live/trim.py, configs/live_100.toml, tests/test_trim.py (backups .bak-20261008-1709; BTC config assertion fixed to "trim effectively off"). Tests 201 passed. SOL restarted 17:10 MT (NOTE: not flat - short $52.50 @110.253 opened 17:00 MT, state/ledger_open backed up -prerestart). ETH/BTC untouched.
+2026-10-08 17:18 MT
+(1) scope widened (Trevor 17:13 MT): distance+level trim now on ALL three bots (live_100 / live_eth / live_btc [trim]: enabled, trim_trigger "distance_level", trim_arm_dist_pct 0.03, trim_level_tol_atr 0.1; BTC trim_after_hours=1e6 workaround removed (4.0, time mode only); levels = each bot's dca.levels_path; ETH/BTC own-ATR fallback has no S/R -> treated as stale -> no trim).
+(2) front-run (Trevor 17:16 MT): trim_level_front_run_atr 0.15 (+ trim_level_front_run_pct 0.0 alternative): fires at res - (0.15+0.1) x 1h ATR (long) / sup + same (short).
+(3) wallet-baseline profit guard (Trevor 17:11 MT) [profit_guard] on all three: enabled, min_trade_profit_sol 0.001 (~$0.11; 0.5 % of baseline ~0.0044 SOL would widen every normal TP, so min_trade_profit_pct 0.0), close_network_sol 0.00002. state.json pg_base_sol (own free budget / SOL px just before the open), pg_dep_sol (collateral SOL of every increase), pg_recv_sol (TP1 / trim payouts); network fees from ledger_open.json; reset on flat. Pending TPs raised (never inward) until projected trade end >= baseline + min; TP timer closes only if closing now meets it. Bar line "profit guard: baseline ..., projected end at TPs ..., close now ...".
+Seeded for the open positions (live/patches/seed_baseline_20261008.py, from each bot.log: budget 'free $' line + SOL px of the bar line before the open; collateralAtoms of every increase): SOL base 0.880385 dep 0.095191; ETH base 0.437651 (47.89/109.425) dep 0.095957; BTC base 0.446853 (52.07/116.526) dep 0.170646 (open + 3 adds incl. the trimmed lot #4; its trim was a loss off collateral -> payout 0). Lots already present (ETH 1, BTC 3): no lot seeding needed.
+Files: config.py, live/bot.py, live/trim.py, configs/live_100.toml, live_eth.toml, live_btc.toml, tests/test_trim.py (backups .bak-20261008-1709/-1714/-1717). Tests 208 passed. All three bots restarted 17:17 MT (state kept, prerestart backups); on-chain: SOL short $52.50 TPs 109.80/109.50, ETH short $52.50 TPs 2458.42/2451.01, BTC long $133.50 TPs 82702.24/82949.23 (exactly 2 each). Analyst files stale since 15:23 MT -> trims currently inactive (by design).
+2026-10-08 17:56 MT profit_guard DISABLED on all bots (bug: after SOL short TP1, guard counted -0.045 SOL and pushed TP2 to 94.32; payout not in SOL yet). Bots restarted.
+2026-10-08 17:57 MT SOL short remainder $26.25 market-closed 17:56 via close_now.sh (price 109.42 already through orig TP2 109.50; guard bug had TP2 at 94.33). Trade booked +0.002486 SOL (~+$0.27). ETH/BTC TPs intact, 3 bots running.
+2026-10-08 18:04 MT PROFIT GUARD FIX + NEW ACTION (Trevor 17:5x / 18:02 MT)
+  root cause (17:48 SOL short TP1): Jupiter partial trigger decreases return collateral pro rata ($10.45 -> $5.22) along with the PnL;
+          the guard counted only the PnL (+$0.09) as paid out, while the remaining-position projection used the already-halved
+          collateral -> ~$5.23 (~0.0477 SOL) vanished -> "-0.045204 SOL" and TP2 raised to 94.33. Payout token was not the issue
+          (SOL market decreases already pay SOL; projection converts at SOL value).
+  fix: TP fill payout = collateral returned (last-seen collateral snapshot pg_m_size/pg_margin, else pro rata) + realised PnL
+          (on-chain realisedPnlUsd delta, else at TP px) - close fee, at SOL value; trims likewise (collateral delta + realised - fee).
+          state.json new keys pg_m_size / pg_margin / pg_rpnl / pg_tp_usd. Bar line adds "usd est" cross-check.
+  owner rule 18:02 MT: the guard NEVER moves TPs (TP-raising removed; it only logs "tracking only, TPs NOT moved" if TPs project
+          below baseline+min). ACTION = market close: each tick, if closing the whole position now ends >= baseline + min_trade_profit_sol
+          (all trims/fees/network, payouts at SOL value, slippage-adjusted price) -> existing close path (cancel TPs, entire market
+          decrease, sweep, book). Gated by [profit_guard] close_requires = "adds_or_trims" (>= 1 add or trim; first-entry trades run
+          to their TPs; "any" = all) + close_when_met = true. TP-timer early close still requires the same.
+  desiredMint=SOL (owner 18:00 MT): SOL market decreases already pay SOL (both sides). ETH/BTC re-verified by simulation only
+          (live/patches/sim_desired_sol_20261008.ts, nothing sent): desiredMint=SOL -> Custom 6018 InvalidMint for ETH short and BTC long,
+          partial and entire -> those keep receiving USDC/ETH/WBTC + sweep (no TS change).
+  files: config.py, live/bot.py, live/trim.py (pg_sanity helper, unused by the bot now), tests/test_trim.py, configs/live_100/eth/btc.toml
+          ([profit_guard] enabled = true, close_when_met, close_requires); backups .bak-20261008-1801. Tests 215 passed (208 + 7 new:
+          SOL short TP1 regression x2, bug-state no-move, BTC long WBTC analog, close gate, close-when-met, config).
+  pre-restart check 18:03: BTC (3 entries + trim -> armed) close-now ~ -0.007 SOL vs +0.001 -> holds; ETH 1 entry -> not armed; SOL flat.
+  restart 18:03:51 MT: killed python children 1418002 (SOL) / 1417759 (ETH) / 1417758 (BTC) (no tx CLI in flight); wrappers auto-restart.
+2026-10-08 18:04 MT [trim] trim_arm_dist_pct 0.03 -> 0.015 (1.5 %) on live_100 / live_eth / live_btc (owner 18:03 MT). Backups configs/*.toml + tests/test_trim.py .bak-20261008-1804; config assertions updated; tests 215 passed. Bots restarted again 18:04:21 MT (python children killed, no tx CLI in flight).
+2026-10-08 18:16 MT verify: on-chain exactly 2 triggers each (ETH 2458.42/2451.01, BTC 82702.24/82949.23), SOL flat. 18:15 bar guard lines: ETH projected end at TPs +0.002072 SOL (usd +0.23), close now -0.002424 (not armed: 1 entry); BTC at TPs +0.009171 (usd +0.27), close now -0.006628 (armed, holds). No WARNING/ERROR.
+2026-10-08 18:25 MT trim TP guard raising disabled (trim_tp_raise opt-in, default off) per Trevor 18:24: TPs set at open/add; only Grok Bot moves TP2. 216 tests pass. Bots restarted.
+2026-10-08 18:32 MT trim trigger now uses analyst levels.fine (15m/1h intraday S/R) in addition to main levels; ladder unchanged. dca_levels.py + live/trim.py (.bak-20261008-18xx). 217 tests pass. Bots restarted.
+2026-10-08 21:39 MT old nightly 00:05 stake (SOL bot, old code) pre-empted: withdraw_state.json withdraw_last_date -> 2026-10-09 (backup .bak-20261008-2139) while the per-bot ledger/HWM rework is built; the new per-bot daily JupSOL withdrawal replaces it at deploy.
+2026-10-08 21:45 MT correction: the withdraw_last_date edit (->2026-10-09) made the OLD daily check due immediately (due() compares against today's MT date); it ran at 21:40:29 MT with amount 0.0 (realized since cutoffs -0.00346422 SOL, carried), NO funds moved; withdraw_last_date back to 2026-10-08 by the old code. Old run_withdraw is bypassed by the new code ([ledger] enabled) at deploy.
+2026-10-08 21:48 MT PER-BOT OWN-COIN LEDGER + HWM (Trevor spec 2026-10-08 21:37 MT)
+  design: live/bank.py (new) + [ledger] in live_100/eth/btc.toml (enabled). state.json["bank"] per bot (persists across flat resets,
+          atomic save): bal (free own coin), hwm, wd_mark, fee_sol (ETH/BTC SOL network-fee debt), window, trade_dep/recv, hist, daily.
+          coins: SOL bot SOL, ETH bot Wormhole ETH 7vfCXT.., BTC bot WBTC 3NZ9JM..
+  funding: opens/adds use the bot's own coin as request input (TS cli increase "inputMint", allowlisted). Longs: coin = collateral (no swap).
+          Shorts: keeper swaps coin -> USDC inside the request (jupiterMinimumOut). Insufficient own balance -> add/open skipped (never borrows).
+  payouts: ETH/BTC own their token exclusively -> own-token changes during a payout window (TP fill, trim, close, sweep; 3 ticks) are the
+          payout (exact, swap fees included). SOL bot: estimate (coll returned + PnL - fee at SOL oracle), trued up on flat with the position's
+          on-chain SOL flows. USDC (short payouts) swept by the producing bot into ITS OWN coin (sweep.self_heal_own); ETH/WBTC never swept.
+  externals: unexplained change persisting 2 ticks and >= $1.5: native SOL -> split 50/25/25 to bal+hwm+wd_mark (ETH/BTC swap their share
+          SOL<->coin for real via shared journal live/bank_ext.json); ETH/WBTC change -> that bot only. Smaller SOL noise (fees, request rents)
+          = reserve float; smaller ETH/WBTC changes = own flow.
+  HWM: raised only while flat (and no payout window/request/USDC pending): hwm = max(hwm, bal - fee debt).
+  guard: [profit_guard] (close_requires adds_or_trims, close_when_met) now = equity if closed now (bal - fee debt + close value in coin:
+          coll + PnL - close fee - slippage, /coin px, -0.2 % USDC->coin swap est on ETH/BTC shorts) >= hwm + ledger.min_profit_native
+          (SOL 0.001, ETH 0.000044, BTC 0.0000013 ~ $0.11) -> market close. Never moves TPs. TP timer closes only if equity >= hwm. Old
+          free-budget-share baseline / old pg_* guard bypassed when [ledger] is on (code kept for bank-off configs/tests).
+  daily: per bot at 00:05 MT: 0.5 x (hwm - wd_mark) -> JupSOL (SOL: stake; ETH/WBTC: direct coin -> JupSOL swap), bal and hwm -= amount,
+          wd_mark = hwm; < $0.50 carried; ETH/BTC settle SOL fee debt (coin -> SOL) when >= 0.005 SOL; daily balance line native + USD.
+          Old SOL-bot run_withdraw (all trades.csv) bypassed. First run at startup for 2026-10-08 = amount 0 (gain 0); next 2026-10-09 00:05.
+  files: config.py (LedgerConfig), live/bank.py (new), live/bot.py, live/sweep.py (self_heal_own, sweep_args out_mint), live/src/stake.ts
+          ("swap" direction allowlist, tokenDeltaAtoms), live/src/cli.ts (increase inputMint), configs/*.toml [ledger], tests/conftest.py,
+          tests/test_bank.py (15 new). Backups *.bak-20261008-2140. Tests 232 passed (217 + 15).
+  seed (live/patches/seed_bank_20261008.py, output .out; bots stopped 21:45, state backups *.bak-*-preseed): wallet 1.385409946 SOL,
+          free = -0.02 reserve = 1.365409946. SOL bot bal 0.682704973 SOL ($75.18); ETH 0.341352486 SOL -> 0.01508856 ETH ($37.58) swap
+          4bASQAeto6TzXJY87znWF4fzfrWRJe4EQAzSBthTGKaNech9uupwaYxiSB3j7RQRRfP53WJUWjm5TBMNkiJft9KT; BTC 0.341352487 SOL -> 0.00045679 WBTC
+          ($37.61) swap 4WPa2Ux9AvS1Yz8HKX8B2qRf19GawnE71D8ddz587XKCLW6C2DWumBfKJ6NffurEHDFp6Pqy2Eu87o2otb4bYADo.
+          HWM = bal + collateral put into the CURRENT open trade in own coin at deposit-time prices (SOL: pg_dep_sol 0.095774858; ETH: sum
+          lot coll/price 0.005433864; BTC: incl. trimmed lot 0.000235920): SOL 0.778479831 ($85.73), ETH 0.020522424 ($51.11),
+          BTC 0.00069271 ($57.03). The free-budget pg_base_sol was not used as an absolute (wallet composition changed since those opens).
+          ETH ATA created by the seed swap (rent 0.00149 SOL) -> reserve float now 0.018467 SOL (wallet 0.701172 - SOL bal).
+          Simulated (not sent) own-coin increases ETH short/long + BTC long/short: all ok.
+  restart 21:46:06 MT: old wrappers 1417999/1281657/737585 + children killed (no tx CLI in flight), new run_bot/run_eth/run_btc wrappers
+          1532854/1532855/1532856. Open positions untouched; on-chain TPs unchanged (SOL 109.14/108.84, ETH 2461.54/2454.12, BTC
+          82702.24/82949.23, exactly 2 each).
+2026-10-08 22:01 MT verify: 3 bots running on new code, no WARNING/ERROR since 21:46; 22:00 bar BANK lines: SOL bal 0.682704973 hwm 0.778479831 eq 0.773479 (guard not armed, 1 entry); ETH bal 0.01508856 hwm 0.020522424 eq 0.020218 (armed, needs +0.000348 ETH); BTC bal 0.00045679 hwm 0.00069271 eq 0.000687 (armed, needs +0.000007 WBTC). On-chain 22:02: exactly 6 triggers unchanged (108.84/109.14, 2454.12/2461.54, 82702.24/82949.23), positions unchanged, wallet 0.701172 SOL.
+22:05 MT hourly quickcheck: events=prior withdraw 0 + ledger restart 21:46 already logged 21:45/21:48/22:01; bots up bars fresh TPs ok (SOL short $52.50@109.59 TPs 109.14/108.84, ETH short $70.50@2472.67 TPs 2461.54/2454.12, BTC long $133.50@82331.75 TPs 82702/82949)
+2026-10-08 22:16 MT [trim] trim_arm_dist_pct 0.015 -> 0.0085 (0.85 %) on live_100/eth/btc (owner 22:15 MT: see it in action sooner). Backups configs/*.toml + tests/test_trim.py .bak-20261008-22xx; tests updated, 232 passed. Bots restarted.
+2026-10-08 22:27 MT STRATEGY.md rewritten for current live system (Ratchet): backup STRATEGY.md.bak-20261008-2227. Covers 5x/+1x/20x lev, trim distance_level arm 0.85% + fine levels + front-run, TPs at open/add only (no auto guard TP moves; Grok Bot TP2 / missed partials), per-bot own-coin ledger+HWM+daily 50% JupSOL, HWM profit guard market-close. Removed stale shared-wallet baseline / everything-swept-to-SOL / 1.5%-3% arm / guard-raises-TPs / 4h-timer-as-main.
+2026-10-08 22:52 MT [tp] tp_periodic=false on live_100/eth/btc (Trevor 22:51 MT): no periodic smart-TP2 re-place and no momentum fade; TPs reset only at open/add, Grok Bot moves TP2. config.py field + bot.py gate (.bak-20261008-2252). 231/232 tests pass; test_token_rent net_sol_est assertion fails independently of this change (fails on pre-change code too, env/price dependent) - to look at. Bots restarted.
+00:59 MT quickcheck: SOL short add 00:16 (avg 109.811, TPs 109.36/109.06); ETH short add 00:30 (avg 2478.08, TPs 2466.93/2459.49); BTC long open avg 82331.75 TPs 82702/82949; all bars fresh
+03:56 MT hourly quickcheck: quiet
+07:20 MT hourly quickcheck: SOL short closed TP1+TP2 net +0.002202 SOL (~$0.24); ETH short open $91.50 avg 2478.08 (price 2498.96, underwater); BTC flat, one transient read timeout
+2026-10-09 08:50 MT [trim/guard] owner 08:46 MT: trim_arm_dist_pct 0.0085 -> 0.01; min_profit_native SOL 0.001->0.0015, ETH 0.000044->0.000066, WBTC 0.0000013->0.00000195 (~$0.17). Backups .bak-20261009-08xx; tests updated, 231/232 (known test_token_rent failure). Bots restarted.
+2026-10-09 09:10 MT [ledger] ETH/BTC trade booking in own coin + test_token_rent fix. (1) ETH/BTC bots fund trades in ETH/WBTC, so the trade row's net_sol (position SOL flows) was only fees + wrong: BTC long closed 05:38 MT booked -0.172687841 SOL (~-$19.10). Now (bank on, ETH/BTC only) book_flat defers the row until the payout window is over and nothing is in flight (bank_tick; a new open inside the window books it first), then ledger.on_flat(native=...) books net_native = received - deposited (own coin), net_sol = its SOL value at close, net_usd; net_sol_method bank_native, no net_sol_est cap; old SOL flows kept in flows_net_sol. New trades.csv columns native_coin/native_deposited/native_received/net_native/coin_px_close/flows_net_sol; ledger_summary net_native. SOL bot + bank-off path unchanged; daily JupSOL withdrawal still bank HWM (run_withdraw/trades.csv not used with bank on); one row per trade, no double count. Corrected live/btc/trades.csv (+ledger_summary.json, backups .bak-20261009-0900): 05:38 MT trade +0.00000157 WBTC = +0.001176406 SOL = +$0.13 (was -0.172687841 SOL); 08:21 MT trade +0.00000213 WBTC = +0.00160665 SOL = +$0.18 (was -0.000018232 SOL); BTC summary net_sol -0.172706073 -> +0.002783056. (2) test_token_rent::test_tonights_eth_trade...: book_flat stamps close_time = now, borrow est grows with open->close hours (trade opened 2026-10-08 02:42 UTC) -> net_sol_est drifted below net_sol after ~1 day; test now freezes close at the real 03:59:50 UTC and checks the est value exactly. Files live/ledger.py, live/bot.py, tests/test_token_rent.py (.bak-20261009-0900), new tests/test_bank_booking.py (4). Tests 236 passed. Bots restarted 09:04:58 MT (only state reads in flight); ETH short untouched.
+09:52 MT quickcheck: only transient network tick errors, bars fresh, ETH short open, no fills
+10:15 MT quickcheck: transient network/RPC timeouts on sol/btc ticks 09:53-10:11; bars fresh, no action
+10:48 MT quickcheck: BTC long opened 10:33 ($52.50, avg 82725.78, TP 83098/83346); transient RPC/SSL tick errors on all bots, bars current
+11:14 MT hourly quickcheck: quiet
+11:28 MT hourly quickcheck: quiet
+11:46 MT hourly quickcheck: quiet
+12:01 MT quickcheck: SOL short opened $52.50 avg 109.870, TPs 109.42/109.12
+12:14 MT hourly quickcheck: quiet
+12:26 MT hourly quickcheck: quiet
+12:48 MT quickcheck: SOL short closed TP1 12:32 + TP2 12:37, net +0.002248522 SOL; ETH short and BTC long open
+12:57 MT hourly quickcheck: quiet
+13:16 MT hourly quickcheck: quiet
+13:34 MT hourly quickcheck: quiet
+13:49 MT hourly quickcheck: quiet
+14:00 MT hourly quickcheck: quiet
+14:14 MT hourly quickcheck: quiet
+14:28 MT hourly quickcheck: quiet
+14:48 MT hourly quickcheck: quiet
+15:00 MT hourly quickcheck: quiet
+
+2026-10-09 15:10 MT  DCA ladder config B (Trevor approved 15:08; research/ladder_sim/SUMMARY.md)
+- dca_levels.py: LadderParams.weight_mode ("geometric" default = old) / weight_mult_step / weight_mult_cap / min_usd;
+  ladder_weights() (accel: ratio starts weight_mult, +step per rung, capped) and fit_min_budgets() ($3 min fitted
+  INSIDE the budget: floored rungs fixed at min, rest rescaled), used by ladder_budgets() in accel mode only.
+- config.py: dca.ladder_weight_mode/_mult_step/_mult_cap; strategy.py passes them + min_add_usd as min_usd.
+- configs live_100/eth/btc [dca]: ladder_max_rungs 12->14, ladder_weight_mode="accel", ladder_weight_mult 1.5->1.15,
+  ladder_weight_mult_step=0.10, ladder_weight_mult_cap=2.5. Spacing, lev 5x/+1x/cap20, liq rule, TPs, trims, bank unchanged.
+- tests/test_ladder_accel.py (+9). Backups *.bak-20261009-1508. Bot children restarted 15:10:40 (no tx in flight).
+15:16 MT quickcheck: only bot restarts at 15:10 (config B deploy); ETH short avg 2478.08, BTC long avg 82725.78, SOL flat; no fills
+15:20 MT quickcheck.sh: liq distance for open positions (state.json + bar close via dca_levels.liq_price; ALERT LIQ / EVENTS if <3%); bak quickcheck.sh.bak-20261009-1520
+2026-10-09 15:26 MT [tp] live_100 tp_res_min_touches=2 (analyst 15:25 ladder rungs carry 1 touch; ETH/BTC already 2). SOL bot (flat) restarted. 243 tests pass.
+15:29 MT hourly quickcheck: SOL bot restart at 15:26 only; ETH liq 16.7%, BTC 18.8%
+15:48 MT hourly quickcheck: quiet
+16:03 MT hourly quickcheck: quiet
+16:18 MT hourly quickcheck: quiet
+16:29 MT hourly quickcheck: quiet
+16:40 MT hourly quickcheck: quiet
+17:16 MT hourly quickcheck: quiet
+17:31 MT hourly quickcheck: quiet
+17:43 MT hourly quickcheck: quiet
+17:52 MT hourly quickcheck: quiet
+18:10 MT hourly quickcheck: quiet
+18:26 MT hourly quickcheck: quiet
+18:40 MT hourly quickcheck: quiet
+18:54 MT hourly quickcheck: quiet
+19:13 MT hourly quickcheck: quiet
+19:26 MT hourly quickcheck: quiet
+19:46 MT hourly quickcheck: quiet
+20:01 MT hourly quickcheck: quiet (one transient BTC read timeout 19:52, recovered)
+20:09 MT hourly quickcheck: quiet
+20:28 MT hourly quickcheck: quiet (STALE flags only; bots alive, sweeps at 20:28, next hourly bar pending)
+20:46 MT hourly quickcheck: quiet (eth transient SSL timeout 20:28, recovered)
+21:00 MT hourly quickcheck: quiet
+21:08 MT hourly quickcheck: quiet
+21:28 MT hourly quickcheck: quiet (STALE flags only; hourly bars, bots alive)
+21:46 MT hourly quickcheck: quiet
+21:56 MT hourly quickcheck: quiet
+22:07 MT hourly quickcheck: quiet
+22:23 MT hourly quickcheck: quiet (bars ~23m old, all 3 bots alive and logging; positions unchanged, liq 16-19% away)
+22:45 MT hourly quickcheck: all 3 logs ~20m stale (kline feed lag, last bar 22:24, procs alive, no errors); positions unchanged, liq 16-19% away; no action
+22:57 MT hourly quickcheck: quiet
+23:16 MT hourly quickcheck: quiet
+23:25 MT hourly quickcheck: quiet
+23:41 MT hourly quickcheck: quiet
+23:56 MT quickcheck: SOL short add +$18 @~110.2, avg 109.514, TPs 109.06/108.76
+00:08 MT hourly quickcheck: quiet
+00:22 MT quickcheck: all 3 bots stale ~22m (last bar 00:00), processes alive, btc 'read operation timed out' tick error -> network/RPC hiccup; no restart, recheck next run. Positions unchanged, liq 16-19% away.
+00:39 MT hourly quickcheck: quiet
+00:54 MT hourly quickcheck: one transient SOL SSL handshake timeout, bots fine, no action
+01:08 MT hourly quickcheck: quiet
+01:29 MT hourly quickcheck: quiet (stale flag ~1240s is normal 15m-bar jitter; bots running, last bars 01:08)
+01:46 MT hourly quickcheck: quiet
+01:56 MT hourly quickcheck: quiet
+02:13 MT hourly quickcheck: quiet
+02:28 MT hourly quickcheck: quiet
+02:39 MT hourly quickcheck: quiet
+03:00 MT hourly quickcheck: transient read timeouts eth/btc 02:53, recovered; no trades
+03:16 MT hourly quickcheck: quiet
+03:27 MT hourly quickcheck: quiet
+03:38 MT hourly quickcheck: quiet
+03:57 MT hourly quickcheck: quiet
+04:15 MT hourly quickcheck: quiet
+04:24 MT hourly quickcheck: quiet
+04:38 MT hourly quickcheck: quiet (transient read timeouts eth/btc 04:36, bars fresh)
+2026-10-10 04:52 MT quickcheck: quiet
+2026-10-10 04:52 MT quickcheck: quiet
+2026-10-10 04:52 MT [ops] credit saving (Trevor 04:52): quickcheck.sh now wrapper over quickcheck_core.sh; stale limit 20->40 min; QUIET runs self-log and print one VERDICT line; routine prompt made lean (one command, stop on QUIET).
+2026-10-10 05:28 MT quickcheck: quiet
+2026-10-10 05:43 MT quickcheck: quiet
+2026-10-10 05:52 MT quickcheck: quiet
+2026-10-10 06:11 MT quickcheck: quiet
+2026-10-10 06:38 MT quickcheck: quiet
+2026-10-10 06:55 MT quickcheck: quiet
+2026-10-10 07:14 MT quickcheck: quiet
+2026-10-10 08:01 MT quickcheck: quiet
+2026-10-10 08:09 MT quickcheck: quiet
+2026-10-10 08:30 MT quickcheck: quiet
+2026-10-10 08:44 MT quickcheck: quiet
+2026-10-10 08:57 MT [eth] KILL from 08:45 add halt cleared: add sim failed 'Blockhash not found' (transient RPC), nothing landed (pos 91.5 = lots 52.5+18+21, bank bal unchanged 0.01388685 ETH). First own-coin ETH short add attempt.
+2026-10-10 09:26 MT quickcheck: quiet
+2026-10-10 09:42 MT quickcheck: quiet
+2026-10-10 10:01 MT quickcheck: quiet
+2026-10-10 10:10 MT quickcheck: quiet
+2026-10-10 10:59 MT quickcheck: quiet
+2026-10-10 11:24 MT quickcheck: quiet
+2026-10-10 11:46 MT quickcheck: quiet
+2026-10-10 12:01 MT quickcheck: quiet
+2026-10-10 12:08 MT quickcheck: quiet
+2026-10-10 12:24 MT quickcheck: quiet
+2026-10-10 12:39 MT quickcheck: quiet
+2026-10-10 13:11 MT quickcheck: quiet
+2026-10-10 13:46 MT quickcheck: quiet
+2026-10-10 13:55 MT quickcheck: quiet
+2026-10-10 14:10 MT quickcheck: quiet
+2026-10-10 14:30 MT quickcheck: quiet
+2026-10-10 15:00 MT quickcheck: quiet
+2026-10-10 15:09 MT quickcheck: quiet
+2026-10-10 16:08 MT quickcheck: quiet
+2026-10-10 16:31 MT quickcheck: quiet
+2026-10-10 16:43 MT [bot] unattended: open/add whose tx fails pre-flight simulation (e.g. Blockhash not found) now logs WARNING and retries next tick instead of writing KILL (nothing sent, size unchanged). 243 tests pass. Bots restarted. Check-in routine now hourly at :37 (Trevor 16:36).
+2026-10-10 18:14 MT MIGRATION: live bots SOL/ETH/BTC moved to droplet 161.35.1.72 (systemd ratchet-sol/eth/btc/levels). Box wrappers+bots stopped 18:13:02 (no tx in flight), state synced, droplet services started 18:13:08. run_*.sh -> *.disabled; quickcheck.sh/close_now.sh now ssh to droplet; see live/DROPLET.md, live/MIGRATED_TO_DROPLET.
+2026-10-10 18:45 MT quickcheck: quiet
+2026-10-10 19:01 MT [cfg] trim_arm_dist_pct 0.01 -> 0.0065 all bots (Trevor 19:00)
+2026-10-10 19:10 MT  Code put under git and pushed to private repo https://github.com/trevone/ratchet-jup-ag (README.md, SETTINGS.md, .gitignore excludes secrets/state/logs/ledgers). No bot restarts.

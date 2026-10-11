@@ -1,0 +1,16 @@
+# Variant B: old single 8% TP + 25% margin stop, 4h trend-flip exit, 5% daily loss limit.
+name = "B_with_stops"
+
+[tp]
+mode = "price_pct"
+pct = 0.08
+levels = []
+
+[stops]
+margin_loss_pct = 0.25
+trend_flip_exit = true
+daily_loss_pct = 0.05
+
+[dca]
+trigger_mode = "price_pct"
+allow_after_partial = false

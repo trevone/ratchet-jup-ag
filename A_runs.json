@@ -1,0 +1,274 @@
+{
+  "full": {
+    "label": "full",
+    "start": "2021-02-03 11:00:00+00:00",
+    "end": "2026-09-30 23:00:00+00:00",
+    "peak_mtm": {
+      "equity": 18266.15,
+      "time": "2022-03-21 02:00:00+00:00",
+      "ret": 0.8266
+    },
+    "peak_closed": {
+      "equity": 17828.16,
+      "time": "2022-03-10 13:00:00+00:00",
+      "ret": 0.7828
+    },
+    "after_last_liq": {
+      "since": "2025-11-03 15:00:00+00:00",
+      "wins": 17,
+      "profit": 5.14,
+      "days": 331.3,
+      "final_equity": 12.02
+    },
+    "days_between_liqs": {
+      "median": 109.2,
+      "max": 237.5,
+      "min": 6.0
+    },
+    "first_liq": {
+      "liq_time": "2021-08-05 03:00:00+00:00",
+      "side": "short",
+      "opened": "2021-07-21 07:00:00+00:00",
+      "avg_entry": 28.84,
+      "liq_price": 37.42,
+      "eq_before": 16597.81,
+      "eq_after": 8283.97,
+      "loss_pct": -0.5009,
+      "wins_since_prev": 17,
+      "other_trades": 0,
+      "run_profit": 6597.81,
+      "run_profit_pct": 0.6598,
+      "days_since_prev": 182.7
+    },
+    "peak_before_first_liq": {
+      "equity": 17321.19,
+      "time": "2021-07-27 16:00:00+00:00"
+    },
+    "reset_runs": [
+      {
+        "run": 1,
+        "ended": "2021-08-05 03:00:00+00:00",
+        "wins": 17,
+        "peak_closed": 16597.81,
+        "eq_before_liq": 16597.81,
+        "eq_after_liq": 8283.97
+      },
+      {
+        "run": 2,
+        "ended": "2022-03-30 14:00:00+00:00",
+        "wins": 19,
+        "peak_closed": 21521.27,
+        "eq_before_liq": 21521.27,
+        "eq_after_liq": 10741.27
+      },
+      {
+        "run": 3,
+        "ended": "2022-04-30 22:00:00+00:00",
+        "wins": 0,
+        "peak_closed": 10000.0,
+        "eq_before_liq": 10741.27,
+        "eq_after_liq": 5360.97
+      },
+      {
+        "run": 4,
+        "ended": "2022-09-21 21:00:00+00:00",
+        "wins": 11,
+        "peak_closed": 13824.85,
+        "eq_before_liq": 13824.85,
+        "eq_after_liq": 6899.98
+      },
+      {
+        "run": 5,
+        "ended": "2023-01-09 01:00:00+00:00",
+        "wins": 6,
+        "peak_closed": 12647.12,
+        "eq_before_liq": 12647.12,
+        "eq_after_liq": 6312.18
+      },
+      {
+        "run": 6,
+        "ended": "2023-07-07 14:00:00+00:00",
+        "wins": 8,
+        "peak_closed": 13600.0,
+        "eq_before_liq": 13600.0,
+        "eq_after_liq": 6787.76
+      },
+      {
+        "run": 7,
+        "ended": "2023-09-10 04:00:00+00:00",
+        "wins": 0,
+        "peak_closed": 10000.0,
+        "eq_before_liq": 10000.0,
+        "eq_after_liq": 4991.0
+      },
+      {
+        "run": 8,
+        "ended": "2023-10-20 05:00:00+00:00",
+        "wins": 0,
+        "peak_closed": 10000.0,
+        "eq_before_liq": 10000.0,
+        "eq_after_liq": 4991.0
+      },
+      {
+        "run": 9,
+        "ended": "2024-04-13 20:00:00+00:00",
+        "wins": 14,
+        "peak_closed": 15026.07,
+        "eq_before_liq": 15026.07,
+        "eq_after_liq": 7499.51
+      },
+      {
+        "run": 10,
+        "ended": "2024-10-24 21:00:00+00:00",
+        "wins": 6,
+        "peak_closed": 13091.1,
+        "eq_before_liq": 13091.1,
+        "eq_after_liq": 6533.77
+      },
+      {
+        "run": 11,
+        "ended": "2025-01-13 11:00:00+00:00",
+        "wins": 2,
+        "peak_closed": 10283.1,
+        "eq_before_liq": 10283.1,
+        "eq_after_liq": 5132.3
+      },
+      {
+        "run": 12,
+        "ended": "2025-01-19 10:00:00+00:00",
+        "wins": 0,
+        "peak_closed": 10000.0,
+        "eq_before_liq": 10000.0,
+        "eq_after_liq": 4991.0
+      },
+      {
+        "run": 13,
+        "ended": "2025-02-18 17:00:00+00:00",
+        "wins": 0,
+        "peak_closed": 10000.0,
+        "eq_before_liq": 10000.0,
+        "eq_after_liq": 4991.0
+      },
+      {
+        "run": 14,
+        "ended": "2025-05-08 15:00:00+00:00",
+        "wins": 5,
+        "peak_closed": 12820.16,
+        "eq_before_liq": 12820.16,
+        "eq_after_liq": 6398.54
+      },
+      {
+        "run": 15,
+        "ended": "2025-11-03 15:00:00+00:00",
+        "wins": 4,
+        "peak_closed": 10540.89,
+        "eq_before_liq": 10540.89,
+        "eq_after_liq": 5260.96
+      }
+    ],
+    "reset_total_topped_up": 55566.07,
+    "reset_final_equity": 17426.36,
+    "skim": {
+      "withdrawn": 38086.84,
+      "topped_up": 75135.0,
+      "final_equity": 9986.62,
+      "net": -37061.54
+    }
+  },
+  "last2y": {
+    "label": "last2y",
+    "start": "2024-10-01 00:00:00+00:00",
+    "end": "2026-09-30 23:00:00+00:00",
+    "peak_mtm": {
+      "equity": 10947.38,
+      "time": "2024-12-06 01:00:00+00:00",
+      "ret": 0.0947
+    },
+    "peak_closed": {
+      "equity": 10518.46,
+      "time": "2024-11-06 03:00:00+00:00",
+      "ret": 0.0518
+    },
+    "after_last_liq": {
+      "since": "2025-11-03 15:00:00+00:00",
+      "wins": 17,
+      "profit": 327.94,
+      "days": 331.3,
+      "final_equity": 767.13
+    },
+    "days_between_liqs": {
+      "median": 78.9,
+      "max": 179.0,
+      "min": 6.0
+    },
+    "first_liq": {
+      "liq_time": "2025-01-13 11:00:00+00:00",
+      "side": "long",
+      "opened": "2024-11-24 12:00:00+00:00",
+      "avg_entry": 227.51,
+      "liq_price": 177.62,
+      "eq_before": 10518.46,
+      "eq_after": 5249.76,
+      "loss_pct": -0.5009,
+      "wins_since_prev": 3,
+      "other_trades": 0,
+      "run_profit": 518.46,
+      "run_profit_pct": 0.0518,
+      "days_since_prev": 104.5
+    },
+    "peak_before_first_liq": {
+      "equity": 10947.38,
+      "time": "2024-12-06 01:00:00+00:00"
+    },
+    "reset_runs": [
+      {
+        "run": 1,
+        "ended": "2025-01-13 11:00:00+00:00",
+        "wins": 3,
+        "peak_closed": 10518.46,
+        "eq_before_liq": 10518.46,
+        "eq_after_liq": 5249.76
+      },
+      {
+        "run": 2,
+        "ended": "2025-01-19 10:00:00+00:00",
+        "wins": 0,
+        "peak_closed": 10000.0,
+        "eq_before_liq": 10000.0,
+        "eq_after_liq": 4991.0
+      },
+      {
+        "run": 3,
+        "ended": "2025-02-18 17:00:00+00:00",
+        "wins": 0,
+        "peak_closed": 10000.0,
+        "eq_before_liq": 10000.0,
+        "eq_after_liq": 4991.0
+      },
+      {
+        "run": 4,
+        "ended": "2025-05-08 15:00:00+00:00",
+        "wins": 5,
+        "peak_closed": 12820.16,
+        "eq_before_liq": 12820.16,
+        "eq_after_liq": 6398.54
+      },
+      {
+        "run": 5,
+        "ended": "2025-11-03 15:00:00+00:00",
+        "wins": 4,
+        "peak_closed": 10540.89,
+        "eq_before_liq": 10540.89,
+        "eq_after_liq": 5260.96
+      }
+    ],
+    "reset_total_topped_up": 23108.74,
+    "reset_final_equity": 17426.36,
+    "skim": {
+      "withdrawn": 9342.76,
+      "topped_up": 25045.0,
+      "final_equity": 9986.62,
+      "net": -15715.62
+    }
+  }
+}

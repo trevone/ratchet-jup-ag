@@ -1,0 +1,164 @@
+{
+  "A_pure_dca": {
+    "variant": "A_pure_dca",
+    "trades": 127,
+    "win_rate": 0.8582677165354331,
+    "longs": 62,
+    "shorts": 65,
+    "exit_reasons": {
+      "take_profit": 112,
+      "liquidation": 15
+    },
+    "avg_adds": 1.6141732283464567,
+    "max_adds": 4,
+    "adds_hist": {
+      "0": 56,
+      "1": 21,
+      "2": 5,
+      "3": 6,
+      "4": 39
+    },
+    "liquidations": 15,
+    "worst_trade": {
+      "pnl": -8930.12,
+      "ret_on_margin": -1.0018,
+      "pct_of_equity_before": -0.5009,
+      "side": -1,
+      "opened": "2022-03-15 18:00:00+00:00",
+      "closed": "2022-03-30 14:00:00+00:00",
+      "reason": "liquidation",
+      "adds": 4,
+      "avg_entry": 91.386,
+      "exit": 118.527,
+      "eff_lev": 3.0
+    },
+    "avg_tp_ret_on_margin": 0.1499345446428572,
+    "avg_hours_in_trade": 215.99212598425197,
+    "max_hours_in_trade": 1307.0,
+    "worst_unrealized": {
+      "usd": -7813.61,
+      "pct_margin": -0.9597
+    },
+    "total_fees": 408.3017516071101,
+    "total_borrow": 7175.9759474447055,
+    "realized_pnl_in_sol": -126.16850684887955,
+    "final_equity": 12.018389951074996,
+    "return_usd": -0.9987981610048925,
+    "cagr": -0.6954781738621114,
+    "max_drawdown": -0.9996262598097279,
+    "dd_trough": "2026-01-14 20:00:00+00:00",
+    "dd_peak": "2022-03-21 02:00:00+00:00",
+    "final_sol": 0.10174729047642224,
+    "bh_sol": 1914.2786041080417,
+    "sol_vs_bh": -0.999946848232928,
+    "open_position_at_end": {
+      "side": 1,
+      "entries": 1,
+      "margin": 1.2034496549317568,
+      "size": 2.4068993098635136,
+      "avg": 118.083612,
+      "eff_lev": 2.0,
+      "liq": 60.9783772368,
+      "tp": 127.53030096,
+      "upnl": -0.014662458656652506
+    },
+    "time_in_market": null,
+    "yearly_return": {
+      "2021": 0.3489,
+      "2022": -0.7127,
+      "2023": -0.8988,
+      "2024": -0.7328,
+      "2025": -0.9237,
+      "2026": 0.502
+    }
+  },
+  "B_with_stops": {
+    "variant": "B_with_stops",
+    "trades": 203,
+    "win_rate": 0.47783251231527096,
+    "longs": 94,
+    "shorts": 109,
+    "exit_reasons": {
+      "trend_flip": 107,
+      "take_profit": 88,
+      "hard_stop": 8
+    },
+    "avg_adds": 0.6009852216748769,
+    "max_adds": 4,
+    "adds_hist": {
+      "0": 136,
+      "1": 37,
+      "2": 12,
+      "3": 11,
+      "4": 7
+    },
+    "liquidations": 0,
+    "worst_trade": {
+      "pnl": -1646.92,
+      "ret_on_margin": -0.2542,
+      "pct_of_equity_before": -0.1271,
+      "side": -1,
+      "opened": "2021-05-31 08:00:00+00:00",
+      "closed": "2021-06-03 06:00:00+00:00",
+      "reason": "hard_stop",
+      "adds": 4,
+      "avg_entry": 34.338,
+      "exit": 37.152,
+      "eff_lev": 3.0
+    },
+    "avg_tp_ret_on_margin": 0.15509839204545461,
+    "avg_hours_in_trade": 51.748768472906406,
+    "max_hours_in_trade": 446.0,
+    "worst_unrealized": {
+      "usd": -1256.91,
+      "pct_margin": -0.2238
+    },
+    "total_fees": 829.9190287064075,
+    "total_borrow": 3360.519434182782,
+    "realized_pnl_in_sol": 33.23883538527241,
+    "final_equity": 8315.274944751269,
+    "return_usd": -0.16847250552487314,
+    "cagr": -0.03209778117708273,
+    "max_drawdown": -0.5257901439923023,
+    "dd_trough": "2025-10-14 00:00:00+00:00",
+    "dd_peak": "2021-05-07 15:00:00+00:00",
+    "final_sol": 70.39684172664467,
+    "bh_sol": 1914.2786041080417,
+    "sol_vs_bh": -0.963225393850418,
+    "open_position_at_end": {
+      "side": 1,
+      "entries": 1,
+      "margin": 832.6418766291162,
+      "size": 1665.2837532582323,
+      "avg": 118.08361200000002,
+      "eff_lev": 2.0,
+      "liq": 60.97837723679999,
+      "tp": 127.53030096000002,
+      "upnl": -10.144651287938244
+    },
+    "time_in_market": null,
+    "yearly_return": {
+      "2021": -0.0257,
+      "2022": 0.2231,
+      "2023": -0.2685,
+      "2024": -0.1657,
+      "2025": 0.0254,
+      "2026": 0.115
+    }
+  },
+  "buy_hold": {
+    "final_equity": 226114.5887172419,
+    "return_usd": 21.61145887172419,
+    "max_drawdown": -0.9679616158489398,
+    "start_price": 5.2239,
+    "end_price": 118.12,
+    "yearly_return": {
+      "2021": 31.5408,
+      "2022": -0.9413,
+      "2023": 9.2026,
+      "2024": 0.8611,
+      "2025": -0.3416,
+      "2026": -0.0524
+    }
+  }
+}

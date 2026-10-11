@@ -1,0 +1,11 @@
+# Variant A: pure DCA to the old single 8% take-profit, no stops.
+name = "A_pure_dca"
+
+[tp]
+mode = "price_pct"
+pct = 0.08
+levels = []
+
+[dca]
+trigger_mode = "price_pct"
+allow_after_partial = false
