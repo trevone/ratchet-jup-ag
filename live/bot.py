@@ -748,6 +748,12 @@ class Bot:
             return False
         return g.close_requires == "any" or L.n_entries > 1 or len(L.lots) > 1 or bool(L.trims)
 
+    def guard_allowed(self, pos: ChainPosition, price: float) -> bool:
+        """[ledger] guard_only_underwater: the profit-guard market close may only fire on the losing side of avg."""
+        if not getattr(self.cfg.ledger, "guard_only_underwater", False):
+            return True
+        return pos.side * (price - pos.avg_entry) < 0
+
     def pg_close_ok(self, pos: ChainPosition, price: float) -> tuple[bool, str]:
         """Early close (TP timer) allowed only when closing now ends the trade >= baseline + min profit (SOL)."""
         if not self.pg_active():
@@ -1486,7 +1492,12 @@ class Bot:
             if lev.stop is not None and pos.side * (price - lev.stop.price) <= 0:
                 self.close(pos, price, f"stop {lev.stop.reason.value} @ {lev.stop.price:.3f}")
                 return
-            if self.bank_on:   # HWM profit guard (2026-10-08 21:37 MT): close all once equity >= hwm + min (never moves TPs)
+            # Trevor 2026-10-11 06:31 MT: the guard only fires while underwater (long price < avg, short price > avg);
+            # at/through avg on the profit side TP1/TP2 (and Grok Bot's TP2 moves) decide the exit.
+            guard_ok = self.guard_allowed(pos, price)
+            if not guard_ok:
+                pass
+            elif self.bank_on:   # HWM profit guard (2026-10-08 21:37 MT): close all once equity >= hwm + min (never moves TPs)
                 if self.hwm_close_armed():
                     ok, note = self.hwm_check(pos, st, price, self.cfg.ledger.min_profit_native)
                     if ok:

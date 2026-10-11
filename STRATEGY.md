@@ -141,6 +141,11 @@ Jupiter books trims against the average; bot tracks true per-add gain separately
 
 ## 8. Profit guard (HWM)
 
+**Trevor 2026-10-11 06:31 MT - guard only when underwater** (`[ledger] guard_only_underwater = true`, all three bots): the profit-guard market close (HWM guard `hwm + min_profit_native`, or the legacy pg_close) may only fire while the position is on the losing side of its average (long: price < avg; short: price > avg). At/through the average on the profit side the guard does nothing; TP1/TP2 and Grok Bot's TP2 moves decide the exit. The 55-min TP timer (`close_remainder_after_min`) is unchanged: it still requires profit + the HWM check.
+
+**Trevor 2026-10-11 - HWM reset on nightly withdrawal** (already implemented, all bots via `bank.apply_withdrawal`): when the daily job withdraws X of a bot's coin to JupSOL, bal and hwm both drop by X and wd_mark = the new hwm, so the guard never chases withdrawn money (e.g. SOL 10-11 00:05 MT: hwm 0.7879 -> 0.7832).
+
+
 When the trade had **adds or trims** and equity-if-closed-now ≥ **HWM + min profit** (own-coin amounts above) → **market-close the whole position**. Never moves TPs. TP timer will not close below HWM. First-entry-only trades ride their TPs.
 
 Close value in own coin: collateral + PnL − fees − slippage (− ~0.2% USDC→coin est. on ETH/BTC shorts).

@@ -420,6 +420,7 @@ class LedgerConfig:
     from it and pay back into it; the profit guard targets hwm + min_profit_native; a daily job moves
     withdraw_fraction x (HWM gain since the last withdrawal) into JupSOL. OFF by default (backtests / old tests)."""
     enabled: bool = False
+    guard_only_underwater: bool = False     # Trevor 2026-10-11: guard close only while price is on the losing side of avg
     min_profit_native: float = 0.001        # guard target = hwm + this (native units: SOL / ETH / WBTC)
     swap_cost_pct: float = 0.002            # est. USDC -> native swap cost on short payouts (guard close-value estimate)
     close_network_native: float = 0.00002   # est. network cost still to pay for a close (SOL bot; others: in fee_sol)

@@ -202,6 +202,7 @@ min_trade_profit_pct = 0.0
 close_network_sol = 0.00002
 
 [ledger]
+guard_only_underwater = true   # Trevor 2026-10-11 06:31 MT: profit guard close only while underwater (long px<avg, short px>avg); TP timer unchanged
 # Per-bot own-coin ledger + HWM (Trevor 2026-10-08 21:37 MT, live/bank.py). This bot's balance lives in ETH (state.json "bank");
 # trades fund from / pay back into it only (shorts: keeper swaps ETH -> USDC in the request, USDC payouts swept back to ETH).
 # Profit guard: market-close the whole position (adds/trims only) once equity if closed now >= hwm + min_profit_native.

@@ -47,3 +47,4 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 | [ledger] | fee_settle_min_sol | 0.005 | 0.005 | 0.005 | ETH/BTC settle SOL fee debt above this |
 | [withdraw] | enabled | true | false | false | Legacy SOL daily stake job (SOL bot only) |
 | [bot] | asset / share / state_dir | SOL / 0.5 / live | ETH / 0.25 / live/eth | BTC / 0.25 / live/btc | Market, wallet share, state dir |
+| [ledger] | guard_only_underwater | true | true | true | Trevor 2026-10-11: profit-guard close only while price is on the losing side of avg; TP timer unchanged |
