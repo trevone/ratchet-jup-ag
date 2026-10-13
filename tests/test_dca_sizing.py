@@ -24,7 +24,7 @@ def live_pos(**kw):
 
 @pytest.fixture(scope="module")
 def kw():
-    return DcaStrategy(load_config("configs/live_100.toml")).plan_kwargs()
+    return DcaStrategy(load_config("tests/fixtures/configs_pre_c/live_100.toml")).plan_kwargs()
 
 
 def test_broken_support_is_not_the_target():

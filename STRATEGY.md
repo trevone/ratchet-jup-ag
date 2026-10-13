@@ -44,7 +44,7 @@ Grow each bot’s own coin (SOL / Wormhole ETH / WBTC) with small, fee-aware pro
 
 - Trades fund from and pay back to **that bot’s balance only**. Longs: own coin = collateral. Shorts: Jupiter swaps own coin → USDC inside the open request; USDC payouts swept back to the bot’s own coin.
 - **No borrowing** from other bots: open/add skipped if own balance is short.
-- Unexplained wallet changes **≥ $1.5** persisting **2 ticks** = external deposit/withdrawal (not P&L). Native SOL externals split **50 / 25 / 25** across SOL / ETH / BTC (ETH/BTC swap their share). Smaller SOL noise = fee reserve float.
+- **External wallet changes: alert only (Trevor 2026-10-11 19:08 MT).** An unexplained wallet change **≥ $1.5** persisting **2 ticks** is never P&L and is no longer charged to the bots: the bot logs `WARNING UNEXPLAINED WALLET CHANGE`, appends to `live/EXT_FLOW_ALERT` (quickcheck prints `ALERT EXT`), and changes nothing in any bank (no 50/25/25 split, no ETH/BTC coin swaps). `[ledger] ext_flow_mode = "alert"` in all three configs (`"split"` = old rule, off). Resolve by hand (book a correction), then delete the flag file. Smaller SOL noise = fee reserve float. Background: 2026-10-11 18:41 MT a stray 0.207 SOL JupSOL stake was split as an external withdrawal and made ETH/BTC sell coin; reversed 19:10-19:15 MT.
 - ETH/BTC SOL network fees tracked as a small **fee debt**, settled daily when ≥ `0.005` SOL.
 - **HWM** (own coin): only rises, and only while flat (`hwm = max(hwm, bal − fee debt)`).
 
@@ -130,7 +130,7 @@ Two on-chain TPs: **TP1 closes 50%**, **TP2 the rest**. Calculated at **open and
 
 All three bots. Old 4h timer only applies in unused `trim_trigger = "time"` mode.
 
-1. **Arm** when price is **≥ 0.85%** against average (`trim_arm_dist_pct = 0.0085`; long ≤ avg×0.9915, short ≥ avg×1.0085). Stays armed until the trade closes (`state.json`).
+1. **Arm** when price is **≥ 1%** against average (`trim_arm_dist_pct = 0.01`, Trevor 2026-10-12 06:22 MT; long ≤ avg×0.99, short ≥ avg×1.01). With `[resting] partials_enabled` (live) the arm only decides TP3; no market trim is sent. Stays armed until the trade closes (`state.json`).
 2. **While armed:** fire slightly **before** the next analyst level — front-run **0.15 ATR + 0.1 ATR tolerance** — using main 1h/4h levels **plus** `levels.fine` (15m/1h intraday, prior-day H/L, round numbers). Close every profitable **add** (never the first entry) with **≥ 0.5%** gain and **≥ $0.25** net (6+6 bps + `$0.02` network) in one market decrease.
 3. Collateral **stays** in the position. Liq does not move on partial close; later adds push it out. Rungs re-arm; TPs re-placed for new size.
 4. **Skip** if level files **&gt; 45 min** stale.
@@ -184,7 +184,7 @@ Close value in own coin: collateral + PnL − fees − slippage (− ~0.2% USDC�
 - Strategy / ops notes → `live/changes.log`.
 - Tests never touch chain (`conftest` redirects / blocks).
 
-Kill files: per-bot `live/{,eth/,btc/}KILL`; global `live/KILL_ALL`. `close_all_on_kill = false`.
+Kill files: per-bot `live/{,eth/,btc/}KILL`; global `live/KILL_ALL`. `close_all_on_kill = false`. Manual operator stop only: since 2026-10-12 08:46 MT the bot never writes KILL itself; failures are logged as ERROR and reconciled on the next tick (see below).
 
 ---
 
@@ -213,3 +213,91 @@ HWM, profit guard equity and withdrawals. Out of rungs -> `rescue.sh extend` (+6
 add via `rescue.sh add`. When flat the bot auto-repays principal x (1 + `repay_margin_pct` 5%) (+ `repay_profit_share`) to
 JupSOL and restores settings. JupSOL too small (full JupSOL pushes liq < 2 pts or < 10% of collateral) -> **EMERGENCY**:
 notify Trevor. Tool: `live/rescue.sh` (dry run by default); steps: `RESCUE_PLAYBOOK.md`.
+
+## Withdrawal balancing (Trevor 2026-10-11 08:43 MT)
+- Each bot has its own `[ledger] withdraw_fraction` (share of HWM gain sent to JupSOL nightly at 00:05 MT); all start at 0.5. No $0.50 minimum: a withdrawal goes whenever it beats its swap costs.
+- Grok Bot nudges these nightly at 00:23 MT: +0.05 on all while JupSOL < the largest single bot; -0.05 on all once JupSOL > all bots combined; an extra +/-0.05 on any bot drifting from the 50/25/25 split. Bounds 0.2-0.9. Every change logged in live/changes.log.
+- Goal: JupSOL at least the size of any one bot, so it can serve as the liquidation rescue reserve.
+
+## JupSOL rescue, live test (2026-10-11 08:39 MT)
+- SOL short: 0.0015 JupSOL -> 0.00182 SOL added as collateral; collateral $10.45 -> $10.65, liq 130.12 -> 130.54; size/TPs/HWM unchanged; loan open, auto-repay +5% to be confirmed on close. ETH/BTC paths (extra swap) not yet tested live.
+
+## Partials: no minimum (Trevor 2026-10-11 14:03 MT)
+An add qualifies for a partial as soon as its own gain net of open+close fees and network is > 0. No per-trim USD minimum and no % minimum (trim_min_net_usd = 0, trim_min_gain_pct = 0, all bots). Do not reintroduce a minimum without Trevor.
+
+## Partial trigger offset (Trevor 2026-10-11 20:48 MT)
+Partials fire 0.05 x 1h ATR before the support/resistance level (trim_level_tol_atr 0.05, trim_level_front_run_atr 0; was 0.25 ATR total). Adds unchanged (fire at the rung).
+
+## Tick interval (Trevor 2026-10-11 21:02 MT)
+Bots tick every 15 s (was 60). 5 s was tried and hit RPC 429 rate limits.
+
+## Resting orders: limit adds, per-add partials, last-partial rule (Trevor 2026-10-11) — LIVE since 2026-10-12 00:30 MT
+Built 2026-10-11 23:15 MT, approved spec; `adds_enabled`, `partials_enabled` and `last_partial_rule` are **true** on all three bots since 2026-10-12 00:30 MT (partials = TP3, see below). Config section `[resting]`:
+- `adds_enabled` (default false): the next ladder add rests as a Jupiter **limit-open order** at the rung price, same collateral / leverage (+1x per add, cap 20x) as the ladder plans now; the add trigger has no front-run today, so the order sits exactly at the rung. Built by Jupiter's hosted Perps API (`POST /orders/limit`), decoded + checked locally (`live/src/limit.ts`: payer = owner, only Perps/system/token/ATA/compute/oracle programs, side/size/trigger/collateral match), signed by the droplet wallet and submitted via `POST /transaction/execute` (keeper co-signature). Only one resting add at a time; never modified; after a fill the next missing rung is placed. Resting adds are cancelled (API `DELETE /orders/limit`) only when the trade closes or the side changes (Jupiter keeps limit orders after a close). Refused creation (e.g. utilisation > 80 %, Jupiter's **$10 minimum collateral per limit order**) is logged and retried next tick, no fallback. The market add on the bar is not used while on. Fills are booked like a market add (lot, leverage step, ledger, bank debit at placement / refund on cancel, profit-guard deposit) and the TP1/TP2 ladder is re-placed as after any add.
+- `partials_enabled` (default false): **ONE partial TP per position** (Trevor 23:09/23:10 MT), a trigger decrease placed when the trim is **armed** (existing arm rule, `trim_arm_dist_pct`) **and** at least one add is trim-eligible (`trim.select_lots` at the current price; never the first entry). Size = the eligible adds' total; target = the N-th trim level (main + fine) beyond their size-weighted entry in the profit direction, N = round(`partial_levels_min` + (max − min) × (rung − 1)/(`ladder_max_rungs` − 1)) for the highest rung covered (1 → 4 over 14 rungs); fires `trim_level_tol_atr` (+ trim front-run, now 0) before the level; must cover fees (6+6 bps + `trim_network_usd`), else the next level out is used. Not touched otherwise (no toggling with the arm state); when a new add fills it is cancelled + replaced to also cover that add. Leftovers after a full close are cancelled.
+- Only ONE resting add order at a time (Trevor 23:11 MT); after it fills the next one is placed.
+- Jupiter limits found: limit orders need **≥ $10 collateral each** (API `collateral_size_below_minimum`; the live ladder's $3 rungs are refused → with adds_enabled those rungs would never be placed, only logged/retried); max 20 limit orders per market+side; refused when utilisation > 80 %; ~0.0052 SOL request rent per order (refunded on fill/cancel).
+- `last_partial_rule` (default false): the price of the last partial (per-add partial fill or trim exit) is recorded; the next add order is planned from the more adverse of the last fill and that price and must lie beyond it.
+- TP1 / TP2 logic unchanged (its re-place never touches resting adds or per-add partials).
+- Preview (sends nothing): `.venv/bin/python -m live.resting_preview --config configs/live_100.toml`.
+
+
+## Lot recovery after an unsaved add (2026-10-12)
+Before a market add is sent the bot saves an `add_pending` marker; once the fill is booked the lot is saved and the
+marker cleared. Every tick, if the on-chain size is larger than the lots total, the bot reads the position's recent
+Jupiter IncreasePositionEvents and rebuilds the single unrecorded fill whose size equals the difference exactly (fill
+price / size / collateral from the event), booking it like a normal add (fresh TP1/TP2). If there is no exact single
+match nothing changes and trims keep skipping on the mismatch. Resting limit-add fills ([resting], live) are saved
+the moment they are booked and are never rebuilt twice.
+
+
+## Ladder preset C (2026-10-12, LIVE since 00:30 MT)
+`dca.ladder_fixed_usd` (default 0 = off): when > 0 every add rung gets exactly this collateral instead of the weighted
+split. Preset C (configs/preset_ladder_c.txt): $10 open (entry.first_collateral_mode = "fixed", sizing fixed_usd $10),
+$10 per rung (ladder_fixed_usd 10, min_add_usd 10), leverage 5x +2.5x per add capped at 20x, 10 main rungs, no deep
+rung. Rungs the free collateral cannot cover are simply not placed ($10 minimum = Jupiter's limit-order minimum).
+
+
+## TP3 = the only partial mechanism ([resting] partials_enabled, LIVE 2026-10-12 00:30 MT)
+When partials_enabled is on, the single partial TP order per position (TP3) is the only way lots are partially closed.
+The old market trim still arms (1% against avg since 2026-10-12 06:22 MT; was 0.65%) and computes eligible adds - that decides when / for which adds TP3
+is placed - but it never sends a market close. TP3 is cancelled and re-placed when a new add fills. TP1/TP2 unchanged.
+live/manual_trim.sh <bot> --send refuses while a TP3 order is live (dry run works).
+
+## Profit guard target as % of HWM (LIVE 2026-10-12 00:30 MT)
+target = HWM x (min_profit_pct_hwm 0.2% + min_profit_pct_per_partial 0.05% x partials taken this trade
+[market trims + TP3 fills]). Replaces the fixed min_profit_native amounts (used only if the pct is 0). Still a market
+close of the whole position, still only while underwater.
+
+## Ladder preset C + resting orders: LIVE since 2026-10-12 00:30 MT on all three bots.
+
+
+## TP3 target: between the add entry and the average (LIVE 2026-10-12 01:01 MT, replaces "N levels beyond entry")
+TP3 always closes while the covered add(s) are still underwater versus the trade average: target strictly between the
+add entry and avg. Allowed distance = (entry -> avg gap) x f, f rising linearly from 0 at rung 1 to
+[resting] partial_zone_f_max (0.5 = halfway to avg) at the deepest rung (ladder_max_rungs). Rung 1: the first analyst
+level (main + fine) past its entry; deeper rungs: the farthest analyst level inside the allowed zone. Fired 0.05 ATR
+before the level; must cover fees. No level in the zone: the fee-covering minimum just past the entry. Several adds in
+one TP3: size-weighted entry and highest rung.
+
+TP3 zone edge (LIVE 2026-10-12 01:45 MT): when no analyst level lies inside the allowed zone (rungs >= 2), TP3 targets the
+zone edge (entry + gap x f) less the 0.05 ATR front-run, if that covers fees; otherwise the fee-covering minimum just past
+the entry; if even that is at/beyond the average, no TP3 (logged). Rung 1: first analyst level past its entry, as before.
+
+### TP1/TP2 re-size after a TP3 fill (Trevor 2026-10-12 06:07 MT)
+When a TP3 (per-add partial TP order) fills, the pending TP1/TP2 trigger orders are re-placed at the same prices, sized on the remaining position with the original % split (e.g. TP1 = 50% of remaining). Nothing else changes.
+
+### TP3 arm distance 1 % (Trevor 2026-10-12 06:22 MT)
+trim_arm_dist_pct = 0.01 on all three bots (was 0.0065): trim/TP3 arms once price is > 1 % against the avg.
+
+### Unconfirmed cancels never halt (Trevor 2026-10-12 08:28 MT)
+A cancel (resting add, TP, leftover order) that does not confirm is logged and retried every tick while the order is still on-chain; once gone any resting-add refund is booked and TP1/TP2 re-placed if needed. No KILL. KILL stays for opens/increases/unknown positions.
+
+### The bot never stops itself (Trevor 2026-10-12 08:46 MT)
+No automatic KILL. Unconfirmed open/add -> next tick reads the chain (late fill booked via lot recovery / late open adopted, else normal logic). TP placement failure -> TP1/TP2 re-placed next tick (TP3 re-placed each tick as before). Unconfirmed close / trim -> next tick reconciles. A position the bot did not open (incl. manual) is ADOPTED as one lot (chain side/size/avg/collateral), TPs placed, managed normally. All logged as ERROR. Manual KILL / KILL_ALL files still stop new orders.
+
+### No double add / adopted deposit (Trevor 2026-10-12 08:52 MT)
+While an add/open is unresolved (add_pending), no new add (market or resting) is sent until the chain shows it landed (booked via lot recovery / adoption) or absent with no increase request pending. An adopted position collateral is booked as a trade deposit in the bot own coin at the adoption price (HWM unchanged).
+
+### Inter-bot loans (Trevor 2026-10-12 18:09 / 18:13 MT)
+A bot without enough free equity for its next resting rung requests a loan (what the rung needs, max $50) through live/ib_loan.json. Any flat bot without a loan funds it by swapping its own coin into the borrower coin. The lender opens nothing until repaid. On the borrower full close it swaps back the quantity lent (swap cost on the borrower); the lender books it and is re-enabled. Loans never move HWM, equity or withdrawable amounts on either side. One loan at a time (live/ib_loan.json: requested -> funding -> funded -> open -> repaid -> settled). A lender must be flat with no loan of its own and keep >= $5 spare beyond the loan. Repayment targets the lent quantity at oracle prices + 0.4% buffer; the first repayment came back 0.000964 SOL short (swap price below oracle), which stayed with the borrower. Errors are logged and retried; never a halt. First loan: SOL -> BTC 0.478070233 SOL ($50) 18:13 MT.

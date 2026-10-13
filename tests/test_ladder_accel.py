@@ -41,7 +41,7 @@ def test_accel_budgets_sum_and_floor():
 
 @pytest.mark.parametrize("name", ["live_100", "live_eth", "live_btc"])
 def test_live_configs_load_accel(name):
-    d = load_config(f"configs/{name}.toml").dca
+    d = load_config(f"tests/fixtures/configs_pre_c/{name}.toml").dca
     assert (d.ladder_max_rungs, d.ladder_weight_mode, d.ladder_weight_mult, d.ladder_weight_mult_step,
             d.ladder_weight_mult_cap) == (14, "accel", 1.15, 0.10, 2.5)
     assert (d.lev_start, d.lev_step, d.lev_cap) == (5.0, 1.0, 20.0)

@@ -2,8 +2,9 @@
 // Market-specific commands take "market": "SOL" | "ETH" | "BTC" (default SOL = original behaviour).
 import { BN } from "@coral-xyz/anchor";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
-import { Built, buildCancelRequest, buildCloseEmptyAtas, buildDecrease, buildIncrease, connect, market, ownerTokenAccounts, positionFlows, programs, readState, simulate } from "./jup";
+import { Built, buildCancelRequest, buildCloseEmptyAtas, buildDecrease, buildIncrease, connect, market, ownerTokenAccounts, positionFlows, positionIncreases, programs, readState, simulate } from "./jup";
 import { awaitRequestGone, loadKeypair, sendBuilt } from "./send";
+import { buildCancelLimit, buildLimit, listLimitOrders, signAndSubmit, simulateApiTx } from "./limit";
 import { buildSendJupsol, buildSwap, quote, readStake, readSweepTokens, simulateBuilt, txDeltas, SwapBuilt, SWEEP_MINTS } from "./stake";
 
 const OWNER = new PublicKey(process.env.JUP_OWNER ?? "Csa1b6D2h7i63ZgrBULLLL76B9uSBmYdKyP47UFCgwx");
@@ -54,6 +55,24 @@ async function main() {
     out = await run(conn, await buildDecrease(conn, OWNER, a.side, a, market(a.market)), a, a.triggerPriceUsd === undefined);
   } else if (cmd === "simulate-cancel" || cmd === "cancel") {
     out = await run(conn, await buildCancelRequest(conn, OWNER, new PublicKey(a.request)), a, false);
+  } else if (cmd === "limit-orders") {   // read-only: this wallet's resting limit orders (Jupiter Perps API)
+    out = await listLimitOrders(OWNER);
+  } else if (cmd === "simulate-create-limit-order" || cmd === "create-limit-order") {
+    // resting limit add ([resting] adds_enabled, default OFF): API builds, we verify, owner signs, /transaction/execute
+    const b: any = await buildLimit(conn, OWNER, market(a.market), { side: a.side, inputMint: a.inputMint ?? "So11111111111111111111111111111111111111112",
+      inputAtoms: String(a.inputAtoms), sizeUsd: a.sizeUsd, triggerPriceUsd: a.triggerPriceUsd });
+    const { tx, ...info } = b;
+    if (!b.ok || !tx) out = { ...info, ok: false };
+    else if (!(a.send && process.env.JUP_LIVE === "1")) out = { ...info, ...(await simulateApiTx(conn, tx)), sent: false };
+    else out = { ...info, ...(await signAndSubmit(conn, loadKeypair(OWNER.toBase58()), tx, "create-limit-order", b.requireKeeperSignature !== false)) };
+  } else if (cmd === "simulate-cancel-limit-order" || cmd === "cancel-limit-order") {
+    const b: any = await buildCancelLimit(conn, OWNER, market(a.market), a.request);
+    const { tx, ...info } = b;
+    if (!b.ok || !tx) out = { ...info, ok: false };
+    else if (!(a.send && process.env.JUP_LIVE === "1")) out = { ...info, ...(await simulateApiTx(conn, tx)), sent: false };
+    else out = { ...info, ...(await signAndSubmit(conn, loadKeypair(OWNER.toBase58()), tx, "cancel-limit-order", b.requireKeeperSignature !== false)) };
+  } else if (cmd === "position-increases") {   // read-only: recent increase (add) fills of this position
+    out = await positionIncreases(conn, new PublicKey(a.position), Number(a.limit ?? 40));
   } else if (cmd === "position-flows") {   // read-only: this position's own SOL flows since its open tx
     out = await positionFlows(conn, OWNER, new PublicKey(a.position), a.sinceSig);
   } else if (cmd === "token-accounts") {   // read-only: the owner's bot token accounts (rent deposits = owner capital)

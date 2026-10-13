@@ -1,7 +1,7 @@
 """Live Jupiter Perps bot loop (SOL). Ticks every ``TICK_SEC``; strategy evaluated on each closed signal bar.
 
 On-chain state is the source of truth: every tick re-reads the position + requests and reconciles the
-local state (``live/state.json``). Any unexpected inconsistency or failed action writes the KILL file
+local state (``live/state.json``). Failed actions are logged (ERROR) and reconciled next tick; the bot never writes the KILL file (manual KILL honoured)
 (no new orders; closes still allowed) instead of retrying blindly.
 
     .venv/bin/python -m live.bot --config configs/live_100.toml      # SOL (state in live/)
@@ -39,11 +39,12 @@ from live.flows import flow_extras, position_net_sol
 from live import sweep as sweepmod
 from live import trim as trimmod
 from live import bank as bankmod
+from live import resting as restmod
 
 import urllib.request
 
 STATE = ROOT / "live" / "state.json"
-TICK_SEC = 60                     # timer / stop / reconciliation cadence
+TICK_SEC = 15                     # Trevor 2026-10-11 21:02 MT: tried 5s, hit RPC 429s, so 15s (was 60)
 KLINE_PAGES = 5                   # 5000 x 15m bars > 200 x 4h EMA warm-up
 LAMPORTS = 1_000_000_000
 USDC_ATOMS = 1_000_000
@@ -103,6 +104,17 @@ class Local:
     pg_tp_usd: float = 0.0
     # per-bot own-coin ledger + HWM (2026-10-08 21:37 MT, live/bank.py, [ledger]): persists across flat resets / restarts
     bank: dict | None = None
+    # resting orders ([resting], 2026-10-11, default OFF): the resting limit add of this trade (one at a time), the per-add
+    # partial TP triggers placed (one per filled add, never modified), the price of the last partial, the last seen avg
+    rest_add: dict | None = None
+    partials: list[dict] = field(default_factory=list)
+    partials_done: list[dict] = field(default_factory=list)
+    # Trevor 2026-10-12 08:28 MT: cancels not confirmed -> retried each tick (no KILL); [{pubkey, change, ra, then}]
+    pending_cancels: list[dict] = field(default_factory=list)
+    tp_retry: bool = False   # Trevor 2026-10-12 08:46 MT: TP1/TP2 re-placed next tick (placement failed / TPs cancelled)
+    last_partial_px: float | None = None
+    rest_last_avg: float = 0.0
+    add_pending: dict | None = None   # market add sent, fill not saved yet (cleared once its lot is saved)
 
 
 def load_local(path: Path) -> Local:
@@ -257,8 +269,10 @@ class Bot:
         tmp.replace(self.state_path)
 
     def halt(self, why: str) -> None:
-        log.error("HALT (KILL written): %s", why)
-        self.kill.write_text(f"{pd.Timestamp.now(tz='UTC')} {why}\n")
+        """Trevor 2026-10-12 08:46 MT: the bot never writes KILL itself (a manual KILL file is still honoured). Logs loudly;
+        the next tick re-reads the chain and reconciles; TP1/TP2 are re-placed next tick if the position is open."""
+        log.error("RECONCILE NEXT TICK (no KILL): %s", why)
+        self.local.tp_retry = True
 
     def cmd(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         """Send when live, simulate when dry_run (same builders)."""
@@ -396,15 +410,130 @@ class Bot:
         """Cancel this market's requests. A request that is already gone on-chain (cancel failed with 3012
         AccountNotInitialized, e.g. the escalated re-sign of the same cancel landed first) counts as cancelled while the
         position size is unchanged; a size change (a trigger filled meanwhile) or a request still on-chain is a failure."""
+        return self.cancel_reqs(st, st["openRequests"])
+
+    def cancel_reqs(self, st: dict[str, Any], reqs: list[dict[str, Any]]) -> bool:
+        """Cancel ``reqs``. [resting] on: a resting limit add (increase trigger) is cancelled through the Jupiter Perps API
+        (cancel_limit); everything else as before (closePositionRequest2)."""
         ok = True
-        size = self._chain_size(st) if st["openRequests"] else 0.0
-        for r in st["openRequests"]:
+        size = self._chain_size(st) if reqs else 0.0
+        for r in reqs:
+            if self.cfg.resting.any_on and r.get("requestChange") == "increase" and r.get("requestType") == "trigger":
+                ok &= self.cancel_limit(r["pubkey"])
+                continue
             ok &= self.cancel_request(r["pubkey"], size) == "ok"
         return ok
+
+    def ladder_requests(self, st: dict[str, Any]) -> list[dict[str, Any]]:
+        """The TP1/TP2 ladder's requests. [resting] on: resting limit adds and this bot's per-add partial triggers are
+        excluded (they are never modified by a TP re-place). Off: every request of this market (unchanged)."""
+        reqs = st["openRequests"]
+        if not self.cfg.resting.any_on:
+            return reqs
+        mine = {p.get("pubkey") for p in self.local.partials}
+        return [r for r in reqs if r.get("requestChange") != "increase" and r.get("pubkey") not in mine]
 
     def _chain_size(self, st: dict[str, Any]) -> float:
         p = self.chain_position(st)
         return p.size if p is not None else 0.0
+
+    def add_pending_wait(self, st: dict[str, Any], pos: ChainPosition | None) -> bool:
+        """Trevor 2026-10-12 08:52 MT: while an add/open-pending marker exists, no new add/open is sent until the chain
+        shows the prior one resolved. Pending increase request on-chain -> wait; landed (size above the lots) -> lot
+        recovery books it (or the open is adopted) -> wait; absent and no request -> marker cleared, send. True = wait."""
+        L = self.local
+        ap = L.add_pending
+        if not ap:
+            return False
+        ra = (L.rest_add or {}).get("pubkey")
+        reqs = [r.get("pubkey") for r in st.get("openRequests", []) if r.get("requestChange") == "increase"
+                and r.get("pubkey") != ra and r.get("requestType") != "trigger"]
+        if reqs:
+            log.error("ADD PENDING: increase request still on-chain %s; no new add until it resolves", reqs)
+            return True
+        lots = sum(float(l["size"]) for l in L.lots)
+        if pos is not None and (ap.get("open") or pos.size - lots > 0.01):
+            log.error("ADD PENDING: prior add/open landed late (chain %.2f vs lots %.2f); booking it first", pos.size, lots)
+            if not ap.get("open"):
+                self.recover_missing_add(st, pos, st["oracle"]["price"])
+            return True
+        log.error("ADD PENDING: prior add/open absent on-chain and no request pending; marker cleared")
+        L.add_pending = None
+        self.save()
+        return False
+
+    def adopt_position(self, st: dict[str, Any], pos: ChainPosition) -> None:
+        """Trevor 2026-10-12 08:46 MT: a position on-chain the bot did not open (manual / late-landed open) is adopted as a
+        single lot (side, size, avg entry, collateral from the chain), TPs placed, then managed normally. No KILL."""
+        L = self.local
+        own_open = bool(L.add_pending and L.add_pending.get("open"))
+        if self.bank_on and not self.live.dry_run and not own_open:   # Trevor 08:52 MT: collateral = trade deposit (no HWM)
+            b = L.bank
+            nat = round(pos.margin / self.coin_px(st), 9)
+            bankmod.debit(b, nat, "collateral", f"adopted position collateral ${pos.margin:.2f} at {self.coin_px(st):.4f}")
+            b["window"] = max(b.get("window", 0), self.cfg.ledger.window_ticks)
+        lev = round(pos.size / pos.margin, 2) if pos.margin > 0 else L.last_leverage
+        now = str(pd.Timestamp.now(tz="UTC"))
+        lot = {"time": now, "price": round(pos.avg_entry, 6), "size": round(pos.size, 2), "coll": round(pos.margin, 4),
+               "lev": lev, "first": True, "sig": None, "adopted": True}
+        self.local = Local(side=pos.side, opened=now, n_entries=1, first_margin=pos.margin, last_leverage=lev,
+                           first_entry=pos.avg_entry, last_entry=pos.avg_entry, last_size=pos.size, last_bar=L.last_bar,
+                           day=L.day, day_start_equity=L.day_start_equity, lots=[lot], trade_opened_usd=lot["size"],
+                           trim_day=L.trim_day, trim_day_n=L.trim_day_n, bank=L.bank, pending_cancels=L.pending_cancels)
+        log.error("ADOPTED on-chain position not opened by this bot: %s $%.2f avg %.4f coll $%.2f x%g (single lot)",
+                  "long" if pos.side == LONG else "short", pos.size, pos.avg_entry, pos.margin, lev)
+        self.save()
+        self.sync_tp_ladder(pos)
+        self.save()
+
+    def cancel_failed(self, reqs: list[dict[str, Any]], then: str | None, why: str) -> None:
+        """Trevor 2026-10-12 08:28 MT: a cancel that did not confirm never halts. Requests still on-chain are recorded and
+        retried every tick (retry_cancels); ``then`` ("sync" / "resize") re-places TP1/TP2 once all are gone."""
+        try:
+            live = {r["pubkey"] for r in self.chain().get("openRequests", [])}
+        except Exception as e:  # noqa: BLE001 - cannot verify: keep them all pending
+            log.warning("cancel check re-read failed: %s", e)
+            live = {r["pubkey"] for r in reqs}
+        known = {p["pubkey"] for p in self.local.pending_cancels}
+        ra = self.local.rest_add
+        for r in reqs:
+            if r["pubkey"] in live and r["pubkey"] not in known:
+                self.local.pending_cancels.append({"pubkey": r["pubkey"], "change": r.get("requestChange"), "then": then,
+                                                   "ra": dict(ra) if ra and ra.get("pubkey") == r["pubkey"] else None})
+        log.error("CANCEL NOT CONFIRMED (%s): no halt; retried each tick: %s", why,
+                  [p["pubkey"] for p in self.local.pending_cancels])
+        self.save()
+
+    def retry_cancels(self, st: dict[str, Any], pos: ChainPosition | None) -> bool:
+        """Each tick while cancels are pending: still on-chain -> cancel again; gone -> book the resting-add refund (if the
+        bot no longer tracks that order itself) and drop it. True = something was done (the tick ends here)."""
+        L = self.local
+        open_ = {r["pubkey"] for r in st["openRequests"]}
+        left, then = [], set()
+        for p in L.pending_cancels:
+            if p["pubkey"] in open_:
+                log.warning("pending cancel %s still on-chain: retrying", p["pubkey"])
+                if p.get("change") == "increase" and self.cfg.resting.any_on:
+                    self.cmd("cancel-limit-order", {"request": p["pubkey"]})
+                else:
+                    self.cmd("cancel", {"request": p["pubkey"]})
+                left.append(p)
+                continue
+            if L.rest_add and L.rest_add.get("pubkey") == p["pubkey"]:
+                pass   # still tracked: resting_reconcile books fill or refund
+            elif p.get("ra") and pos is None:
+                self._rest_bank_refund(p["ra"], f"resting add {p['pubkey']} cancelled (pending cancel)")
+            log.warning("pending cancel %s: gone on-chain", p["pubkey"])
+            if p.get("then"):
+                then.add(p["then"])
+        L.pending_cancels = left
+        if not left and pos is not None and L.side == pos.side:
+            if "sync" in then:
+                self.sync_tp_ladder(pos)
+            elif "resize" in then:
+                self.resize_tps(pos)
+        self.save()
+        return True
 
     def cancel_request(self, pubkey: str, size_before: float) -> str:
         """Cancel one request. Returns "ok" (cancelled, or already gone with the position unchanged), "filled" (the request
@@ -442,7 +571,7 @@ class Bot:
         log.warning("CLOSE %s (%s)", "long" if pos.side == LONG else "short", why)
         st = self.chain()
         if not self.cancel_all(st):
-            self.halt("cancel before close failed")
+            self.cancel_failed(st["openRequests"], None, "cancel before close")
         slip = self.live.price_slippage_pct
         worst = price * (1 - slip) if pos.side == LONG else price * (1 + slip)
         res = self.cmd("decrease", {"side": "long" if pos.side == LONG else "short", "entire": True,
@@ -464,15 +593,16 @@ class Bot:
         self.bank_flat(flows)
         self.local = Local(last_bar=self.local.last_bar, day=self.local.day, day_start_equity=self.local.day_start_equity,
                            flat_since=str(pd.Timestamp.now(tz="UTC")), trim_day=self.local.trim_day,
-                           trim_day_n=self.local.trim_day_n, bank=self.local.bank)
+                           trim_day_n=self.local.trim_day_n, bank=self.local.bank,
+                           pending_cancels=self.local.pending_cancels)
 
     def sync_tp_ladder(self, pos: ChainPosition) -> None:
         """Cancel existing TP triggers and place the full ladder on the whole position (strategy.tp_targets:
         normal ladder on the average, above-water TPs after a deep levels-mode add, smart TP2 / fee floors / never
         past market when tp.smart_tp2). Resets the momentum-fade tracking."""
         st = self.chain()
-        if not self.cancel_all(st):
-            self.halt("TP cancel failed")
+        if not self.cancel_reqs(st, self.ladder_requests(st)):
+            self.cancel_failed(self.ladder_requests(st), "sync", "TP cancel")
             return
         side = "long" if pos.side == LONG else "short"
         price = st["oracle"]["price"]
@@ -495,6 +625,37 @@ class Bot:
                 self.save()
                 return
             prev = lv.close_pct
+        self.save()
+
+    def resize_tps(self, pos: ChainPosition) -> None:
+        """Trevor 2026-10-12 06:07 MT: after a TP3 (per-add partial) fill, cancel and re-place the pending TP1/TP2
+        triggers at the SAME prices (local.tp_px) sized on the remaining position with the ladder's % split. No
+        recorded prices (e.g. after a restart): falls back to the normal full re-place (as RETP_NOW)."""
+        n = len(self.cfg.tp.ladder)
+        pend = list(range(pos.tp_hits, n))
+        if not pend or any(i >= len(self.local.tp_px) or not self.local.tp_px[i] for i in pend):
+            log.warning("TP resize after TP3: no recorded TP prices; full TP re-place instead")
+            self.sync_tp_ladder(pos)
+            return
+        st = self.chain()
+        if not self.cancel_reqs(st, self.ladder_requests(st)):
+            self.cancel_failed(self.ladder_requests(st), "resize", "TP cancel (resize after TP3)")
+            return
+        side = "long" if pos.side == LONG else "short"
+        price = st["oracle"]["price"]
+        pxs = list(self.local.tp_px)
+        prev = self.cfg.tp.ladder[pos.tp_hits - 1].close_pct if pos.tp_hits else 0.0
+        for i in pend:
+            px = pxs[i]
+            if pos.side * (px - price) < self.cfg.tp.tp_market_gap - 1e-9:
+                log.warning("TP%d %.2f not beyond market %.3f; skipped (resize)", i + 1, px, price)
+                continue
+            if not self.place_tp(pos, side, i, px, prev):
+                self.halt("TP placement failed (resize after TP3)")
+                self.save()
+                return
+            prev = self.cfg.tp.ladder[i].close_pct
+        log.warning("TP resize after TP3: size %.2f, TPs %s", pos.size, [pxs[i] for i in pend])
         self.save()
 
     def place_tp(self, pos: ChainPosition, side: str, i: int, px: float, prev: float) -> bool:
@@ -525,7 +686,7 @@ class Bot:
                 log.info("TP adjust (%s): %s", ctx, why)
 
     def tp_requests(self, st: dict[str, Any]) -> list[dict[str, Any]]:
-        return [r for r in st["openRequests"] if r.get("triggerPrice") and not r.get("executed")]
+        return [r for r in self.ladder_requests(st) if r.get("triggerPrice") and not r.get("executed")]
 
     def check_tps(self, pos: ChainPosition, st: dict[str, Any], price: float) -> None:
         """Periodic smart-TP check (tp.smart_tp2): track the best price, detect a momentum fade, recompute the ladder
@@ -591,7 +752,7 @@ class Bot:
             log.info("TP%d re-place %.2f -> %.2f (move %+.2f >= %.2f)", i + 1, old, new, new - old, t.tp_min_move)
             c = self.cancel_request(by_level[i]["pubkey"], pos.size)
             if c == "failed":
-                self.halt(f"TP{i + 1} cancel failed")
+                self.cancel_failed([by_level[i]], "sync", f"TP{i + 1} cancel")
                 self.save()
                 return
             L.tp_px[i] = 0.0
@@ -871,6 +1032,12 @@ class Bot:
         idx = trimmod.select_lots(L.lots, pos.side, price, t, c.open_fee, c.close_fee)
         if not idx:
             return False
+        if self.cfg.resting.partials_enabled:   # Trevor 2026-10-12 00:27 MT: TP3 (partial TP order) is the only partial
+            msg = f"trim: TP3 mode, market trim not executed (lots {[i + 1 for i in idx]} qualify)"
+            if getattr(self, "_tp3_trim_note", None) != msg:
+                log.info(msg)
+                self._tp3_trim_note = msg
+            return False
         if lvl is not None:
             log.info("trim TRIGGER: armed, price %.3f reached %s %.3f -> closing lots %s",
                      price, "resistance" if pos.side > 0 else "support", lvl, [i + 1 for i in idx])
@@ -926,6 +1093,8 @@ class Bot:
                  "avg": round(pos.avg_entry, 4), "onchain_pnl_usd": round(onchain, 4), "onchain_net_usd": round(onchain_net, 4),
                  "lot_gain_usd": round(lot_gain, 4), "fees_usd": round(fees, 4), "sig": res.get("sig")}
         L.trims.append(rec_t)
+        if self.cfg.resting.last_partial_rule:   # [resting] rule 3: a trim is a partial -> its exit is the last partial price
+            L.last_partial_px = round(exit_px, 6)
         if L.pg_base_sol is not None:   # paid out = collateral returned + PnL - fee (a loss off collateral nets to ~0)
             pay = (pos.margin - new.margin) + onchain - c.close_fee * closed
             L.pg_recv_sol = round(L.pg_recv_sol + max(pay, 0.0) / (self._sol_px or price), 9)
@@ -985,6 +1154,9 @@ class Bot:
 
     def entries_paused(self) -> str | None:
         """live/PAUSE_UNTIL holds an ISO time (tz-aware, or naive = America/Denver); fresh opens blocked until then."""
+        ln = (self.local.bank or {}).get("ib_loan") if self.bank_on else None
+        if ln and ln.get("role") == "lender":   # Trevor 2026-10-12 18:13 MT: a lender opens nothing until repaid
+            return f"lent {ln.get('sol')} {ln.get('lender_coin') or 'SOL'} to the {ln.get('peer')} bot; opens disabled until repaid"
         for f in [self.dir / "PAUSE_UNTIL", *(ROOT / x for x in self.cfg.bot.extra_pause_files)]:
             if not f.exists():
                 continue
@@ -1029,7 +1201,19 @@ class Bot:
             args["jupiterMinimumOut"] = str(int(it.margin * (1 - slip) * USDC_ATOMS))
         elif self.asset != "SOL":  # long ETH/BTC: SOL input swapped to the custody token (ETH / WBTC) by the request
             args["jupiterMinimumOut"] = str(int(it.margin * (1 - slip) / price * 10 ** COLLATERAL_DECIMALS[self.asset]))
+        if self.add_pending_wait(st, pos):   # Trevor 2026-10-12 08:52 MT: never a second add on an unresolved one
+            return
+        if not self.live.dry_run:   # 2026-10-12: persist "add pending" before sending (a restart
+            # between the fill and the lot save lost a lot); recover_missing_add() rebuilds it from the chain
+            self.local.add_pending = {"time": str(pd.Timestamp.now(tz="UTC")), "size": round(it.margin * it.leverage, 2),
+                                      "lev": it.leverage, "margin": it.margin, "price": price,
+                                      "size0": pos.size if pos is not None else 0.0, "sig": None, "open": pos is None,
+                                      "nat": nat}
+            self.save()
         res = self.cmd("increase", args)
+        if not self.live.dry_run and self.local.add_pending is not None:
+            self.local.add_pending["sig"] = res.get("sig")
+            self.save()
         if self.bank_on and not self.live.dry_run and (res.get("ok") or res.get("sig")):
             b = self.local.bank
             if pos is None and b.get("book_pend"):   # previous trade not booked yet (payout window still open)
@@ -1047,6 +1231,8 @@ class Bot:
         size0 = pos.size if pos is not None else 0.0
         conf = self.confirm_size(size0, +1, tries=self.confirm_tries if res.get("ok") else 2)
         if conf is None:
+            # Trevor 2026-10-12 08:46 MT: add_pending kept: a late fill is rebuilt by recover_missing_add (a late open
+            # is adopted); absent on the next chain read -> normal logic re-places
             if self.bank_on:
                 self.local.bank["window"] = 10   # refund of the collateral (if any) is this bot's flow, not external
                 self.save()
@@ -1069,6 +1255,8 @@ class Bot:
         lot = {"time": str(pd.Timestamp.now(tz="UTC")), "price": round(fill, 6), "size": round(new.size - size0, 2),
                "coll": round(new.margin - (pos.margin if pos is not None else 0.0), 4), "lev": it.leverage,
                "first": pos is None, "sig": res.get("sig")}
+        if self.cfg.resting.partials_enabled and pos is not None:   # [resting] rule 2: this add gets its own partial TP
+            lot.update(partial_due=True, rung=L.n_entries)          # rung = add number (n_entries before this add)
         if pos is None:
             ledger.on_open(str(pd.Timestamp.now(tz="UTC")), it.side, st["wallet"]["sol"], res.get("sig"), res.get("feeLamports"),
                            position=st["positions"][side].get("pubkey"))
@@ -1081,7 +1269,7 @@ class Bot:
                                first_margin=it.margin, last_leverage=it.leverage, first_entry=new.avg_entry,
                                last_entry=new.avg_entry, last_size=new.size, last_bar=L.last_bar, day=L.day,
                                day_start_equity=L.day_start_equity, lots=[lot], trade_opened_usd=lot["size"],
-                               trim_day=L.trim_day, trim_day_n=L.trim_day_n, bank=L.bank,
+                               trim_day=L.trim_day, trim_day_n=L.trim_day_n, bank=L.bank, pending_cancels=L.pending_cancels,
                                pg_base_sol=round(self.budget.free_usd / self.sol_price(st), 9) if self.budget else 0.0,
                                pg_dep_sol=round(sol, 9))
             log.info("profit guard: baseline %.6f SOL (own free budget just before the open), deposited %.6f SOL",
@@ -1093,12 +1281,410 @@ class Bot:
             L.tp_hits, L.first_tp_time = 0, None   # fresh TP1 50% / TP2 100% ladder on the whole position
             L.lots.append(lot)
             L.trade_opened_usd += lot["size"]
+        self.local.add_pending = None
         log.info("LOT added #%d: %s fill %.4f size $%.2f coll $%.2f x%g", len(self.local.lots), lot["time"][:19],
                  lot["price"], lot["size"], lot["coll"], lot["lev"])
         self.save()
         new = self.chain_position(self.chain())
         assert new is not None
         self.sync_tp_ladder(new)
+        if pos is not None and self.cfg.resting.partials_enabled:   # [resting]: the single partial TP covers the new add
+            self.partial_on_add(new, price, self.local.lots[-1])
+
+    # ------------------------------------------------------------- resting orders ([resting], 2026-10-11, default OFF)
+    def _rest_note(self, key: str, msg: str, level: int = logging.INFO) -> None:
+        """Log ``msg`` once per distinct message for ``key`` (a refused / skipped placement is retried every tick)."""
+        notes = self.__dict__.setdefault("_rest_notes", {})
+        if notes.get(key) != msg:
+            notes[key] = msg
+            log.log(level, "resting: %s", msg)
+
+    def _rest_bank_refund(self, ra: dict[str, Any], why: str) -> None:
+        """Reverse the collateral debit of a resting add that was cancelled / never filled (own-coin ledger)."""
+        if not self.bank_on or self.live.dry_run or not ra.get("debited"):
+            return
+        b, amt = self.local.bank, float(ra.get("nat") or 0.0)
+        b["bal"] = round(b["bal"] + amt, 9)
+        b["trade_dep"] = round(b.get("trade_dep", 0.0) - amt, 9)
+        bankmod.note(b, "refund", amt, why)
+        b["window"] = max(b.get("window", 0), self.cfg.ledger.window_ticks)
+        log.info("BANK resting add refund %+.9f %s (%s)", amt, b["coin"], why)
+
+    def _rest_bank_debit(self, ra: dict[str, Any]) -> None:
+        if not self.bank_on or self.live.dry_run or ra.get("debited"):
+            return
+        b = self.local.bank
+        bankmod.debit(b, float(ra.get("nat") or 0.0), "collateral",
+                      f"resting add {ra.get('side')} ${ra.get('margin', 0):.2f} x{ra.get('lev', 0):g} @ {ra.get('trigger')} "
+                      f"req {ra.get('pubkey')}")
+        b["window"] = max(b.get("window", 0), self.cfg.ledger.window_ticks)
+        ra["debited"] = True
+
+    def cancel_limit(self, pubkey: str) -> bool:
+        """Cancel a resting limit add via the Jupiter Perps API (build -> verify -> owner signs -> /transaction/execute).
+        True when cancelled or already gone; the bank refund is booked here when the record is this bot's."""
+        res = self.cmd("cancel-limit-order", {"request": pubkey})
+        if self.live.dry_run:
+            return bool(res.get("ok"))
+        gone = bool(res.get("ok"))
+        if not gone:
+            try:
+                gone = not any(r.get("pubkey") == pubkey for r in self.chain().get("openRequests", []))
+            except Exception as e:  # noqa: BLE001 - cannot verify -> failure
+                log.warning("resting add cancel %s failed (%s) and the chain re-read failed: %s", pubkey, res.get("error"), e)
+                return False
+            if gone:   # gone without our cancel: filled or closed elsewhere -> the next reconcile decides (record kept)
+                log.warning("resting add cancel %s failed (%s) but the request is gone; next tick reconciles", pubkey,
+                            res.get("error") or res.get("err"))
+                return True
+            log.warning("resting add cancel %s failed: %s", pubkey, res.get("error") or res.get("err"))
+            return False
+        ra = self.local.rest_add
+        if ra and ra.get("pubkey") == pubkey:
+            self._rest_bank_refund(ra, f"resting add {pubkey} cancelled")
+            self.local.rest_add = None
+            self.save()
+        return True
+
+    def recover_missing_add(self, st: dict[str, Any], pos: ChainPosition, price: float) -> bool:
+        """2026-10-12: on-chain size exceeds the lots total by a whole add whose lot was never saved (restart between
+        the fill and the save) -> rebuild that lot from the chain's IncreasePositionEvent (fill price, size, collateral)
+        and book it like a normal add. Only an exact single-fill match is rebuilt; otherwise nothing changes (trims
+        keep skipping on the mismatch, as before). Resting add fills are left to resting_reconcile. True = lot added."""
+        L = self.local
+        gap = round(pos.size - sum(float(l["size"]) for l in L.lots), 2)
+        if gap <= 0.01:
+            return False
+        ra = L.rest_add
+        if ra and self.cfg.resting.any_on and abs(float(ra["size_usd"]) - gap) <= 0.01:
+            return False   # a resting add fill: resting_reconcile books it
+        key = (round(pos.size, 2), gap)
+        if getattr(self, "_recover_tried", None) == key:
+            return False   # one chain lookup per distinct mismatch
+        self._recover_tried = key
+        pubkey = st["positions"]["long" if pos.side == LONG else "short"].get("pubkey")
+        try:
+            res = jup("position-increases", {"position": pubkey, "limit": 40})
+        except Exception as e:  # noqa: BLE001 - retried next tick
+            log.warning("lot recovery: reading increase events failed: %s", e)
+            self._recover_tried = None
+            return False
+        opened = pd.Timestamp(L.opened) if L.opened else None
+        lot_times = [pd.Timestamp(l["time"]) for l in L.lots]
+        cands = []
+        for ev in res.get("increases") or []:
+            t = pd.Timestamp(int(ev["blockTime"]), unit="s", tz="UTC")
+            if opened is not None and t < opened - pd.Timedelta(minutes=2):
+                continue
+            if abs(float(ev["sizeUsdDelta"]) - gap) > 0.01:
+                continue
+            if any(abs((t - lt).total_seconds()) <= 180 for lt in lot_times):
+                continue   # this fill already has a lot
+            cands.append((t, ev))
+        if not cands:
+            log.warning("lot recovery: on-chain size %.2f exceeds lots total by $%.2f but no single unrecorded add fill "
+                        "of that size was found on-chain; lots unchanged", pos.size, gap)
+            return False
+        t, ev = max(cands, key=lambda x: x[0])
+        pend = L.add_pending
+        coll_usd = float(ev["collateralUsdDelta"])
+        if pend and abs(float(pend["size"]) - gap) <= 0.01:
+            lev = float(pend["lev"])
+        else:
+            lev = round(float(ev["sizeUsdDelta"]) / coll_usd * 2) / 2 if coll_usd > 0 else L.last_leverage
+        lot = {"time": str(t), "price": round(float(ev["price"]), 6), "size": round(float(ev["sizeUsdDelta"]), 2),
+               "coll": round(coll_usd - float(ev["feeUsd"]), 4), "lev": lev, "first": False,
+               "sig": (pend or {}).get("sig") or ev["sig"], "recovered": ev["sig"]}
+        if self.cfg.resting.partials_enabled:
+            lot.update(partial_due=True, rung=L.n_entries)
+        newest = all(t > lt for lt in lot_times)
+        L.lots.append(lot)
+        L.lots.sort(key=lambda x: pd.Timestamp(x["time"]))
+        L.n_entries += 1
+        L.trade_opened_usd += lot["size"]
+        if newest:
+            L.last_leverage = lev
+            L.last_entry = float(pend["price"]) if pend and pend.get("price") else lot["price"]
+            L.last_size = pos.size
+            L.tp_hits, L.first_tp_time = 0, None
+        ledger.update(add_entry=True, opened_size_usd=lot["size"], size_usd=pos.size, avg_entry=pos.avg_entry)
+        L.add_pending = None
+        self.save()
+        log.warning("LOT RECOVERED from chain: %s fill %.4f size $%.2f coll $%.2f x%g (keeper tx %s), n_entries %d, "
+                    "lots total now $%.2f = on-chain $%.2f", lot["time"][:19], lot["price"], lot["size"], lot["coll"],
+                    lot["lev"], ev["sig"], L.n_entries, sum(x["size"] for x in L.lots), pos.size)
+        return True
+
+    def resting_reconcile(self, st: dict[str, Any], pos: ChainPosition, price: float) -> tuple[ChainPosition, bool]:
+        """Detect fills of this bot's resting add order and per-add partial triggers (their request accounts are gone).
+        Books them (lots, leverage step, ledger, bank, profit-guard deposit / payout, last partial price) and moves
+        L.last_size so the existing TP1/TP2 fill detection only sees what is left. Returns (position, TP re-sync needed)."""
+        L, R, c = self.local, self.cfg.resting, self.cfg.costs
+        reqs = st["openRequests"]
+        on_chain = {r.get("pubkey") for r in reqs}
+        ra = L.rest_add
+        if ra and ra.get("unconfirmed"):
+            if ra.get("pubkey") in on_chain:   # the submitted order did land
+                ra.pop("unconfirmed", None)
+                self._rest_bank_debit(ra)
+                log.info("resting add %s confirmed on-chain", ra.get("pubkey"))
+                self.save()
+            elif pd.Timestamp.now(tz="UTC") - pd.Timestamp(ra["placed"]) < pd.Timedelta(minutes=2):
+                return pos, False   # may still land: wait before judging
+        gone_p = restmod.unmatched(L.partials, reqs)
+        add_gone = bool(ra) and ra.get("pubkey") not in on_chain
+        delta = pos.size - L.last_size
+        p_size = sum(float(p["size"]) for p in gone_p)
+        resync = False
+        if add_gone and ra is not None:
+            add_size = float(ra["size_usd"])
+            if delta + p_size > 0.5 * add_size:   # filled (also a submitted-but-unconfirmed order that landed and filled)
+                fill = float(ra["trigger"])
+                src = "order trigger"
+                if not gone_p and L.rest_last_avg > 0:   # exact fill from the avg change (same as a market add)
+                    f = trimmod.fill_price(L.last_size, L.rest_last_avg, pos.size, pos.avg_entry)
+                    if f:
+                        fill, src = f, "avg change"
+                now = str(pd.Timestamp.now(tz="UTC"))
+                lot = {"time": now, "price": round(fill, 6), "size": round(add_size, 2), "coll": round(float(ra["margin"]), 4),
+                       "lev": ra["lev"], "first": False, "sig": ra.get("sig"), "via": "limit", "req": ra.get("pubkey")}
+                if R.partials_enabled:
+                    lot.update(partial_due=True, rung=L.n_entries)
+                ledger.update(add_entry=True, opened_size_usd=add_size, size_usd=pos.size, avg_entry=pos.avg_entry)
+                self._rest_bank_debit(ra)   # normally booked at placement; no-op then
+                if L.pg_base_sol is not None:
+                    L.pg_dep_sol = round(L.pg_dep_sol + float(ra.get("sol") or 0.0), 9)
+                L.n_entries += 1
+                L.last_leverage, L.last_entry = ra["lev"], round(fill, 6)
+                L.last_size = round(L.last_size + add_size, 2)
+                L.tp_hits, L.first_tp_time = 0, None   # fresh TP1 / TP2 ladder on the whole position (as after a market add)
+                L.lots.append(lot)
+                L.trade_opened_usd += add_size
+                L.rest_add = None
+                resync = True
+                self.save()   # 2026-10-12: persist the booked fill at once (a restart must not lose the lot)
+                log.warning("RESTING ADD FILLED: %s $%.2f x%g at %.4f (%s), n_entries %d, size now %.2f avg %.4f",
+                            "long" if pos.side == LONG else "short", add_size, ra["lev"], fill, src, L.n_entries, pos.size,
+                            pos.avg_entry)
+            else:   # gone without a fill: cancelled / expired / never landed
+                log.warning("resting add %s gone without a fill (size %.2f -> %.2f): record dropped, refund booked",
+                            ra.get("pubkey"), L.last_size, pos.size)
+                self._rest_bank_refund(ra, f"resting add {ra.get('pubkey')} gone unfilled")
+                L.rest_add = None
+        if gone_p:
+            if pos.size < L.last_size - 0.01:   # partial trigger(s) executed
+                closed = round(L.last_size - pos.size, 2)
+                old_m = L.pg_margin if L.pg_margin > 0 and abs(L.pg_m_size - L.last_size) <= 0.01 and not resync \
+                    else pos.margin * L.last_size / pos.size
+                rp = st["positions"]["long" if pos.side == LONG else "short"].get("realisedPnlUsd")
+                d_rp = (float(rp) - L.pg_rpnl) if (rp is not None and L.pg_rpnl is not None and not resync) else \
+                    sum(pos.side * float(p["size"]) * (float(p["px"]) - pos.avg_entry) / pos.avg_entry for p in gone_p)
+                usd = max(old_m - pos.margin, 0.0) + d_rp - c.close_fee * closed
+                if L.pg_base_sol is not None:
+                    L.pg_recv_sol = round(L.pg_recv_sol + max(usd, 0.0) / (self._sol_px or price), 9)
+                self.bank_payout(usd, f"per-add partial ${closed:.2f}")
+                times = {x for p in gone_p for x in (p.get("lots") or [p.get("lot_time")])}
+                L.lots = [l for l in L.lots if l["time"] not in times]
+                if L.lots:
+                    L.n_entries = len(L.lots)
+                    L.last_entry, L.last_leverage = L.lots[-1]["price"], L.lots[-1].get("lev") or L.last_leverage
+                last = max(gone_p, key=lambda p: pos.side * float(p["px"]))
+                if R.last_partial_rule or R.partials_enabled:
+                    L.last_partial_px = float(last["px"])
+                L.partials_done += [{**p, "filled": str(pd.Timestamp.now(tz="UTC"))} for p in gone_p]
+                L.last_size = pos.size
+                self._tp_resize = True   # Trevor 2026-10-12 06:07 MT: re-size TP1/TP2 to the remaining position
+                ledger.update(exit=f"P{len(L.partials_done)}@{pd.Timestamp.now(tz='UTC'):%H:%M}")
+                log.warning("PER-ADD PARTIAL FILLED: %s closed $%.2f at ~%s; payout est $%.4f; last partial price %s; "
+                            "lots left %d, n_entries %d, last_entry %.4f", [p["pubkey"] for p in gone_p], closed,
+                            [p["px"] for p in gone_p], usd, L.last_partial_px, len(L.lots), L.n_entries, L.last_entry)
+            else:
+                log.warning("per-add partial(s) %s gone without a size drop: records dropped", [p["pubkey"] for p in gone_p])
+            gone = {p["pubkey"] for p in gone_p}
+            L.partials = [p for p in L.partials if p["pubkey"] not in gone]
+        if add_gone or gone_p:
+            self.save()
+            pos = self.chain_position(st) or pos
+        return pos, resync
+
+    def resting_tick(self, pos: ChainPosition, st: dict[str, Any], price: float, account: Any, equity: float) -> None:
+        """Every tick with an open position: place what is missing (per-add partials, then the next resting add)."""
+        R = self.cfg.resting
+        if R.partials_enabled:
+            self.place_missing_partials(pos, st, price)
+        if R.adds_enabled and self.local.rest_add is None:
+            self.place_rest_add(pos, st, price, account, equity)
+
+    def rest_add_plan(self, pos: ChainPosition, cash: float) -> tuple[Any, str]:
+        """(AddPlan | None, why-not) for the next resting add: the ladder's next rung, planned from the last fill (rule 3:
+        from the more adverse of the last fill and the last partial price) with this bot's free collateral."""
+        R, L = self.cfg.resting, self.local
+        if self.cfg.dca.mode != "levels":
+            return None, "dca.mode is not levels (no ladder)"
+        p = pos
+        if R.last_partial_rule and L.last_partial_px:
+            import dataclasses as _dc
+            p = _dc.replace(pos, last_entry=restmod.add_ref(pos.side, pos.last_entry, L.last_partial_px))
+        plan = self.strategy.plan_next_add(p, cash, pd.Timestamp.now(tz="UTC"))
+        if plan is None:
+            big = self.strategy.plan_next_add(p, cash + bankmod.IB_MAX_USD, pd.Timestamp.now(tz="UTC"))
+            if big is not None and big.margin > cash:   # Trevor 18:13 MT: short of equity -> borrow from a flat bot
+                self.ib_request(min(big.margin - cash + 1.0, bankmod.IB_MAX_USD))   # what the rung needs, <= cap
+            return None, "no ladder plan (budget / liq rule)"
+        if not self.strategy._adds_left(pos):
+            return None, "no adds left (max_adds / allow_after_partial)"
+        if R.last_partial_rule and not restmod.beyond_last_partial(pos.side, plan.trigger, L.last_partial_px):
+            return None, f"next rung {plan.trigger:.4f} is not beyond the last partial price {L.last_partial_px}"
+        return plan, ""
+
+    def rest_add_args(self, pos: ChainPosition, st: dict[str, Any], plan: Any) -> tuple[dict[str, Any], float, float]:
+        """CLI args for the limit add (same collateral funding as a market add) + (native units debited, SOL deposited)."""
+        sol = plan.margin / self.sol_price(st)
+        side = "long" if pos.side == LONG else "short"
+        if self.bank_on and self.asset != "SOL":
+            coin = self.local.bank["coin"]
+            atoms = int(plan.margin / self.coin_px(st) * 10 ** bankmod.DECIMALS[coin])
+            nat, mint = atoms / 10 ** bankmod.DECIMALS[coin], bankmod.MINT[coin]
+        else:
+            atoms = int(sol * LAMPORTS)
+            nat, mint = atoms / LAMPORTS, bankmod.MINT["SOL"]
+        args = {"side": side, "inputMint": mint, "inputAtoms": str(atoms), "sizeUsd": round(plan.margin * plan.leverage, 2),
+                "triggerPriceUsd": round(plan.trigger, 2)}
+        return args, nat, sol
+
+    def place_rest_add(self, pos: ChainPosition, st: dict[str, Any], price: float, account: Any, equity: float) -> None:
+        L = self.local
+        mine = {p.get("pubkey") for p in L.partials}
+        untracked = [r for r in st["openRequests"] if r.get("requestChange") == "increase" and r.get("pubkey") not in mine]
+        if untracked:
+            self._rest_note("add", f"an increase request is already on-chain {[r.get('pubkey') for r in untracked]} "
+                                   "(not tracked by this bot): no new resting add placed", logging.WARNING)
+            return
+        plan, why = self.rest_add_plan(pos, account.cash)
+        if plan is None:
+            self._rest_note("add", f"no resting add placed: {why}")
+            return
+        if self.add_pending_wait(st, pos):
+            return
+        it = Intent(Action.ADD, pos.side, plan.trigger, plan.margin, plan.leverage)
+        why = self.guard(it, pos, st, equity)
+        if why:
+            self._rest_note("add", f"resting add skipped: {why}")
+            return
+        args, nat, sol = self.rest_add_args(pos, st, plan)
+        res = self.cmd("create-limit-order", args)
+        if self.live.dry_run:
+            self._rest_note("add", f"DRY RUN resting add {args} -> ok {res.get('ok')} {res.get('error') or ''}")
+            return
+        if res.get("sent") and res.get("sig") and res.get("positionRequest"):
+            L.rest_add = {"pubkey": res["positionRequest"], "side": args["side"], "trigger": args["triggerPriceUsd"],
+                          "margin": round(plan.margin, 4), "lev": plan.leverage, "size_usd": args["sizeUsd"], "nat": nat,
+                          "sol": round(sol, 9), "placed": str(pd.Timestamp.now(tz="UTC")), "sig": res.get("sig")}
+            if res.get("ok"):
+                self._rest_bank_debit(L.rest_add)
+            else:   # sent but not confirmed: the next ticks decide whether it landed
+                L.rest_add["unconfirmed"] = True
+            self.save()
+            self.__dict__.setdefault("_rest_notes", {}).pop("add", None)
+            log.warning("RESTING ADD placed: %s $%.2f coll x%g = $%.2f at %.4f (req %s, sig %s%s)", args["side"], plan.margin,
+                        plan.leverage, args["sizeUsd"], plan.trigger, res["positionRequest"], res.get("sig"),
+                        "" if res.get("ok") else ", NOT YET CONFIRMED")
+            return
+        self._rest_note("add", f"resting add creation refused / failed (retry next tick): "
+                               f"{res.get('code') or ''} {res.get('error') or res.get('err')} args {args}", logging.WARNING)
+
+    def partial_plan(self, pos: ChainPosition, lots: list[dict[str, Any]], lv: Any) -> dict[str, Any] | None:
+        """Target of the ONE per-position partial TP covering ``lots`` (Trevor 23:10 MT): size = their total, entry = their
+        size-weighted entry (Jupiter-style avg), N from the highest rung among them; spec rule otherwise (N-th trim level
+        beyond the entry, tol before it, must cover fees)."""
+        R, t, c = self.cfg.resting, self.cfg.trim, self.cfg.costs
+        if not lots:
+            return None
+        idx = {l["time"]: i for i, l in enumerate(self.local.lots)}
+        rung = max(int(l.get("rung") or max(1, idx.get(l.get("time"), 1))) for l in lots)
+        size = sum(float(l["size"]) for l in lots)
+        entry = size / sum(float(l["size"]) / float(l["price"]) for l in lots)
+        # 2026-10-12 00:53 MT: target between the covered entry and the trade avg (zone rule), replaces N levels beyond
+        tgt = restmod.partial_target_zone(pos.side, entry, pos.avg_entry, size, lv, rung, self.cfg.dca.ladder_max_rungs,
+                                          R.partial_zone_f_max, tol_atr=t.trim_level_tol_atr,
+                                          front_atr=t.trim_level_front_run_atr, front_pct=t.trim_level_front_run_pct,
+                                          open_fee=c.open_fee, close_fee=c.close_fee, network_usd=t.trim_network_usd)
+        if tgt.get("px") is None:
+            self._rest_note("partial_zone", f"TP3 for adds (entry {entry:.4f}, rung {rung}): {tgt.get('why')}", logging.WARNING)
+            return None
+        tgt.update(rung=rung, entry=round(entry, 6), size=round(size, 2), n=0)
+        return tgt
+
+    def _place_partial(self, pos: ChainPosition, price: float, lots: list[dict[str, Any]], why: str) -> bool:
+        L = self.local
+        lv = self.strategy.levels_provider(pd.Timestamp.now(tz="UTC")) if self.strategy.levels_provider else None
+        tgt = self.partial_plan(pos, lots, lv)
+        desc = [f"@{float(l['price']):.4f} ${l['size']}" for l in lots]
+        if tgt is None:
+            self._rest_note("partial", f"partial for adds {desc}: no target between entry and avg; retry next tick")
+            return False
+        if pos.side * (tgt["px"] - price) < self.cfg.tp.tp_market_gap - 1e-9:
+            self._rest_note("partial", f"partial for adds {desc}: target {tgt['px']} not beyond market {price:.4f}; retry")
+            return False
+        side = "long" if pos.side == LONG else "short"
+        args = {"side": side, "sizeUsd": tgt["size"], "triggerPriceUsd": tgt["px"], "triggerAbove": pos.side == LONG}
+        res = self.cmd("decrease", args)
+        if self.live.dry_run:
+            self._rest_note("partial", f"DRY RUN partial {args} ({why}; {tgt['mode']} {tgt['level']}, f {tgt['f']}, rung {tgt['rung']})")
+            return False
+        if not res.get("ok"):
+            self._rest_note("partial", f"partial placement failed (retry next tick): {res.get('err') or res.get('error')}",
+                            logging.WARNING)
+            return False
+        L.partials = [{"pubkey": res.get("positionRequest"), "lots": [l["time"] for l in lots], "lot_time": lots[-1]["time"],
+                       "size": args["sizeUsd"], "px": tgt["px"], "level": tgt["level"], "n": tgt["n"], "rung": tgt["rung"],
+                       "entry": tgt["entry"], "placed": str(pd.Timestamp.now(tz="UTC")), "sig": res.get("sig"), "why": why}]
+        self.save()
+        self.__dict__.setdefault("_rest_notes", {}).pop("partial", None)
+        log.warning("PARTIAL TP (TP3) placed (%s): adds %s = $%.2f, entry %.4f avg %.4f (rung %d, f %.3f, zone to %.4f) -> %s "
+                    "%s, trigger %.4f (net est $%.4f), req %s", why, desc, tgt["size"], tgt["entry"], tgt["avg"], tgt["rung"],
+                    tgt["f"], tgt["zone_end"], tgt["mode"], tgt["level"], tgt["px"], tgt["net_usd"], res.get("positionRequest"))
+        return True
+
+    def place_missing_partials(self, pos: ChainPosition, st: dict[str, Any], price: float) -> None:
+        """ONE partial TP per position (Trevor 23:09 / 23:10 MT): placed when the trim is armed (existing arm rule, sticky
+        until flat) and >= 1 add is trim-eligible (trim.select_lots at the current price; never the first entry); it covers
+        the eligible adds. Otherwise never touched here (no toggling with the arm state); a new add updates it
+        (partial_on_add)."""
+        L, t, c = self.local, self.cfg.trim, self.cfg.costs
+        if L.partials:
+            return
+        if not (L.trim_armed or trimmod.arm_hit(pos.side, pos.avg_entry, price, t.trim_arm_dist_pct)):
+            return
+        elig = set(trimmod.select_lots(L.lots, pos.side, price, t, c.open_fee, c.close_fee))
+        due = [l for i, l in enumerate(L.lots) if i in elig and not (l.get("first") or i == 0)]
+        if due:
+            self._place_partial(pos, price, due, "armed + eligible adds")
+
+    def partial_on_add(self, pos: ChainPosition, price: float, new_lot: dict[str, Any]) -> None:
+        """A new add filled while the single partial TP exists: cancel + replace it so it also covers the new add (the
+        adds it covered that are still open + the new one), re-targeted. No partial yet -> nothing (placed when armed)."""
+        L = self.local
+        if not (self.cfg.resting.partials_enabled and L.partials):
+            return
+        old = L.partials[0]
+        c = self.cancel_request(old["pubkey"], pos.size)
+        if c != "ok":
+            log.warning("partial update on add: cancel of %s returned %s; not replaced (next tick reconciles)", old["pubkey"], c)
+            return
+        L.partials = []
+        self.save()
+        keep = set(old.get("lots") or [old.get("lot_time")])
+        lots = [l for l in L.lots if l["time"] in keep or l["time"] == new_lot["time"]]
+        self._place_partial(pos, price, lots, "updated for new add")
+
+    def resting_status(self, pos: ChainPosition) -> str:
+        L, R = self.local, self.cfg.resting
+        ra = L.rest_add
+        return (f"resting: adds {'on' if R.adds_enabled else 'off'} partials {'on' if R.partials_enabled else 'off'} "
+                f"last-partial rule {'on' if R.last_partial_rule else 'off'} | add order "
+                + (f"{ra['side']} ${ra['size_usd']} @ {ra['trigger']} ({ra['pubkey']})" if ra else "none")
+                + f" | partial orders {[(p['px'], p['size']) for p in L.partials]} | last partial price {L.last_partial_px}")
 
     # ------------------------------------------------------------- per-bot own-coin ledger + HWM (live/bank.py)
     @property
@@ -1168,7 +1754,11 @@ class Bot:
         nat = bk.get("native")
         b["window"] = max(b.get("window", 0), self.cfg.ledger.window_ticks)   # ETH / BTC: the coin lands next read
         if self.asset == "SOL" and nat is not None:
-            if bk.get("unattributed"):   # USDC nobody's short produced -> external deposit, split 50/25/25
+            if bk.get("unattributed") and self.cfg.ledger.ext_flow_mode == "alert":
+                line = bankmod.write_alert("SOL", f"unattributed USDC {bk.get('usd')} swept to {nat:.9f} SOL; banks untouched "
+                                           "(ext_flow_mode=alert)")
+                log.warning("BANK %s", line)
+            elif bk.get("unattributed"):   # USDC nobody's short produced -> external deposit, split 50/25/25
                 ev = bankmod.post_external(nat, self.sol_price(st), tuple(self.cfg.ledger.ext_split),
                                            f"unattributed USDC {bk.get('usd')} swept to SOL")
                 bankmod.apply_external(b, ev["shares"]["SOL"], f"ext #{ev['id']} (unattributed USDC)")
@@ -1190,11 +1780,19 @@ class Bot:
         if self.live.dry_run:
             return
         sol_px, cpx = self.sol_price(st), self.coin_px(st)
-        if self.asset == "SOL":
+        mid_loan = self.ib_tick(st, pos)
+        if mid_loan:
+            pass
+        elif self.asset == "SOL":
             j = bankmod.load_journal()
             r = bankmod.recon_sol(b, float(st["wallet"]["sol"]), bankmod.pending_others(j), sol_px, lc.ext_min_usd,
                                   self._busy(st, True))
-            if r["action"] == "external":
+            if r["action"] == "external" and lc.ext_flow_mode == "alert":
+                b["res_last"] = r["implied"]   # new reserve baseline so it alerts once; bal / hwm untouched
+                line = bankmod.write_alert("SOL", f"native SOL {r['diff']:+.9f} (~${r['diff'] * sol_px:+.2f}); banks "
+                                           f"untouched (ext_flow_mode=alert); SOL bal {b['bal']:.9f} hwm {b['hwm']:.9f}")
+                log.warning("BANK %s", line)
+            elif r["action"] == "external":
                 ev = bankmod.post_external(r["diff"], sol_px, tuple(lc.ext_split),
                                            f"unexplained native SOL change {r['diff']:+.9f} (~${r['diff'] * sol_px:+.2f})")
                 bankmod.apply_external(b, ev["shares"]["SOL"], f"ext #{ev['id']}: SOL share of {r['diff']:+.9f}")
@@ -1207,15 +1805,20 @@ class Bot:
             coin = b["coin"]
             atoms = int(((st.get("sweepTokens") or {}).get(coin) or {}).get("atoms") or 0)
             if "error" not in (st.get("sweepTokens") or {}):
-                r = bankmod.recon_token(b, atoms / 10 ** bankmod.DECIMALS[coin], cpx, lc.ext_min_usd, self._busy(st, False))
+                r = bankmod.recon_token(b, atoms / 10 ** bankmod.DECIMALS[coin], cpx, lc.ext_min_usd, self._busy(st, False),
+                                        lc.ext_flow_mode)
                 if r["action"] in ("payout", "adjust"):
                     log.info("BANK %s %+.9f %s (bal %.9f)", r["action"], r["diff"], coin, b["bal"])
+                elif r["action"] == "alert":
+                    line = bankmod.write_alert(self.asset, f"{coin} {r['diff']:+.9f} (~${r['diff'] * cpx:+.2f}); bank "
+                                               f"untouched (ext_flow_mode=alert); bal {b['bal']:.9f} hwm {b['hwm']:.9f}")
+                    log.warning("BANK %s", line)
                 elif r["action"] == "external":
                     log.warning("BANK EXTERNAL %s change %+.9f (~$%+.2f) -> this bot's capital + hwm (not profit)", coin,
                                 r["diff"], r["diff"] * cpx)
                 elif r["action"] == "pending":
                     log.info("BANK: unexplained %s change %+.9f; re-checking next tick", coin, r["diff"])
-            if not self._busy(st, False):
+            if not self._busy(st, False) and lc.ext_flow_mode != "alert":   # alert mode: never swap for ext events
                 self.bank_settle_external(st, sol_px, cpx)
         if b.get("window", 0) > 0:
             b["window"] -= 1
@@ -1228,9 +1831,164 @@ class Bot:
                 rescue.auto_repay(self)
             except Exception as e:   # noqa: BLE001 - retried next tick
                 log.warning("RESCUE auto-repay failed (retry next tick): %s", e)
+        if flat and b.get("ib_loan", {}).get("role") == "borrower" and not b.get("pend") and not b.get("book_pend"):
+            try:
+                self.ib_borrower_repay(sol_px, cpx)
+            except Exception as e:  # noqa: BLE001 - retried next tick
+                log.error("INTER-BOT LOAN repay failed (retry next tick): %s", e)
         if bankmod.update_hwm(b, flat, bankmod.fee_debt_native(b, sol_px, cpx)):
             log.info("BANK HWM raised (flat): %s", bankmod.status_line(b, cpx, sol_px))
         self.save()
+
+    def _ib_file(self) -> Path:
+        return ROOT / bankmod.IB_FILE
+
+    def _ib_read(self) -> dict[str, Any]:
+        f = self._ib_file()
+        try:
+            return json.loads(f.read_text()) if f.exists() else {}
+        except ValueError:
+            return {}
+
+    def _ib_write(self, rec: dict[str, Any]) -> None:
+        self._ib_file().write_text(json.dumps(rec, indent=1))
+
+    def _swap_got(self, res: dict[str, Any], coin: str) -> float:
+        d = res.get("deltas") or {}
+        if coin == "SOL":
+            return sweepmod.swap_sol_change(d)[0] if d.get("nativeDeltaLamports") is not None else \
+                int(res.get("quotedOut") or 0) / LAMPORTS
+        return int((d.get("tokenDeltaAtoms") or {}).get(coin) or res.get("quotedOut") or 0) / 10 ** bankmod.DECIMALS[coin]
+
+    def _coin_usd(self, coin: str, st: dict[str, Any] | None = None) -> float:
+        if coin == "SOL":
+            return self._sol_px or self.sol_price(st or self.chain())
+        if coin == self.local.bank.get("coin"):
+            return self._mkt_px or float((st or self.chain())["oracle"]["price"])
+        mkt = {"ETH": "ETH", "WBTC": "BTC"}[coin]
+        return float(jup("state", {"market": mkt})["oracle"]["price"])
+
+    def ib_tick(self, st: dict[str, Any], pos: ChainPosition | None) -> bool:
+        """Inter-bot loans (Trevor 2026-10-12 18:09 / 18:13 MT), one at a time via live/ib_loan.json. Runs first in
+        bank_tick. Borrower: books a funded loan. Lender: settles a repaid loan. Flat bot without a loan: funds a
+        request. True = this bot's wallet is mid-loan-transfer (skip the wallet reconcile this tick). Never raises."""
+        try:
+            b = self.local.bank
+            me, coin = self.asset, b["coin"]
+            with bankmod.journal_lock():
+                rec = self._ib_read()
+                s = rec.get("status")
+                if s == "funding" and rec.get("borrower") == me:
+                    return True
+                if s == "funded" and rec.get("borrower") == me and not b.get("ib_loan"):
+                    got = float(rec["coin"])
+                    b["bal"] = round(b["bal"] + got, 9)
+                    b["ib_loan"] = {k: rec.get(k) for k in ("sol", "coin", "lender_coin", "sig", "opened")} | \
+                        {"role": "borrower", "peer": rec.get("lender")}
+                    bankmod.note(b, "ib_borrow", got, f"loan from {rec.get('lender')}: {rec['sol']} {rec.get('lender_coin')} "
+                                                      f"-> {got} {coin} sig {rec.get('sig')}")
+                    rec["status"] = "open"
+                    self._ib_write(rec)
+                    self.save()
+                    log.error("INTER-BOT LOAN received from %s: +%.9f %s (payable; HWM unchanged)", rec.get("lender"), got, coin)
+                    return False
+                if s == "repaid" and rec.get("lender") == me and (b.get("ib_loan") or {}).get("role") == "lender":
+                    got = float(rec["repaid_got"])
+                    ln = b.pop("ib_loan")
+                    b["bal"] = round(b["bal"] + got, 9)
+                    bankmod.note(b, "ib_repaid", got, f"loan repaid by {rec.get('borrower')}: {got:.9f} {coin} "
+                                                      f"(lent {ln['sol']}) sig {rec.get('repay_sig')}")
+                    b["ib_loans_done"] = (b.get("ib_loans_done") or [])[-9:] + [{**ln, "repaid_got": got}]
+                    rec["status"] = "settled"
+                    self._ib_write(rec)
+                    self.save()
+                    log.error("INTER-BOT LOAN settled: +%.9f %s back from %s; opens re-enabled", got, coin, rec.get("borrower"))
+                    return False
+                if s == "requested" and rec.get("borrower") != me and pos is None and not b.get("ib_loan") \
+                        and not self._busy(st, me == "SOL") and b.get("window", 0) == 0:
+                    px = self.coin_px(st)
+                    need = float(rec["need_usd"]) / px
+                    if (b["bal"] - bankmod.loan_outstanding(b)) * px < float(rec["need_usd"]) + 5.0:
+                        return False
+                    rec.update(status="funding", lender=me, lender_coin=coin)
+                    self._ib_write(rec)
+                    res, kind, att = sweepmod.swap_with_backoff(
+                        self.cfg, {"mint": bankmod.MINT[coin], "atoms": int(need * 10 ** bankmod.DECIMALS[coin])}, jup,
+                        out_mint=bankmod.MINT[rec["coin_name"]])
+                    self.bank_fee((res.get("deltas") or {}).get("feeLamports") or res.get("feeLamports"))
+                    if kind != "ok":
+                        rec.update(status="requested", lender=None, lender_coin=None)
+                        self._ib_write(rec)
+                        log.error("INTER-BOT LOAN funding swap failed (%s): %s; request left open", kind, att)
+                        return False
+                    spent = int(need * 10 ** bankmod.DECIMALS[coin]) / 10 ** bankmod.DECIMALS[coin]
+                    got = self._swap_got(res, rec["coin_name"])
+                    now = str(pd.Timestamp.now(tz="UTC"))
+                    b["bal"] = round(b["bal"] - spent, 9)
+                    b["ib_loan"] = {"role": "lender", "peer": rec["borrower"], "sol": spent, "coin": got,
+                                    "lender_coin": coin, "sig": res.get("sig"), "opened": now}
+                    bankmod.note(b, "ib_lend", -spent, f"loan to {rec['borrower']}: {spent} {coin} -> {got} "
+                                                       f"{rec['coin_name']} sig {res.get('sig')}")
+                    rec.update(status="funded", sol=spent, coin=got, sig=res.get("sig"), opened=now)
+                    self._ib_write(rec)
+                    self.save()
+                    log.error("INTER-BOT LOAN funded for %s: %.9f %s -> %.9f %s sig %s (this bot's opens disabled until "
+                              "repaid)", rec["borrower"], spent, coin, got, rec["coin_name"], res.get("sig"))
+                    return False
+        except Exception as e:  # noqa: BLE001 - loans never stop the bot
+            log.error("INTER-BOT LOAN tick error (retry next tick): %s", e)
+        return False
+
+    def ib_request(self, need_usd: float) -> None:
+        """Borrower side: not enough free for the next rung -> ask a flat bot for ``need_usd`` (one loan at a time)."""
+        b = self.local.bank
+        if b.get("ib_loan") or not self.bank_on or self.live.dry_run:
+            return
+        try:
+            with bankmod.journal_lock():
+                rec = self._ib_read()
+                if rec.get("status") not in (None, "settled"):
+                    return
+                self._ib_write({"status": "requested", "borrower": self.asset, "coin_name": b["coin"],
+                                "need_usd": round(need_usd, 2), "requested": str(pd.Timestamp.now(tz="UTC"))})
+            log.error("INTER-BOT LOAN requested: %s needs $%.2f for its next rung", self.asset, need_usd)
+        except Exception as e:  # noqa: BLE001
+            log.error("INTER-BOT LOAN request failed: %s", e)
+
+    def ib_borrower_repay(self, sol_px: float, cpx: float) -> None:
+        """Flat after the trade -> swap own coin back to the lender's coin, the quantity lent (cost on this bot), clear
+        the payable and flag the repayment for the lender (live/ib_loan.json)."""
+        b = self.local.bank
+        ln = b["ib_loan"]
+        with bankmod.journal_lock():
+            rec = self._ib_read()
+            if rec.get("status") != "open" or rec.get("borrower") != self.asset:
+                return
+            lc = ln.get("lender_coin") or "SOL"
+            coin, dec = b["coin"], bankmod.DECIMALS[b["coin"]]
+            lpx = sol_px if lc == "SOL" else self._coin_usd(lc)
+            want = min(float(ln["sol"]) * lpx / cpx * 1.004, b["bal"])   # small buffer: >= the quantity lent arrives
+            res, kind, att = sweepmod.swap_with_backoff(self.cfg, {"mint": bankmod.MINT[coin], "atoms": int(want * 10 ** dec)},
+                                                        jup, out_mint=bankmod.MINT[lc])
+            self.bank_fee((res.get("deltas") or {}).get("feeLamports") or res.get("feeLamports"))
+            if kind != "ok":
+                log.error("INTER-BOT LOAN repay swap failed (%s): %s; retry next tick", kind, att)
+                return
+            spent = int(want * 10 ** dec) / 10 ** dec
+            got = self._swap_got(res, lc)
+            b["bal"] = round(b["bal"] - spent, 9)
+            bankmod.note(b, "ib_repay", -spent, f"loan repaid: {spent:.9f} {coin} -> {got:.9f} {lc} (lent {ln['sol']}) "
+                                                f"sig {res.get('sig')}")
+            b["ib_loans_done"] = (b.get("ib_loans_done") or [])[-9:] + [{**ln, "repaid_coin": spent, "repaid_got": got,
+                                                                           "sig_repay": res.get("sig")}]
+            b.pop("ib_loan", None)
+            b["window"] = max(b.get("window", 0), self.cfg.ledger.window_ticks)
+            rec.update(status="repaid", repaid_got=round(got, 9), sol_got=round(got, 9), repay_sig=res.get("sig"),
+                       repaid=str(pd.Timestamp.now(tz="UTC")))
+            self._ib_write(rec)
+            self.save()
+        log.error("INTER-BOT LOAN REPAID: %.9f %s -> %.9f %s to %s (lent %.9f) sig %s", spent, coin, got, lc,
+                  ln.get("peer"), float(ln["sol"]), res.get("sig"))
 
     def bank_settle_external(self, st: dict[str, Any], sol_px: float, cpx: float) -> None:
         """ETH / BTC: swap this bot's share of an external SOL deposit SOL -> own coin (withdrawal: coin -> SOL)."""
@@ -1364,6 +2122,14 @@ class Bot:
             cv = bankmod.close_value_native(pos.side, pos.size, pos.avg_entry, pos.margin, fill, c.close_fee, cpx, swap, net)
         return bankmod.equity(b, cv, bankmod.fee_debt_native(b, sol_px, cpx))
 
+    def guard_min_native(self) -> float:
+        """Profit-guard margin above HWM (native). pct mode (2026-10-12): hwm x (pct + per_partial x partials this trade)."""
+        g = self.cfg.ledger
+        if g.min_profit_pct_hwm > 0:
+            n = len(self.local.trims) + len(self.local.partials_done)
+            return self.local.bank["hwm"] * (g.min_profit_pct_hwm + g.min_profit_pct_per_partial * n)
+        return g.min_profit_native
+
     def hwm_check(self, pos: ChainPosition, st: dict[str, Any], price: float, min_native: float) -> tuple[bool, str]:
         """Equity if closed now (own coin) >= hwm + min_native? (guard: min_profit_native; TP timer: 0 = not below HWM)."""
         b = self.local.bank
@@ -1374,7 +2140,7 @@ class Bot:
     def bank_status(self, st: dict[str, Any], pos: ChainPosition | None, price: float) -> str:
         b = self.local.bank
         eq = self.hwm_equity(pos, st, price)
-        tgt = b["hwm"] + self.cfg.ledger.min_profit_native if pos is not None else None
+        tgt = b["hwm"] + self.guard_min_native() if pos is not None else None
         arm = (" | guard " + ("ARMED (adds/trims)" if self.hwm_close_armed() else "not armed (first entry: TPs only)")) if pos else ""
         return bankmod.status_line(b, self.coin_px(st), self.sol_price(st), eq, tgt) + arm
 
@@ -1391,10 +2157,19 @@ class Bot:
         self.rescale(price)
         pos = self.chain_position(st)
         L = self.local
+        if L.pending_cancels and self.retry_cancels(st, pos):
+            return
 
         # reconcile with chain
         if pos is None and L.side:
             log.info("position gone on-chain (TP2/stop/liquidation/manual); clearing local state")
+            rest_cancelled = False
+            if self.cfg.resting.any_on and st["openRequests"]:   # [resting]: leftover add / partial orders cancelled first
+                log.info("resting: cancelling leftover requests of the closed trade %s",
+                         [(r.get("requestChange"), r.get("triggerPrice")) for r in st["openRequests"]])
+                rest_cancelled = True
+                if not self.cancel_all(st):
+                    self.cancel_failed(st["openRequests"], None, "leftover orders after the position closed")
             ledger.update(exit=f"{'TP2' if L.tp_hits else 'external/TP/liq'}@{pd.Timestamp.now(tz='UTC'):%H:%M}")
             if self.bank_on and L.pg_m_size > 0:   # last seen size / collateral; avg from the lots
                 avg = (sum(l["size"] for l in L.lots) / sum(l["size"] / l["price"] for l in L.lots)) if L.lots else price
@@ -1406,14 +2181,27 @@ class Bot:
             except Exception as e:  # noqa: BLE001 - retried next tick
                 log.warning("sweep failed: %s", e)
             self.bank_flat(self.book_flat(st, L.side))
-            if st["openRequests"]:
+            if st["openRequests"] and not rest_cancelled:
                 self.cancel_all(st)
             self.local = L = Local(last_bar=L.last_bar, day=L.day, day_start_equity=L.day_start_equity,
                                    flat_since=str(pd.Timestamp.now(tz="UTC")), trim_day=L.trim_day, trim_day_n=L.trim_day_n,
-                                   bank=L.bank)
+                                   bank=L.bank, pending_cancels=L.pending_cancels)
         elif pos is not None and not L.side:
-            self.halt("on-chain position not opened by this bot")
+            self.adopt_position(st, pos)
             return
+        if pos is not None and L.side == pos.side and L.tp_retry:
+            log.error("TP retry: re-placing TP1/TP2 on the open position (previous placement failed / not confirmed)")
+            L.tp_retry = False
+            self.sync_tp_ladder(pos)
+            self.save()
+            return
+        rest_resync = False
+        if self.cfg.resting.any_on and pos is not None and L.side == pos.side:
+            pos, rest_resync = self.resting_reconcile(st, pos, price)
+        if pos is not None and L.side == pos.side and L.lots and self.recover_missing_add(st, pos, price):
+            self.sync_tp_ladder(self.chain_position(self.chain()) or pos)   # fresh TP1/TP2, exactly as after an add
+        if pos is None:
+            pass
         elif pos is not None and pos.size < L.last_size - 0.01:
             if L.tp_hits == 0:
                 L.first_tp_time = str(pd.Timestamp.now(tz="UTC"))
@@ -1438,6 +2226,15 @@ class Bot:
             rp = st["positions"]["long" if pos.side == LONG else "short"].get("realisedPnlUsd")
             L.pg_m_size, L.pg_margin = pos.size, pos.margin
             L.pg_rpnl = float(rp) if rp is not None else None
+            if self.cfg.resting.any_on:
+                L.rest_last_avg = pos.avg_entry
+        if getattr(self, "_tp_resize", False) and pos is not None and not rest_resync:
+            self._tp_resize = False
+            self.resize_tps(self.chain_position(self.chain()) or pos)
+        if rest_resync and pos is not None:   # an add filled via its order: fresh TP1/TP2 ladder
+            self.sync_tp_ladder(self.chain_position(self.chain()) or pos)   # (exactly as after a market add)
+            if L.lots:
+                self.partial_on_add(pos, price, L.lots[-1])
         if pos is not None or L.side == 0:   # partial-TP proceeds / leftovers after booking
             try:
                 self.sweep(st, pos.side if pos is not None else None)
@@ -1505,7 +2302,7 @@ class Bot:
                 pass
             elif self.bank_on:   # HWM profit guard (2026-10-08 21:37 MT): close all once equity >= hwm + min (never moves TPs)
                 if self.hwm_close_armed():
-                    ok, note = self.hwm_check(pos, st, price, self.cfg.ledger.min_profit_native)
+                    ok, note = self.hwm_check(pos, st, price, self.guard_min_native())
                     if ok:
                         self.close(pos, price, f"profit_guard ({note})")
                         return
@@ -1548,6 +2345,11 @@ class Bot:
                         self.halt(f"trim error after the decrease was sent: {e}")
                         self.save()
                         return
+            if self.cfg.resting.any_on:
+                try:
+                    self.resting_tick(pos, st, price, account, equity)
+                except Exception as e:  # noqa: BLE001 - nothing placed this tick; retried next tick
+                    log.exception("resting orders tick failed: %s", e)
 
         # strategy on each newly closed signal bar
         kl = fetch_klines(self.cfg.market.symbol, self.cfg.signal.tf)
@@ -1613,7 +2415,12 @@ class Bot:
                              i, r.trigger, r.margin, r.leverage, r.margin * r.leverage, r.new_avg, r.liq, r.next_level)
             except Exception as e:  # projection is informational only
                 log.warning("ladder projection failed: %s", e)
+        if pos is not None and self.cfg.resting.any_on:
+            log.info(self.resting_status(pos))
         for it in intents:
+            if self.cfg.resting.adds_enabled and it.action is Action.ADD:   # [resting]: adds rest as limit orders instead
+                log.info("market add skipped (resting adds on): the ladder add rests as a limit order")
+                continue
             self.open_or_add(it, pos, st, equity)
         for msg in self.strategy.skip_log:
             log.info(msg)

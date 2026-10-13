@@ -126,6 +126,7 @@ class DcaConfig:
     ladder_weight_mode: Literal["geometric", "accel"] = "geometric"  # accel: ratio starts at weight_mult, +step/rung
     ladder_weight_mult_step: float = 0.10
     ladder_weight_mult_cap: float = 2.5
+    ladder_fixed_usd: float = 0.0       # > 0: every rung's budget = this flat USD collateral (weights ignored); 0 = off
     ladder_fee_usd_per_add: float = 0.10 # network/request fee reserve per planned rung, taken off free collateral
     trigger_mode: Literal["price_pct", "price_abs"] = "price_pct"
     trigger_pct: float = 0.04            # price_pct: adverse fraction from reference before an add
@@ -422,10 +423,17 @@ class LedgerConfig:
     enabled: bool = False
     guard_only_underwater: bool = False     # Trevor 2026-10-11: guard close only while price is on the losing side of avg
     min_profit_native: float = 0.001        # guard target = hwm + this (native units: SOL / ETH / WBTC)
+    # Trevor 2026-10-12 00:08/00:13 MT: > 0 replaces min_profit_native: target = hwm x (min_profit_pct_hwm +
+    # min_profit_pct_per_partial x partials taken this trade [trims + partial-TP fills])
+    min_profit_pct_hwm: float = 0.0
+    min_profit_pct_per_partial: float = 0.0
     swap_cost_pct: float = 0.002            # est. USDC -> native swap cost on short payouts (guard close-value estimate)
     close_network_native: float = 0.00002   # est. network cost still to pay for a close (SOL bot; others: in fee_sol)
     ext_min_usd: float = 1.5                # unexplained wallet change >= this (persisting 2 ticks) = external dep/wd
     ext_split: tuple[float, float, float] = (0.5, 0.25, 0.25)   # SOL / ETH / BTC share of an external SOL change
+    # Trevor 2026-10-11 19:08 MT: "alert" = an unexplained wallet change only logs WARNING UNEXPLAINED WALLET CHANGE and
+    # writes live/EXT_FLOW_ALERT; banks untouched, no split, no coin swaps. "split" = old rule (ext_split capital move).
+    ext_flow_mode: str = "alert"
     window_ticks: int = 3                   # ticks after a payout event during which own-token changes are trade flows
     withdraw_enabled: bool = True           # daily HWM-gain withdrawal to JupSOL (replaces the old SOL-bot nightly stake)
     withdraw_time_mt: str = "00:05"
@@ -440,8 +448,44 @@ class LedgerConfig:
     def __post_init__(self) -> None:
         if self.min_profit_native < 0 or not 0.0 <= self.withdraw_fraction <= 1.0 or self.ext_min_usd <= 0:
             raise ValueError("ledger: min_profit_native >= 0, 0 <= withdraw_fraction <= 1, ext_min_usd > 0")
+        if self.ext_flow_mode not in ("alert", "split"):
+            raise ValueError("ledger.ext_flow_mode must be 'alert' or 'split'")
         if abs(sum(self.ext_split) - 1.0) > 1e-9:
             raise ValueError("ledger.ext_split must sum to 1")
+
+
+@dataclass(frozen=True)
+class RestingConfig:
+    """Resting on-chain orders (Trevor 2026-10-11 spec, approved 23:00 MT). ALL OFF by default and in every live config:
+    with every flag false the bot behaves exactly as before (market adds on the bar, no per-add partial orders).
+
+    adds_enabled: the next ladder add rests as a Jupiter limit-open order (Perps API, live/src/limit.ts) at the rung price
+      (same size / leverage as the ladder plans now; the add trigger has no front-run today, so neither does the order).
+      Placed orders are never modified; after a fill the next missing rung is placed. Pending add orders are cancelled
+      only when the trade closes or the side changes. A refused creation (e.g. utilisation > 80 %, $10 minimum) is logged
+      and retried next tick. The market add on the bar is not used while this is on.
+    partials_enabled: ONE partial TP (trigger decrease) per position (Trevor 23:09 / 23:10 MT): placed once the trim is
+      ARMED (existing arm rule) and >= 1 add is trim-eligible (trim.select_lots now; never the first entry), sized to the
+      eligible adds' total, target = N analyst levels (main + fine, the trim's levels) beyond their size-weighted entry
+      in the profit direction, N = round(min + (max - min) x (rung - 1) / (ladder_max_rungs - 1)) for the highest rung
+      covered, fired trim_level_tol_atr (+ trim front-run) before the level, must cover fees (6+6 bps + trim_network_usd).
+      Not touched otherwise; when a new add fills it is cancelled + replaced to also cover that add.
+    last_partial_rule: the price of the last partial is recorded; the next add order must lie beyond it in the adverse
+      direction (the ladder is planned from the more adverse of the last fill and the last partial price)."""
+    adds_enabled: bool = False
+    partials_enabled: bool = False
+    last_partial_rule: bool = False
+    partial_levels_min: int = 1
+    partial_levels_max: int = 4
+    partial_zone_f_max: float = 0.5   # 2026-10-12 00:53 MT: TP3 zone = entry .. entry + (entry->avg gap) x f, f 0 -> this
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.partial_levels_min <= self.partial_levels_max:
+            raise ValueError("resting: 1 <= partial_levels_min <= partial_levels_max")
+
+    @property
+    def any_on(self) -> bool:
+        return self.adds_enabled or self.partials_enabled or self.last_partial_rule
 
 
 @dataclass(frozen=True)
@@ -466,6 +510,7 @@ class Config:
     trim: TrimConfig = field(default_factory=TrimConfig)
     profit_guard: ProfitGuardConfig = field(default_factory=ProfitGuardConfig)
     ledger: LedgerConfig = field(default_factory=LedgerConfig)
+    resting: RestingConfig = field(default_factory=RestingConfig)
 
     @property
     def allow_long(self) -> bool:

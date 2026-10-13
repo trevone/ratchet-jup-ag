@@ -366,7 +366,7 @@ class DcaStrategy:
                           deep_anchor=d.ladder_deep_anchor, deep_min_atr=d.ladder_deep_min_atr, deep_max_atr=d.ladder_deep_max_atr, deep_atr=d.ladder_deep_atr,
                           fee_usd_per_add=d.ladder_fee_usd_per_add, weight_mode=d.ladder_weight_mode,
                           weight_mult_step=d.ladder_weight_mult_step, weight_mult_cap=d.ladder_weight_mult_cap,
-                          min_usd=d.min_add_usd)
+                          min_usd=d.min_add_usd, fixed_usd=d.ladder_fixed_usd)
         return dict(lev_step=d.lev_step, lev_cap=d.lev_cap, min_add_usd=d.min_add_usd, min_gap_atr=d.min_gap_atr,
                     max_gap_atr=d.max_gap_atr, target_avg_atr=d.target_avg_atr, fixed_dist=d.trigger_dist,
                     maint=self.cfg.risk.maintenance_ratio, max_add_frac=d.max_add_frac,

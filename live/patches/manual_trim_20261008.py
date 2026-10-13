@@ -36,6 +36,13 @@ if cfg.bot.state_dir != "live":
     ledger.configure(cfg.bot.state_dir, cfg.bot.asset)
 if not cfg.live.dry_run:
     os.environ["JUP_LIVE"] = "1"
+if a.send and cfg.resting.partials_enabled:   # 2026-10-12: keep TP3 consistent - refuse while a TP3 order is tracked
+    import json as _j
+    _st = ROOT / cfg.bot.state_dir / "state.json"
+    _p = _j.loads(_st.read_text()).get("partials") if _st.exists() else None
+    if _p:
+        sys.exit(f"manual trim refused: TP3 partial order(s) live {[x.get('pubkey') for x in _p]} ([resting] partials_enabled); "
+                 "cancel TP3 first or run without --send for a dry run")
 if not cfg.trim.enabled:
     sys.exit("trim not enabled in cfg (pass --set trim.enabled=true)")
 b = B.Bot(cfg)

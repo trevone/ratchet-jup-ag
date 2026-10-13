@@ -20,8 +20,9 @@ Flows (how bal changes):
     The SOL bot shares native SOL with fees / rents / the reserve, so it credits an estimate (collateral returned + PnL -
     close fee, at the SOL oracle) and trues the trade up on flat with the position's own on-chain SOL flows (ledger.py).
   * reconciliation (every tick, nothing in flight): ETH / BTC: wallet token - bal; SOL: implied reserve = native SOL -
-    bal - other bots' unsettled shares of external events. A change that persists 2 ticks and is >= ext_min_usd is an
-    EXTERNAL deposit / withdrawal (Trevor), never profit: a SOL change is split ext_split (50/25/25) across the bots'
+    bal - other bots' unsettled shares of external events. A change that persists 2 ticks and is >= ext_min_usd is
+    unexplained. ext_flow_mode = "alert" (live, Trevor 2026-10-11 19:08 MT): WARNING + live/EXT_FLOW_ALERT only, banks
+    untouched, no swaps. Old "split" mode: an EXTERNAL deposit / withdrawal, never profit: a SOL change is split ext_split (50/25/25) across the bots'
     capital AND hwm (ETH / BTC swap their share SOL <-> own coin for real via the shared journal live/bank_ext.json);
     an ETH / WBTC change goes to its own bot only. Smaller SOL changes are reserve noise (fees, request rents) and stay
     in the 0.02 SOL reserve float; smaller ETH / WBTC changes are that bot's own trade flow.
@@ -99,7 +100,7 @@ def update_hwm(b: dict[str, Any], flat: bool, debt_native: float = 0.0) -> bool:
     """HWM only rises and only while flat (and nothing pending): hwm = max(hwm, bal - fee debt). True if raised."""
     if not flat:
         return False
-    v = round(b["bal"] - debt_native - loan_outstanding(b), 9)   # JupSOL rescue loan is a liability, never HWM
+    v = round(b["bal"] - debt_native - loan_outstanding(b) + ib_adj(b), 9)   # JupSOL rescue loan is a liability, never HWM
     if v > b["hwm"] + 1e-12:
         old = b["hwm"]
         b["hwm"] = v
@@ -119,7 +120,7 @@ def close_value_native(side: int, size: float, avg: float, margin: float, price:
 
 
 def equity(b: dict[str, Any], close_native: float, debt_native: float = 0.0) -> float:
-    return b["bal"] - debt_native - loan_outstanding(b) + close_native
+    return b["bal"] - debt_native - loan_outstanding(b) + ib_adj(b) + close_native
 
 
 def withdraw_amount(b: dict[str, Any], fraction: float, min_native: float) -> tuple[float, float]:
@@ -127,7 +128,7 @@ def withdraw_amount(b: dict[str, Any], fraction: float, min_native: float) -> tu
     when the free balance cannot cover it."""
     gain = max(0.0, b["hwm"] - b["wd_mark"])
     amt = round(fraction * gain, 9)
-    if amt <= 0 or amt < min_native or amt > b["bal"] - loan_outstanding(b) + 1e-12:
+    if amt <= 0 or amt < min_native or amt > b["bal"] - loan_outstanding(b) + min(0.0, ib_adj(b)) + 1e-12:
         return 0.0, gain
     return amt, gain
 
@@ -139,6 +140,20 @@ def apply_withdrawal(b: dict[str, Any], amt_in: float, why: str = "") -> None:
     b["wd_mark"] = b["hwm"]
     b["totals"]["withdrawn"] = round(b["totals"].get("withdrawn", 0.0) + amt_in, 9)
     note(b, "withdraw", -amt_in, why)
+
+
+# ------------------------------------------------------------------ inter-bot loan (Trevor 2026-10-12 18:09 MT)
+IB_FILE = "live/ib_loan.json"
+IB_MAX_USD = 50.0   # per-loan cap (Trevor 18:09 MT approved $50)
+
+
+def ib_adj(b: dict[str, Any]) -> float:
+    """Inter-bot loan in this bank's own coin: lender +receivable (SOL lent), borrower -payable (coin received).
+    Neither side's HWM / equity / withdrawable moves because of the loan."""
+    ln = b.get("ib_loan")
+    if not ln:
+        return 0.0
+    return float(ln["sol"]) if ln["role"] == "lender" else -float(ln["coin"])
 
 
 # ------------------------------------------------------------------ JupSOL rescue loan (Trevor 2026-10-11)
@@ -191,7 +206,23 @@ def persisted(pend: dict[str, Any] | None, diff: float, dust: float) -> bool:
     return bool(pend) and abs(diff - pend["d"]) <= max(dust * 10, 0.02 * abs(diff))
 
 
-def recon_token(b: dict[str, Any], wallet: float, coin_px: float, ext_min_usd: float, busy: bool) -> dict[str, Any]:
+def alert_path() -> Path:
+    return ROOT / "live" / "EXT_FLOW_ALERT"
+
+
+def write_alert(asset: str, text: str) -> str:
+    """ext_flow_mode = alert: record an unexplained wallet change in live/EXT_FLOW_ALERT (appended; delete it once
+    resolved). Banks are NOT touched."""
+    line = f"{str(datetime.now(timezone.utc).replace(tzinfo=None))[:19]}Z {asset}: UNEXPLAINED WALLET CHANGE {text}"
+    p = alert_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "a") as f:
+        f.write(line + "\n")
+    return line
+
+
+def recon_token(b: dict[str, Any], wallet: float, coin_px: float, ext_min_usd: float, busy: bool,
+                mode: str = "alert") -> dict[str, Any]:
     """ETH / BTC bot, own token exclusive: wallet token vs bal. Returns {"action": ..., "diff": ...}.
     window open -> trade flow; else 2-tick persistence: >= ext_min_usd external (own bot only), smaller own trade flow."""
     dust = DUST[b["coin"]]
@@ -200,13 +231,19 @@ def recon_token(b: dict[str, Any], wallet: float, coin_px: float, ext_min_usd: f
         return {"action": "wait", "diff": diff}
     if abs(diff) <= dust:
         b["pend"] = None
+        b.pop("ext_alert", None)
         return {"action": "none", "diff": diff}
+    if mode == "alert" and b.get("ext_alert") and persisted(b["ext_alert"], diff, dust) and b.get("window", 0) <= 0:
+        return {"action": "alert_known", "diff": diff}   # already alerted; bank untouched
     if b.get("window", 0) > 0:
         credit(b, diff, "payout", "own-token change in payout window")
         b["pend"] = None
         return {"action": "payout", "diff": diff}
     if persisted(b.get("pend"), diff, dust):
         b["pend"] = None
+        if abs(diff) * coin_px >= ext_min_usd and mode == "alert":
+            b["ext_alert"] = {"d": diff}
+            return {"action": "alert", "diff": diff}
         if abs(diff) * coin_px >= ext_min_usd:
             apply_external(b, diff, f"unexplained {b['coin']} wallet change {diff:+.9f} (~${diff * coin_px:+.2f})")
             return {"action": "external", "diff": diff}

@@ -332,7 +332,7 @@ def test_cancel_failed_request_still_there_halts(bot):
     script_cmd(bot, {"ok": False, "sig": "x", "err": ERR_3012})
     bot.chain = lambda: chain_st(36.75, 116.65)                          # still on-chain: a real failure
     bot.check_tps(p, reqs(116.65), 116.30)
-    assert [n for n, _ in bot.calls] == ["cancel"] and bot.kill.exists()
+    assert [n for n, _ in bot.calls] == ["cancel"] and not bot.kill.exists() and bot.local.pending_cancels
 
 
 def test_cancel_gone_but_size_changed_places_nothing(bot):
@@ -360,7 +360,7 @@ def test_cancel_stale_oracle_6003_retried(bot, monkeypatch):
     script_cmd(bot, *[{"ok": False, "err": ERR_6003}] * 3)
     bot.chain = lambda: chain_st(36.75, 116.65)
     bot.check_tps(p, reqs(116.65), 116.30)
-    assert [n for n, _ in bot.calls] == ["cancel"] * 3 and bot.kill.exists()
+    assert [n for n, _ in bot.calls] == ["cancel"] * 3 and not bot.kill.exists() and bot.local.pending_cancels
 
 
 def test_cancel_all_treats_gone_request_as_cancelled(bot):

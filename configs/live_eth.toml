@@ -81,7 +81,7 @@ levels_max_age_min = 45.0      # stale/missing -> fixed trigger_dist spacing
 min_gap_atr = 0.5              # gap from last fill to the add level, in 1h ATR
 max_gap_atr = 2.0              # no level within 2x ATR -> fixed spacing
 target_avg_atr = 1.0           # size add so new avg lands 1x ATR below the next resistance (longs)
-min_add_usd = 3.0              # floor per add (capped at available)
+min_add_usd = 10.0              # floor per add (capped at available)
 max_add_frac = 1.0             # optional extra per-add cap (fraction of free collateral); 1.0 = off, the ladder budgets instead
 # --- target guard (2026-10-07 16:30 root-cause fix of the all-in add) ---
 min_target_gap_atr = 0.5       # sizing target must sit >= 0.5 ATR above the add price
@@ -92,12 +92,13 @@ fallback_avg_frac = 0.5        # target unreachable: want avg = avg - 0.5 * (avg
 ladder_enabled = true
 ladder_sizing = "budget"       # each add = its rung budget ("min" = min(formula, budget)); $3 floor, liq check shrinks
 ladder_min_rungs = 4           # rolling ladder once price is past the deep level: 4 rungs + a new deep level
-ladder_max_rungs = 14          # 2026-10-09 15:08 config B (ladder sim): 14 main rungs
+ladder_max_rungs = 10          # 2026-10-09 15:08 config B (ladder sim): 14 main rungs
+ladder_fixed_usd = 10.0         # 2026-10-12 preset C LIVE (Trevor 00:04 MT): flat $10 per rung
 ladder_weight_mode = "accel"   # 2026-10-09 config B: ratio 1.15, +0.10 per rung, cap 2.5; $3 min fitted inside the budget
 ladder_weight_mult = 1.15
 ladder_weight_mult_step = 0.10
 ladder_weight_mult_cap = 2.5
-ladder_deep = true
+ladder_deep = false  # 2026-10-12 preset C/resting LIVE (Trevor 00:04 MT)
 ladder_deep_anchor = "first_entry"  # deep level stays put (rungs shrink toward it, budgets grow, it takes the rest)
 ladder_deep_min_atr = 6.0      # deep = deepest analyst support 6-12 ATR below the first entry ...
 ladder_deep_max_atr = 12.0
@@ -106,9 +107,9 @@ ladder_fee_usd_per_add = 0.10  # per-rung network/request fee reserve taken off 
 reference = "last_entry"     # adds spaced from the previous fill, not the moving average
 require_signal = false         # adds on price distance alone
 add_margin_usd = 5.0           # fixed mode only; levels mode sizes adds dynamically
-lev_start = 5.0
-lev_step = 1.0
-lev_cap = 20.0
+lev_start = 5.0  # 2026-10-12 preset C/resting LIVE (Trevor 00:04 MT)
+lev_step = 2.5  # 2026-10-12 preset C/resting LIVE (Trevor 00:04 MT)
+lev_cap = 20.0  # 2026-10-12 preset C/resting LIVE (Trevor 00:04 MT)
 require_liq_beyond_next_level = true
 liq_buffer_atr = 2.0           # levels mode: post-add liq >= 2 ATR below the next rung (else the add is shrunk)
 trigger_mode = "price_abs"
@@ -116,12 +117,12 @@ trigger_dist = 0.85            # overridden every tick by [scale] trigger_dist_a
 allow_after_partial = true
 
 [sizing]
-mode = "fixed_usd"             # Jupiter min collateral is $10; 10% of $100 would sit right at it
-initial_margin_usd = 10.5
+mode = "fixed_usd"  # Jupiter min collateral is $10; 10% of $100 would sit right at it
+initial_margin_usd = 10.0  # 2026-10-12 preset C/resting LIVE (Trevor 00:04 MT)
 
 [entry]
 # Trevor 2026-10-07 18:24 MT: first entry scales with the wallet ("fixed" = the [sizing] $10.50 above).
-first_collateral_mode = "pct"
+first_collateral_mode = "fixed"  # 2026-10-12 preset C/resting LIVE (Trevor 00:04 MT)
 first_collateral_pct = 0.10     # fraction of free native-SOL collateral (wallet SOL - 0.02 reserve, USD) at each fresh open
 first_collateral_min_usd = 10.50  # floor: Jupiter's $10 TP minimum always met
 # first_collateral_max_usd = 50.0  # optional cap (omitted = off)
@@ -179,14 +180,14 @@ own_atr_fallback = true        # analyst file missing/stale -> ladder on own ATR
 # $0.25) closes in one market decrease; collateral stays, rungs re-arm, TPs re-placed. Stale levels -> no trim.
 enabled = true
 trim_trigger = "distance_level"
-trim_arm_dist_pct = 0.0065      # 0.65 % (owner 2026-10-10 19:00 MT, was 0.01)
-trim_level_tol_atr = 0.1
-trim_level_front_run_atr = 0.15  # Trevor 17:16 MT: fire before the level (long res - offset, short sup + offset), offset =
+trim_arm_dist_pct = 0.01        # 1 % (Trevor 2026-10-12 06:22 MT, was 0.0065)
+trim_level_tol_atr = 0.05          # Trevor 2026-10-11 20:48 MT: partial fires 0.05 ATR before the level (total; was 0.1 tol + 0.15 front-run = 0.25)
+trim_level_front_run_atr = 0.0    # Trevor 2026-10-11 20:48 MT (was 0.15)
 trim_level_front_run_pct = 0.0   # 0.15 x 1h ATR + pct x level; total trigger distance = front_run + tol (0.25 ATR)
 trim_after_hours = 4.0         # time mode only (trim_trigger = "time")
 trim_clock = "last_add"
-trim_min_net_usd = 0.25
-trim_min_gain_pct = 0.005
+trim_min_net_usd = 0.0         # Trevor 2026-10-11 14:03 MT: no minimum (was 0.25)
+trim_min_gain_pct = 0.0        # Trevor 2026-10-11 14:03 MT: no minimum (was 0.005)
 trim_network_usd = 0.02
 trim_check_min = 1.0
 trim_max_per_day = 0
@@ -206,17 +207,32 @@ guard_only_underwater = true   # Trevor 2026-10-11 06:31 MT: profit guard close 
 # Per-bot own-coin ledger + HWM (Trevor 2026-10-08 21:37 MT, live/bank.py). This bot's balance lives in ETH (state.json "bank");
 # trades fund from / pay back into it only (shorts: keeper swaps ETH -> USDC in the request, USDC payouts swept back to ETH).
 # Profit guard: market-close the whole position (adds/trims only) once equity if closed now >= hwm + min_profit_native.
-# HWM rises only while flat. Unexplained wallet changes >= ext_min_usd = external (split 50/25/25 SOL/ETH/BTC), never P&L.
+# HWM rises only while flat. Unexplained wallet changes >= ext_min_usd: ALERT only (ext_flow_mode), never P&L, never charged to the bots.
 enabled = true
 min_profit_native = 0.000066          # ETH (~$0.17; owner 2026-10-09 08:46 MT, was 0.000044)
+min_profit_pct_hwm = 0.002            # Trevor 2026-10-12: replaces min_profit_native: target = hwm x (0.2% +
+min_profit_pct_per_partial = 0.0005   #   0.05% x partials taken this trade [trims + TP3 fills])
 swap_cost_pct = 0.002           # est. USDC -> coin swap cost in the guard's close value (ETH/BTC shorts)
 ext_min_usd = 1.5
+ext_flow_mode = "alert"       # Trevor 2026-10-11 19:08 MT: unexplained wallet change -> WARNING + live/EXT_FLOW_ALERT only (no split, no swaps, banks untouched)
 window_ticks = 3
 withdraw_enabled = true         # daily: withdraw_fraction x HWM gain since last withdrawal -> JupSOL (replaces old SOL nightly stake)
 withdraw_time_mt = "00:05"
-withdraw_fraction = 0.5
+withdraw_fraction = 0.55
 # Trevor 2026-10-11 06:53 MT: no $0.50 minimum; withdraw when amount_usd > withdraw_fee_factor x est. cost (ETH->JupSOL swap: ~0.3% route fee + impact, ~0.0001 SOL network/priority)
 withdraw_cost_pct = 0.003
 withdraw_network_sol = 0.0001
 withdraw_fee_factor = 2.0
 fee_settle_min_sol = 0.005      # ETH/BTC: settle SOL network-fee debt (coin -> SOL) above this
+
+[resting]
+# Resting on-chain orders (Trevor spec 2026-10-11, approved 23:00 MT). NOT LIVE: every flag OFF until Trevor enables it.
+# adds_enabled: next ladder add rests as a Jupiter limit-open order (Perps API) at the rung; no market add on the bar.
+# partials_enabled: ONE partial TP per position, placed once trim is ARMED and adds are trim-eligible (sized to them), updated only on a new add, N trim levels (main + fine) beyond its entry,
+#   N = 1 at the first add -> 4 at rung ladder_max_rungs (linear, rounded), fired trim_level_tol_atr before the level.
+# last_partial_rule: the next add order must lie beyond the last partial price (adverse direction).
+adds_enabled = true  # 2026-10-12 preset C/resting LIVE (Trevor 00:04 MT)
+partials_enabled = true  # 2026-10-12 preset C/resting LIVE (Trevor 00:04 MT)
+last_partial_rule = true  # 2026-10-12 preset C/resting LIVE (Trevor 00:04 MT)
+partial_levels_min = 1
+partial_levels_max = 4

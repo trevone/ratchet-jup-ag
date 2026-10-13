@@ -1,0 +1,12 @@
+# Ladder candidate C (Trevor 2026-10-11 23:52 MT) - NOT LIVE. One override per line (k=v for config.load_config / --set).
+# Flat $10 collateral open + every rung, leverage 5x +2.5x per add, cap 20x, 10 main rungs, no deep rung.
+dca.ladder_fixed_usd=10
+dca.min_add_usd=10
+dca.lev_start=5.0
+dca.lev_step=2.5
+dca.lev_cap=20.0
+dca.ladder_max_rungs=10
+dca.ladder_deep=false
+entry.first_collateral_mode=fixed
+sizing.mode=fixed_usd
+sizing.initial_margin_usd=10

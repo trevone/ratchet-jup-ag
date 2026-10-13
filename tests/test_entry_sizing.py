@@ -18,11 +18,11 @@ def free_usd(wallet_sol: float) -> float:   # bot.ChainAccount.cash: native SOL 
 
 @pytest.fixture(scope="module")
 def strat():
-    return DcaStrategy(load_config("configs/live_100.toml"))
+    return DcaStrategy(load_config("tests/fixtures/configs_pre_c/live_100.toml"))
 
 
 def test_live_config_keys():
-    c = load_config("configs/live_100.toml")
+    c = load_config("tests/fixtures/configs_pre_c/live_100.toml")
     assert c.entry.first_collateral_mode == "pct" and c.entry.first_collateral_pct == 0.10
     assert c.entry.first_collateral_min_usd == 10.50 and c.entry.first_collateral_max_usd is None
     assert c.withdraw.min_send_sol == 0.01 and c.withdraw.min_stake_fee_mult == 3.0 and c.withdraw.min_stake_floor_sol == 0.0005
@@ -40,15 +40,15 @@ def test_500_wallet_is_50(strat):
 
 
 def test_cap_and_never_above_free(strat):
-    c = load_config("configs/live_100.toml", ["entry.first_collateral_max_usd=40"])
+    c = load_config("tests/fixtures/configs_pre_c/live_100.toml", ["entry.first_collateral_max_usd=40"])
     assert DcaStrategy(c).initial_margin(1000.0) == 40.0
     assert strat.initial_margin(10.30) == pytest.approx(10.20)   # floor clipped to free - fee reserve (guard then skips < $10)
     with pytest.raises(ValueError):
-        load_config("configs/live_100.toml", ["entry.first_collateral_max_usd=5"])
+        load_config("tests/fixtures/configs_pre_c/live_100.toml", ["entry.first_collateral_max_usd=5"])
 
 
 def test_fixed_mode_keeps_old_behaviour():
-    c = load_config("configs/live_100.toml", ["entry.first_collateral_mode=fixed"])
+    c = load_config("tests/fixtures/configs_pre_c/live_100.toml", ["entry.first_collateral_mode=fixed"])
     s = DcaStrategy(c)
     for cash in (50.0, 94.0, 300.0, 5000.0):
         assert s.initial_margin(cash) == 10.50
@@ -93,25 +93,25 @@ def test_bigger_first_entry_shrinks_ladder_by_its_size(strat):
 
 
 def test_stake_minimum_from_fee_and_slippage():
-    w = load_config("configs/live_100.toml").withdraw
+    w = load_config("tests/fixtures/configs_pre_c/live_100.toml").withdraw
     assert w.action == "stake_jupsol" and w.min_stake_fee_mult == 3.0
     # 3 x (0.00001 + a x 0.5%) -> a > 0.0000305 SOL, so the 0.0005 SOL floor rules (the old 0.01 is gone for staking)
     assert w.min_amount_sol() == pytest.approx(0.0005)
-    big_fee = load_config("configs/live_100.toml", ["withdraw.stake_fee_est_sol=0.001"]).withdraw
+    big_fee = load_config("tests/fixtures/configs_pre_c/live_100.toml", ["withdraw.stake_fee_est_sol=0.001"]).withdraw
     assert big_fee.min_amount_sol() == pytest.approx(3 * 0.001 / (1 - 3 * 0.005))   # fee-driven above the floor
     a = big_fee.min_amount_sol()
     assert a == pytest.approx(3 * (0.001 + a * 0.005))                                # exactly 3x the swap cost
-    mult5 = load_config("configs/live_100.toml", ["withdraw.stake_fee_est_sol=0.001", "withdraw.min_stake_fee_mult=5"])
+    mult5 = load_config("tests/fixtures/configs_pre_c/live_100.toml", ["withdraw.stake_fee_est_sol=0.001", "withdraw.min_stake_fee_mult=5"])
     assert mult5.withdraw.min_amount_sol() > a                                        # tweakable
-    send = load_config("configs/live_100.toml", ["withdraw.mode=send"]).withdraw
+    send = load_config("tests/fixtures/configs_pre_c/live_100.toml", ["withdraw.mode=send"]).withdraw
     assert send.min_amount_sol() == 0.01                                              # send mode unchanged
     with pytest.raises(ValueError):
-        load_config("configs/live_100.toml", ["withdraw.min_stake_fee_mult=0.5"])
+        load_config("tests/fixtures/configs_pre_c/live_100.toml", ["withdraw.min_stake_fee_mult=0.5"])
 
 
 def test_stake_run_stakes_all_small_profit_and_carries_dust():
     from datetime import datetime, timezone
-    cfg = load_config("configs/live_100.toml")             # stake_jupsol; stake is stubbed (never the chain)
+    cfg = load_config("tests/fixtures/configs_pre_c/live_100.toml")             # stake_jupsol; stake is stubbed (never the chain)
     chain = {"wallet": {"sol": 0.83}, "positions": {"long": {}, "short": {}}, "openRequests": []}
     now = datetime(2026, 10, 8, 7, 0, tzinfo=timezone.utc)   # 01:00 MT, after 00:05
     staked: list[float] = []
@@ -140,14 +140,14 @@ def test_stake_runs_with_open_trade_ignoring_next_add():
 
 def test_stake_run_partial_with_position_open_carries_rest():
     from datetime import datetime, timezone
-    cfg = load_config("configs/live_100.toml")
+    cfg = load_config("tests/fixtures/configs_pre_c/live_100.toml")
     assert cfg.withdraw.require_next_add_cover is False
     chain = {"wallet": {"sol": 0.033}, "positions": {"long": {"sizeUsd": 47.25}, "short": {}}, "openRequests": [
         {"requestType": "trigger"}]}                       # open long with its TP triggers resting
     now = datetime(2026, 10, 8, 7, 0, tzinfo=timezone.utc)
     staked: list[float] = []
     stub = lambda a: staked.append(a) or {"ok": True, "sig": "K", "jupsol_out": a / 1.2}
-    cfg_live = load_config("configs/live_100.toml", ["live.dry_run=false"])
+    cfg_live = load_config("tests/fixtures/configs_pre_c/live_100.toml", ["live.dry_run=false"])
     st: dict = {}
     rows = [{"close_time": "2026-10-07 20:00:00+00:00", "net_sol": "0.02", "net_sol_est": ""}]
     rec = run_withdraw(cfg_live, st, chain, now, next_add_sol=0.05, rows=rows, stake=stub)
@@ -157,7 +157,7 @@ def test_stake_run_partial_with_position_open_carries_rest():
     # send mode unchanged: all-or-nothing and the next add must be covered
     st2: dict = {}
     sent: list[float] = []
-    rec2 = run_withdraw(load_config("configs/live_100.toml", ["withdraw.mode=send", "live.dry_run=false"]), st2,
+    rec2 = run_withdraw(load_config("tests/fixtures/configs_pre_c/live_100.toml", ["withdraw.mode=send", "live.dry_run=false"]), st2,
                         {**chain, "wallet": {"sol": 0.5}}, now, next_add_sol=0.48, rows=rows,
                         send=lambda a: sent.append(a) or {"ok": True})
     assert rec2["amount"] == 0.0 and not sent and st2["withdraw_carry_sol"] == pytest.approx(0.02)

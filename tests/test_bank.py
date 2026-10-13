@@ -52,8 +52,8 @@ def test_external_deposit_withdrawal_is_not_profit():
     assert K.pending_others(K.load_journal()) == pytest.approx(0.25)
     # ETH token: unexplained change outside a payout window -> external for the ETH bot only
     e = K.new_bank("ETH", 0.015)
-    assert K.recon_token(e, 0.017, 2500.0, 1.5, False)["action"] == "pending"
-    assert K.recon_token(e, 0.017, 2500.0, 1.5, False)["action"] == "external"
+    assert K.recon_token(e, 0.017, 2500.0, 1.5, False, "split")["action"] == "pending"
+    assert K.recon_token(e, 0.017, 2500.0, 1.5, False, "split")["action"] == "external"
     assert (e["bal"], e["hwm"]) == pytest.approx((0.017, 0.017))
     assert e["totals"]["trade_net"] == 0.0
 
@@ -239,7 +239,8 @@ def test_bank_persists_in_state_json(ebot):
 def test_live_configs_ledger():
     for f, m in (("live_100", 0.0015), ("live_eth", 0.000066), ("live_btc", 0.00000195)):
         lc = load_config(f"configs/{f}.toml").ledger
-        assert lc.enabled and lc.min_profit_native == m and lc.withdraw_fraction == 0.5 and lc.ext_split == (0.5, 0.25, 0.25)
+        assert lc.enabled and lc.min_profit_native == m and lc.withdraw_fraction == 0.55 and lc.ext_split == (0.5, 0.25, 0.25)
+        assert lc.ext_flow_mode == "alert"
     assert load_config("configs/default.toml").ledger.enabled is False
 
 
@@ -266,17 +267,47 @@ def test_bank_tick_and_daily_withdrawal_eth(ebot, monkeypatch):
     b["wd_last_date"] = None
     ebot.bank_daily(st2, None)
     sw = [a for c, a in calls if c == "swap"][0]
-    assert sw["inputMint"] == K.MINT["ETH"] and sw["outputMint"] == K.MINT["JUPSOL"] and sw["amountAtoms"] == "100000"
-    assert (b["bal"], b["hwm"], b["wd_mark"]) == pytest.approx((0.016, 0.016, 0.016))
-    assert b["fee_sol"] == pytest.approx(0.000007) and b["wd_last_date"] and b["daily"][-1]["amount"] == pytest.approx(0.001)
+    assert sw["inputMint"] == K.MINT["ETH"] and sw["outputMint"] == K.MINT["JUPSOL"] and sw["amountAtoms"] == "110000"
+    assert (b["bal"], b["hwm"], b["wd_mark"]) == pytest.approx((0.0159, 0.0159, 0.0159))
+    assert b["fee_sol"] == pytest.approx(0.000007) and b["wd_last_date"] and b["daily"][-1]["amount"] == pytest.approx(0.0011)
     n = len(calls)
     ebot.bank_daily(st2, None)                             # once a day
     assert len(calls) == n
 
 
-def test_bank_tick_sol_external_split(monkeypatch, tmp_path):
+def test_recon_token_alert_mode_leaves_bank_untouched():
+    e = K.new_bank("ETH", 0.02, 0.02)
+    assert K.recon_token(e, 0.017, 2500.0, 1.5, False)["action"] == "pending"
+    assert K.recon_token(e, 0.017, 2500.0, 1.5, False)["action"] == "alert"
+    assert K.recon_token(e, 0.017, 2500.0, 1.5, False)["action"] == "alert_known"   # alerts once
+    assert e["bal"] == 0.02 and e["hwm"] == 0.02 and e["wd_mark"] == 0.02 and e["totals"]["ext_out"] == 0.0
+    assert K.recon_token(e, 0.02, 2500.0, 1.5, False)["action"] == "none" and "ext_alert" not in e
+
+
+def test_bank_tick_sol_unexplained_alert_only(monkeypatch, tmp_path):
     import live.bot as B
     cfg = load_config("configs/live_100.toml", ["live.dry_run=true"])
+    assert cfg.ledger.ext_flow_mode == "alert"
+    monkeypatch.setattr(B, "STATE", tmp_path / "state.json")
+    b = B.Bot(cfg)
+    b.live = dataclasses.replace(b.live, dry_run=False)
+    b.local.bank = K.new_bank("SOL", 0.68, 0.78)
+    st = _st(asset="SOL", size=0)
+    st["wallet"]["sol"] = 0.70
+    b.bank_tick(st, None, 110.0)
+    st["wallet"]["sol"] = 0.49                             # e.g. a stray 0.21 SOL stake out of the wallet
+    for _ in range(4):
+        b.bank_tick(st, None, 110.0)
+    bk = b.local.bank
+    assert bk["bal"] == pytest.approx(0.68) and bk["hwm"] == pytest.approx(0.78) and bk["wd_mark"] == pytest.approx(0.78)
+    assert bk["totals"]["ext_out"] == 0.0 and K.load_journal()["events"] == []
+    txt = K.alert_path().read_text()
+    assert txt.count("UNEXPLAINED WALLET CHANGE") == 1 and "-0.21" in txt
+
+
+def test_bank_tick_sol_external_split(monkeypatch, tmp_path):
+    import live.bot as B
+    cfg = load_config("configs/live_100.toml", ["live.dry_run=true", "ledger.ext_flow_mode=split"])
     monkeypatch.setattr(B, "STATE", tmp_path / "state.json")
     b = B.Bot(cfg)
     b.live = dataclasses.replace(b.live, dry_run=False)

@@ -102,6 +102,36 @@ export function positionEvents(t: any, position: string) {
   return out;
 }
 
+/** Read-only: the position's recent IncreasePositionEvents (keeper fills of market adds AND limit orders), newest first.
+ * Used to rebuild a lot the bot did not save (2026-10-12: restart 6 s after an add filled). */
+export async function positionIncreases(conn: Connection, position: PublicKey, limit = 40) {
+  const sigs = await conn.getSignaturesForAddress(position, { limit }, "confirmed");
+  const coder = new BorshEventCoder(IDL as any);
+  const out: any[] = [];
+  for (const s of sigs) {
+    if (s.err) continue;
+    const t: any = await conn.getTransaction(s.signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }).catch(() => null);
+    if (!t?.meta) continue;
+    const keys: string[] = [...t.transaction.message.staticAccountKeys.map((k: any) => k.toBase58 ? k.toBase58() : String(k)),
+      ...(t.meta.loadedAddresses?.writable ?? []).map(String), ...(t.meta.loadedAddresses?.readonly ?? []).map(String)];
+    for (const inner of t.meta.innerInstructions ?? []) for (const ix of inner.instructions) {
+      if (keys[ix.programIdIndex] !== PERPS_PROGRAM_ID.toBase58()) continue;
+      const data = Buffer.from(bs58.decode(ix.data));
+      if (data.length < 16 || !data.subarray(0, 8).equals(EVENT_IX_TAG)) continue;
+      let ev: any = null;
+      try { ev = coder.decode(data.subarray(8).toString("base64")); } catch { continue; }
+      if (!ev || (ev.name !== "IncreasePositionEvent" && ev.name !== "InstantIncreasePositionEvent")) continue;
+      if (ev.data?.positionKey?.toBase58?.() !== position.toBase58()) continue;
+      const num = (x: any) => (x ? Number(x.toString()) / USD : 0);
+      out.push({ sig: s.signature, blockTime: t.blockTime, event: ev.name, price: num(ev.data.price),
+                 sizeUsdDelta: num(ev.data.sizeUsdDelta), collateralUsdDelta: num(ev.data.collateralUsdDelta),
+                 feeUsd: num(ev.data.feeUsd), positionSizeUsd: num(ev.data.positionSizeUsd),
+                 request: ev.data.positionRequestKey?.toBase58?.() ?? null });
+    }
+  }
+  return { ok: true, position: position.toBase58(), increases: out };
+}
+
 const PERPETUALS = PublicKey.findProgramAddressSync([Buffer.from("perpetuals")], PERPS_PROGRAM_ID)[0];
 export const USD = 1e6;            // USD amounts are 6-decimal fixed point
 const CU_PRICE_MICROLAMPORTS = Number(process.env.CU_PRICE_MICROLAMPORTS ?? 100_000);

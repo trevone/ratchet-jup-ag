@@ -106,11 +106,11 @@ from asset_scale import scaled_summary  # noqa: E402
 from dca_levels import _SimPos, project_ladder  # noqa: E402
 from strategy import DcaStrategy  # noqa: E402
 
-ASSET_CFG = {"ETH": ("configs/live_eth.toml", 2578.0, 13.8), "BTC": ("configs/live_btc.toml", 83100.0, 350.0)}
+ASSET_CFG = {"ETH": ("tests/fixtures/configs_pre_c/live_eth.toml", 2578.0, 13.8), "BTC": ("tests/fixtures/configs_pre_c/live_btc.toml", 83100.0, 350.0)}
 
 
 def test_config_keys_and_isolation():
-    sol = load_config("configs/live_100.toml")
+    sol = load_config("tests/fixtures/configs_pre_c/live_100.toml")
     assert sol.bot.asset == "SOL" and sol.bot.state_dir == "live" and sol.live.kill_switch_path == "live/KILL"
     assert set(sol.withdraw.trade_files) >= {"live/trades.csv"}
     shares = sol.bot.share
@@ -133,7 +133,7 @@ def test_scaled_distances(asset):
     assert c.tp.deep_buffer_usd == pytest.approx(0.0013 * px) and c.tp.tp_min_gap_usd == pytest.approx(0.00043 * px)
     c0 = scale_config(load_config(f), px, None)            # no ATR yet -> percent fallback
     assert c0.dca.trigger_dist == pytest.approx(0.0073 * px)
-    sol = load_config("configs/live_100.toml")
+    sol = load_config("tests/fixtures/configs_pre_c/live_100.toml")
     assert scale_config(sol, 116.0, 0.7) is sol             # SOL: [scale] off, USD values untouched
     assert "trigger_dist" in scaled_summary(c)
 
@@ -233,7 +233,7 @@ def test_own_kill_pause_and_global_kill(tmp_path, monkeypatch):
 
 
 def test_sol_bot_paths_unchanged():
-    b = botmod.Bot(load_config("configs/live_100.toml"))
+    b = botmod.Bot(load_config("tests/fixtures/configs_pre_c/live_100.toml"))
     assert b.state_path == botmod.STATE and b.kill == botmod.ROOT / "live" / "KILL" and b.asset == "SOL"
     assert b.dir == botmod.ROOT / "live"
 
@@ -280,7 +280,7 @@ def test_per_bot_ledgers_and_single_daily_stake(tmp_path, monkeypatch):
         _trade(ledger, "2026-10-08 01:00:00+00:00", "2026-10-08 02:00:00+00:00", 1.0, 5.0, flows=flows, gross=5.0)
     assert (tmp_path / "live/eth/trades.csv").exists() and (tmp_path / "live/btc/trades.csv").exists()
     monkeypatch.setattr(wd, "ROOT_DIR", tmp_path)
-    cfg = load_config("configs/live_100.toml", ['withdraw.trade_files=["live/trades.csv","live/eth/trades.csv","live/btc/trades.csv"]'])
+    cfg = load_config("tests/fixtures/configs_pre_c/live_100.toml", ['withdraw.trade_files=["live/trades.csv","live/eth/trades.csv","live/btc/trades.csv"]'])
     staked = []
     chain = {"wallet": {"sol": 1.0}, "positions": {"long": {}, "short": {}}, "openRequests": [], "allOpenRequests": [], "allPositions": []}
     from datetime import datetime, timezone
@@ -302,7 +302,7 @@ def test_withdraw_defers_on_any_bots_market_request(tmp_path, monkeypatch):
     monkeypatch.setattr(wd, "ROOT_DIR", tmp_path)
     ledger.configure(tmp_path / "live", "SOL")
     _trade(ledger, "2026-10-08 01:00:00+00:00", "2026-10-08 02:00:00+00:00", 1.0, 1.0, flows=0.002, gross=5.0)
-    cfg = load_config("configs/live_100.toml", ['withdraw.trade_files=["live/trades.csv"]'])
+    cfg = load_config("tests/fixtures/configs_pre_c/live_100.toml", ['withdraw.trade_files=["live/trades.csv"]'])
     chain = {"wallet": {"sol": 1.0}, "positions": {"long": {}, "short": {}}, "openRequests": [],
              "allOpenRequests": [{"requestType": "market", "position": "ETHPDA"}], "allPositions": []}
     from datetime import datetime, timezone
@@ -311,7 +311,7 @@ def test_withdraw_defers_on_any_bots_market_request(tmp_path, monkeypatch):
 
 
 def test_eth_bot_never_stakes():
-    cfg = load_config("configs/live_eth.toml")
+    cfg = load_config("tests/fixtures/configs_pre_c/live_eth.toml")
     from datetime import datetime, timezone
     assert wd.run_withdraw(cfg, {}, {}, datetime(2026, 10, 8, 6, 10, tzinfo=timezone.utc)) is None
 
@@ -345,7 +345,7 @@ def test_sweep_attribution_no_double_claims():
 
 
 def test_sweep_args_locked_and_capped():
-    cfg = load_config("configs/live_eth.toml")
+    cfg = load_config("tests/fixtures/configs_pre_c/live_eth.toml")
     a = sw.sweep_args(cfg, TOKS["USDC"]["mint"], 2500000)
     assert a["direction"] == "sweep" and a["slippageBps"] == cfg.withdraw.unstake_slippage_bps <= cfg.withdraw.stake_max_slippage_bps
     assert a["amountAtoms"] == "2500000"

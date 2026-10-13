@@ -10,10 +10,11 @@ from dca_levels import Levels
 from live import trim as T
 from strategy import LONG
 
-LIVE = "configs/live_100.toml"
+LIVE = "tests/fixtures/configs_pre_c/live_100.toml"
 LV = Levels(supports=(105.0, 103.5), resistances=(112.5, 114.0), atr=0.9)
 OF = CF = 0.0006
-TC = load_config(LIVE).trim
+TC = dataclasses.replace(load_config(LIVE).trim, trim_min_net_usd=0.25, trim_min_gain_pct=0.005)  # legacy minimums pinned for threshold unit tests; live has none (Trevor 2026-10-11)
+TC_LIVE = load_config(LIVE).trim
 NOW = pd.Timestamp.now(tz="UTC")
 
 
@@ -82,15 +83,15 @@ def test_config_default_off_and_eth_btc_off():
     assert load_config("configs/default.toml").trim.enabled is False
     for f in ("live_eth", "live_btc"):                                     # 17:13 MT: all three bots aligned
         e = load_config(f"configs/{f}.toml")
-        assert (e.trim.enabled, e.trim.trim_trigger, e.trim.trim_arm_dist_pct) == (True, "distance_level", 0.0065)
+        assert (e.trim.enabled, e.trim.trim_trigger, e.trim.trim_arm_dist_pct) == (True, "distance_level", 0.01)
         assert e.profit_guard.enabled and e.profit_guard.min_trade_profit_sol == 0.001
     assert load_config("configs/default.toml").profit_guard.enabled is False
     c = load_config(LIVE).trim
-    assert (c.enabled, c.trim_after_hours, c.trim_clock, c.trim_min_net_usd, c.trim_min_gain_pct) == (True, 4.0, "last_add", 0.25, 0.005)
-    assert (c.trim_trigger, c.trim_arm_dist_pct, c.trim_level_tol_atr) == ("distance_level", 0.0065, 0.1)
+    assert (c.enabled, c.trim_after_hours, c.trim_clock, c.trim_min_net_usd, c.trim_min_gain_pct) == (True, 4.0, "last_add", 0.0, 0.0)
+    assert (c.trim_trigger, c.trim_arm_dist_pct, c.trim_level_tol_atr) == ("distance_level", 0.0065, 0.05)
     for f in ("live_100", "live_eth", "live_btc"):
         t = load_config(f"configs/{f}.toml").trim
-        assert (t.trim_level_front_run_atr, t.trim_level_front_run_pct) == (0.15, 0.0)
+        assert (t.trim_level_front_run_atr, t.trim_level_front_run_pct) == (0.0, 0.0)
     assert load_config("configs/default.toml").trim.trim_trigger == "time"
 
 
@@ -199,7 +200,7 @@ def test_no_trim_cases(bot, why):
         price = 111.0
         st = state(price=price)
     elif why == "no_profit_lot":
-        price = 106.9
+        price = 106.5   # below every add for this long: no lot in profit (no minimum since 2026-10-11)
     elif why == "inflight":
         st = state(inflight=True)
     elif why == "tp_hit":
@@ -217,7 +218,7 @@ def test_trim_unconfirmed_halts(bot):
     st = state()
     bot.chain = lambda: state()          # size never shrinks although the request reported ok
     assert bot.maybe_trim(bot.chain_position(st), st, 108.6) is False
-    assert bot.kill.exists() and len(bot.local.lots) == 7
+    assert not bot.kill.exists() and bot.local.tp_retry and len(bot.local.lots) == 7
 
 
 def test_config_off_tick_path_unchanged(bot):
@@ -262,7 +263,7 @@ def test_add_never_confirmed_halts(bot):
     bot.guard = lambda *a: None
     bot.chain = lambda: before
     bot.open_or_add(it, bot.chain_position(before), before, 100.0)
-    assert bot.kill.exists() and len(bot.local.lots) == 6
+    assert not bot.kill.exists() and bot.local.add_pending is not None and len(bot.local.lots) == 6
 
 
 # ------------------------------------------------------------------ distance + level trigger (Trevor 2026-10-08 17:06 MT)
@@ -300,6 +301,7 @@ def test_dist_not_armed_no_trim_even_at_level(dbot):
 
 
 def test_dist_arm_persists_then_trigger_trims_eligible_adds(dbot):
+    dbot.cfg = dataclasses.replace(dbot.cfg, trim=dataclasses.replace(dbot.cfg.trim, trim_level_tol_atr=0.1, trim_level_front_run_atr=0.15))  # pin legacy 0.25 ATR offset for these fixtures (live 0.05 since 2026-10-11)
     import live.bot as B
     st = state(price=106.0)
     assert dbot.maybe_trim(dbot.chain_position(st), st, 106.0) is False   # arms (3.5 % under), no level reached
@@ -423,6 +425,7 @@ def test_front_run_trigger_price():
 
 
 def test_dist_front_run_fires_before_level(dbot):
+    dbot.cfg = dataclasses.replace(dbot.cfg, trim=dataclasses.replace(dbot.cfg.trim, trim_level_tol_atr=0.1, trim_level_front_run_atr=0.15))  # pin legacy 0.25 ATR offset for these fixtures (live 0.05 since 2026-10-11)
     dbot.local.trim_armed = True
     st = state(price=108.45)                                   # 0.20 below res 108.65: inside 0.25 ATR (0.225) front-run
     dbot.chain = seq(after_trim_state(), after_trim_state(), after_trim_state())
@@ -594,3 +597,11 @@ def test_trim_trigger_uses_fine_levels():
     assert lvl == 109.72 and not hit
     lvl, hit = T.trigger_level(-1, 108.9, lv, 0.1, 0.15)
     assert lvl == 108.7 and hit
+
+
+def test_live_has_no_trim_minimum():
+    """Trevor 2026-10-11 14:03 MT: no per-lot minimum; a lot qualifies once its own gain net of fees is > 0."""
+    assert (TC_LIVE.trim_min_net_usd, TC_LIVE.trim_min_gain_pct) == (0.0, 0.0)
+    for f in ("tests/fixtures/configs_pre_c/live_eth.toml", "tests/fixtures/configs_pre_c/live_btc.toml"):
+        t = load_config(f).trim
+        assert (t.trim_min_net_usd, t.trim_min_gain_pct) == (0.0, 0.0)

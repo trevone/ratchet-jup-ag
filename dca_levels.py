@@ -177,6 +177,7 @@ class LadderParams:
     weight_mode: str = "geometric"    # "geometric": mult**k | "accel": ratio starts at mult, +mult_step per rung, <= mult_cap
     weight_mult_step: float = 0.10
     weight_mult_cap: float = 2.5
+    fixed_usd: float = 0.0            # > 0: flat collateral per rung (weights / remainder ignored); 0 = off
     min_usd: float = 0.0              # accel mode: per-rung floor fitted INSIDE the budget (floored rungs fixed, rest rescaled)
 
 
@@ -268,6 +269,8 @@ def ladder_rungs(side: int, ref: float, lv: Levels | None, *, last_leverage: flo
 def ladder_budgets(rungs: list[Rung], available_usd: float, lp: LadderParams) -> list[Rung]:
     """Split free collateral (minus per-rung fee reserve) by weights mult**k; the deepest rung gets the rest."""
     free = max(0.0, available_usd - lp.fee_usd_per_add * len(rungs))
+    if lp.fixed_usd > 0:   # flat ladder (2026-10-12 candidate C): each rung = fixed_usd; plan_add caps at what is available
+        return [Rung(r.price, r.leverage, r.source, lp.fixed_usd) for r in rungs]
     if lp.weight_mode == "accel":
         b = fit_min_budgets(ladder_weights(len(rungs), lp), free, lp.min_usd)
         return [Rung(r.price, r.leverage, r.source, x) for r, x in zip(rungs, b)]

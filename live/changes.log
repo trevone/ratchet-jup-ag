@@ -769,3 +769,123 @@ Files: config.py, live/bot.py, live/trim.py, configs/live_100.toml, live_eth.tom
 2026-10-11 08:30 MT JupSOL rescue (Trevor 08:23): live/rescue.py+rescue.sh (status/lend/extend/add/restore, dry-run default), bank.loan liability (HWM/guard/withdraw exclude), bot auto-repay+settings restore when flat, quickcheck prints RESCUE on ALERT LIQ; tests 259 green; not pushed
 2026-10-11 08:42 MT quickcheck: quiet
 2026-10-11 08:48 MT LIVE rescue test (Trevor 08:38): 0.0015 JupSOL -> 0.001819479 SOL -> SOL short collateral $10.45->$10.65, liq 130.12->130.54, size/TPs unchanged, bank.loan open (auto-repay +5% at close); sigs 5U91tXCwMAUmBSztt8Si7xPYHpmUhSUtCKLCLDNJxEpYkA3EJ9o3xijjbAc5MegrVRxT1KqGJyx3dgB9UUZMoqet 4M5GAoGdQtES3DMH5qfbBZ4quowrR8XnxeR2hHsYKp35qM9fAJc8AY9A6UnGmAev4RFs848ndX8Vri5HEE5iTJ4G; not pushed
+2026-10-11 08:47 MT [doc] STRATEGY.md: withdrawal balancing rule + rescue live test
+2026-10-11 10:45 MT [risk] RED get_out on SOL+ETH: fresh opens paused until 2026-10-11T22:45:02 MT (adds/TPs/trims still active)
+2026-10-11 11:44 MT quickcheck: quiet
+2026-10-11 12:40 MT quickcheck: quiet
+2026-10-11 14:06 MT [cfg] trim_min_net_usd 0.25->0, trim_min_gain_pct 0.005->0 all bots (Trevor 14:03: no minimum). Tests updated, 260 pass.
+2026-10-11 14:39 MT quickcheck: quiet
+2026-10-11 15:44 MT quickcheck: quiet
+2026-10-11 17:43 MT quickcheck: quiet
+2026-10-11 18:38 MT quickcheck: quiet
+2026-10-11 18:40 MT quickcheck: quiet
+2026-10-11 19:18 MT FIX mistaken 18:41 MT JupSOL stake (Trevor 19:08): stray 0.207 SOL -> 0.170590391 JupSOL (5RmqPj..cENK8aG, source unknown, no script/cron on droplet) had been split by bank as external withdrawal ext #1 (SOL -0.1035, ETH/BTC bots sold 0.00226902 ETH + 0.00006882 WBTC). Services stopped 19:09; unstaked 0.170590391 JupSOL -> 0.2070007 SOL (49q2A2Jx..Lxb); bought back 0.00226937 ETH (4gzkcZ4k..NXBJ) + 0.00006882 WBTC (3peUb4Da..CZ); banks restored: SOL bal 0.580068754 hwm 0.784299325 (correction -0.000152452 SOL fix cost), ETH bal 0.00471571 hwm 0.020522424, BTC bal 0.00069814 hwm 0.00069798; wd_marks restored; ETH/BTC fee_sol double-count of sale fees undone; ext #1 marked reversed/done; stake_ledger rows added; SOL res_last re-init (0.02514866). NEW [ledger] ext_flow_mode="alert" all 3 configs: unexplained wallet change -> WARNING UNEXPLAINED WALLET CHANGE + live/EXT_FLOW_ALERT, banks untouched, no split/swaps; quickcheck prints ALERT EXT. Tests 262 pass. Restarted 19:13, positions/TPs unchanged, no new ext event. Backups *.bak-20261011-1915. Not pushed.
+2026-10-11 19:46 MT quickcheck: quiet
+2026-10-11 19:46 MT quickcheck: quiet
+2026-10-11 20:50 MT [cfg] partial trigger offset 0.25 -> 0.05 ATR all bots (Trevor 20:48). 262 tests pass.
+2026-10-11 21:05 MT [code] TICK_SEC 60 -> 15 (5 hit 429s) (Trevor 21:02)
+2026-10-11 21:06 MT [code] TICK_SEC 60 -> 15 (5 hit 429s) (Trevor 21:02)
+2026-10-11 23:30 MT [code, NOT LIVE] resting orders (Trevor spec 23:00/23:09/23:10/23:11: one resting add at a time; ONE partial TP per position, placed when trim armed + adds eligible, replaced only on a new add): [resting] adds_enabled / partials_enabled / last_partial_rule (+ partial_levels_min=1, partial_levels_max=4), ALL false in live_100/eth/btc. New live/resting.py, live/src/limit.ts (Jupiter Perps API limit add create/cancel/list), cli.ts commands limit-orders / (simulate-)create-limit-order / (simulate-)cancel-limit-order, live/resting_preview.py; bot.py/config.py hooks only active when a flag is on. Tests 262 -> 292 pass. Services NOT restarted; no tx sent.
+
+2026-10-12 00:05 MT  LOT MISMATCH FIX (Trevor approved 23:50 MT)  [LIVE for code once services restart; state fix already live]
+  Incident: SOL short add $24 x8 filled 03:02:57Z (request AtqhxiR8..., keeper 3hZF9ebv... @111.71655); the service was
+  restarted 6 s later while the bot was in confirm_size, so the lot was never saved -> lots $115.50 vs chain $139.50,
+  trims skipped ('lots total != on-chain size'), manual_trim refused.
+  State fix (23:52 MT): ratchet-sol stopped, live/state.json backed up (/tmp/sol_state.json.bak-20261011-235201), lot
+  inserted {time 03:02:57Z, price 111.71655, size 24, coll 2.98, lev 8, sig Atqhx...}, n_entries 5, trade_opened_usd
+  +24; last_leverage 8 / last_entry 112.750 unchanged (the later 04:45Z add is the newest). Restarted.
+  Code (live/bot.py, live/src/jup.ts, live/src/cli.ts):
+  - add_pending marker in state.json, saved BEFORE a market add is sent (size, lev, margin, price, size0) and its sig
+    right after; cleared when the lot is saved or when the size never grew.
+  - recover_missing_add() each tick: if on-chain size exceeds the lots total, read the position's recent
+    IncreasePositionEvents (new read-only CLI 'position-increases') and rebuild the ONE unrecorded fill whose size equals
+    the gap exactly (fill price, size, collateral - fee from the event; lev from add_pending, else size/collateral),
+    booked like a normal add (n_entries +1, last_* if newest, fresh TP1/TP2 via sync_tp_ladder, ledger add) and saved at
+    once. No exact single match -> nothing changes (trims keep skipping, as before).
+  - [resting] limit-add fills: booked fill is saved immediately; the generic recovery leaves a gap equal to the tracked
+    resting add to resting_reconcile (no double booking). Flags still OFF.
+  Tests: tests/test_lot_recovery.py (8). Suite 300 passed.
+
+2026-10-12 00:00 MT  LADDER PRESET C (Trevor 23:52 MT)  [NOT LIVE - code default off, no live config changed]
+  New knob dca.ladder_fixed_usd (default 0 = off): > 0 makes every ladder rung's budget that flat USD collateral
+  (weights / deep remainder ignored; plan_add still caps at available and skips below min_add_usd). Fixed $10 open
+  uses the EXISTING knobs entry.first_collateral_mode="fixed" + sizing.mode="fixed_usd" + sizing.initial_margin_usd=10.
+  Preset (ready to apply): configs/preset_ladder_c.txt = ladder_fixed_usd 10, min_add_usd 10, lev_start 5,
+  lev_step 2.5, lev_cap 20, ladder_max_rungs 10, ladder_deep false, open fixed $10. Dry run: live/ladder_c_preview.py
+  (resting_preview.py now takes --set k=v). Tests: tests/test_ladder_fixed.py.
+
+2026-10-12 00:06 MT  LIVE: PRESET C + [resting] ON, ALL THREE BOTS (Trevor approved 00:04 MT)
+  configs/live_100.toml, live_eth.toml, live_btc.toml (backups /tmp/cfgbak-20261012-000507/):
+  [dca] ladder_fixed_usd 10 (new), min_add_usd 10, lev_start 5, lev_step 2.5, lev_cap 20, ladder_max_rungs 10,
+  ladder_deep false; [entry] first_collateral_mode "fixed"; [sizing] fixed_usd initial_margin_usd 10;
+  [resting] adds_enabled, partials_enabled, last_partial_rule = true. Tests that exercise the old ladder now load the
+  pre-C configs pinned in tests/fixtures/configs_pre_c/; new test asserts the live values. 308 passed.
+  Services ratchet-sol / eth / btc restarted 00:06 MT. Open SOL / ETH positions were built under the old ladder; the
+  ladder continues from their last leverage (+2.5x) with $10 rungs from what is free.
+
+2026-10-12 00:15 MT  REVERTED preset C + [resting] go-live (all three configs restored from /tmp/cfgbak-20261012-000507/,
+  tests from /tmp/testsbak-20261012-000532/; preset-C configs kept at /tmp/live_*.toml.presetC).
+  Reason: SOL 00:06:40 single partial TP (DRLu..., $24 @112.03) covered lot #5; at 00:07:52 the existing trim market-
+  closed that same lot #5, leaving the partial TP covering a lot that no longer exists (a fill would close $24 of
+  non-eligible lots and break lots == chain). Partial DRLu cancelled 00:12 (tx mC6QrBe3...). SOL resting limit add
+  ZB7zqn... ($10 x10.5 = $105 @113.38) cancel via Perps API sent twice, NOT confirmed; still on-chain.
+  ratchet-eth / ratchet-btc restarted 00:15 on the old ladder. ratchet-sol left STOPPED pending decision (see report).
+
+2026-10-12 00:30 MT  LIVE AGAIN: PRESET C + [resting] ON (all three) + TP3-only partials + % HWM profit guard (Trevor 00:20/00:27 MT)
+  Stray SOL resting add ZB7zqn... cancelled by Trevor in Jupiter (verified gone: openRequests + limit-orders API empty).
+  Conflict rule: with [resting] partials_enabled the partial TP order ("TP3") is the ONLY partial mechanism; the
+  per-tick market trim keeps its arm / eligibility logic (used for TP3 placement) but never executes (logs
+  "trim: TP3 mode, market trim not executed"). TP3 placed when armed (0.65%) + eligible adds; cancel+replace on each new
+  add fill (partial_on_add); TP1/TP2 unchanged. manual_trim --send refuses while a TP3 order is tracked (dry run ok).
+  Profit guard: new [ledger] min_profit_pct_hwm 0.002 + min_profit_pct_per_partial 0.0005 (replace min_profit_native,
+  kept only as fallback when pct = 0): target = hwm x (0.2% + 0.05% x (trims + TP3 fills this trade)); still a market
+  close, still underwater only. Configs: preset C values as before + [resting] all true + the two pct keys.
+  Backups: /tmp/golive2-<ts>/. Tests: old-ladder tests pinned to tests/fixtures/configs_pre_c/; 315 passed.
+
+2026-10-12 00:35 MT  Daily withdraw % nudge: withdraw_fraction SOL/ETH/BTC 0.50->0.55 (global +0.05).
+  Reason: JupSOL ~$1.13 < largest bot equity (~$76 SOL); no single-bot extra (equity split ~44/28/28 vs 50/25/25, none clearly alone).
+  Clamped [0.2,0.9]. Configs only (no git). Services restart follows.
+
+2026-10-12 01:01 MT  TP3 TARGET = ZONE RULE (Trevor 00:53 MT), replaces "N analyst levels beyond the entry"
+  TP3 target lies strictly between the covered add entry and the trade avg (never at/beyond avg). Zone = entry ..
+  entry + gap x f, gap = entry -> avg, f = partial_zone_f_max (new [resting] key, default 0.5) x (rung - 1) /
+  (ladder_max_rungs - 1) (0 at rung 1, 0.5 at the deepest rung). Rung 1: first analyst level (main + fine) past the
+  entry; deeper rungs: the farthest analyst level inside the zone. Fired trim_level_tol_atr (0.05 ATR, + trim
+  front-run) before the level; must cover fees (6+6 bps + trim_network_usd). No usable level -> fee-covering minimum
+  just past the entry. One TP3 covering several adds: size-weighted entry + highest rung (unchanged); if that combined
+  entry is not underwater vs avg no TP3 is placed (logged). partial_levels_min/max now unused.
+  Placement still needs the target beyond market (tp_market_gap), so a fee-minimum / near-entry target that the market
+  has already passed is not placed (retried each tick).
+  Also: tests/test_bank.py updated to the withdraw_fraction 0.55 set by the 00:23 withdraw-nudge job.
+  Files: live/resting.py, live/bot.py, config.py, tests/test_tp3_zone.py (new), tests/test_resting.py, tests/test_bank.py.
+  01:00 MT applied: ETH TP3 9WBcJN... (2530.08, old rule) cancelled; new TP3 7HQSxk... $33 @2555.75 (rung 6, f 0.278,
+  zone 2560.38 -> 2553.14, no support inside -> fee-covering minimum). SOL / ETH / BTC restarted right after sweep lines.
+  Incident 00:37-01:04 MT: live/btc/ledger_open.json had been written as root during the 00:33 BTC state rebuild, so the
+  BTC service (user ratchet) hit "Permission denied" on every ledger write; the BTC trade closed via TP1 00:54 + TP2
+  ~00:56 meanwhile and its booking failed until the file ownership was fixed (chown ratchet, 01:04) and the bot
+  restarted; then booked normally (net +0.000001185 WBTC, bank bal 0.000696690 > hwm). All root-owned repo files chowned.
+
+2026-10-12 01:45 MT  TP3 ZONE EDGE (Trevor 01:36 MT): when no analyst level lies inside the TP3 zone (rung >= 2), the target is
+  the zone edge (entry + gap x f) fired trim_level_tol_atr (0.05 ATR, + trim front-run) before it, if that covers fees and
+  stays before avg; else the fee-covering minimum as before; if even that is at/beyond avg: skip + log. Rung 1 unchanged
+  (first level past the entry). All three bots. Files: live/resting.py, tests/test_tp3_zone.py, tests/test_resting.py.
+2026-10-12 03:47 MT quickcheck: quiet
+2026-10-12 04:37 MT quickcheck: quiet
+2026-10-12 06:07 MT (Trevor): after a TP3 (per-add partial) fill, pending TP1/TP2 triggers are cancelled and re-placed at the SAME prices sized on the remaining position with the ladder % split (Bot.resize_tps; falls back to the RETP_NOW full re-place if no recorded TP prices). Test: tests/test_tp_resize_after_tp3.py. All bots.
+2026-10-12 06:22 MT (Trevor): trim/TP3 arm distance trim_arm_dist_pct 0.0065 -> 0.01 (1 %) in configs/live_100.toml, live_eth.toml, live_btc.toml. Nothing else.
+2026-10-12 06:35-06:42 MT (Trevor order): ETH remaining short closed at market (net est +$0.29 on close, oracle ~2527.5) via bot.close (sig 41DDLG6c...); TP2 cancelled; resting add 6GAuQS cancel timed out during close (HALT/KILL written), re-cancelled after (refund +0.00391913 ETH booked); KILL cleared (renamed KILL.cleared-20261012-0642). No settings changed.
+2026-10-12 08:03 MT quickcheck: quiet
+2026-10-12 08:19 MT quickcheck: quiet
+2026-10-12 08:28 MT (Trevor): an order cancel (resting add / TP / leftover) that does not confirm no longer halts/writes KILL: logged, recorded in state pending_cancels, retried each tick while still on-chain; once gone the resting-add refund is booked and TP1/TP2 re-placed if needed (Bot.cancel_failed / retry_cancels). KILL unchanged for opens/increases/unknown positions. Test tests/test_cancel_retry.py; tests/test_smart_tp_idle.py two asserts updated (no KILL). All bots.
+2026-10-12 08:46 MT (Trevor): the bot never writes KILL itself (manual KILL / KILL_ALL still honoured). halt() now logs ERROR "RECONCILE NEXT TICK (no KILL)" and flags tp_retry. Covered: open/add not confirmed (add_pending kept -> recover_missing_add books a late fill; late open adopted), TP placement/re-place/resize failures (TP1/TP2 re-placed next tick; TP3 already re-placed each tick), close not confirmed, trim not confirmed/failed/error, unknown on-chain position -> ADOPTED as a single lot (Bot.adopt_position) + TPs. Tests tests/test_no_kill_reconcile.py; 3 old KILL asserts updated (test_trim x2, test_lot_recovery x1). All bots.
+2026-10-12 08:52 MT (Trevor): (1) no double add: while add_pending exists, before any market/resting add the chain is read (Bot.add_pending_wait): increase request still on-chain -> wait; prior add landed -> lot recovery books it first (late open -> adopted); absent and no request -> marker cleared, then send. Marker now also set for opens. (2) adopted position collateral booked as a bank deposit (collateral debit in own coin at adoption price; HWM untouched); not re-debited when it is this bot own late open. Tests tests/test_add_pending_adopt.py. All bots.
+2026-10-12 10:02 MT quickcheck: quiet
+2026-10-12 10:55 MT quickcheck: quiet
+2026-10-12 10:55 MT quickcheck: quiet
+2026-10-12 10:55 MT quickcheck: quiet
+2026-10-12 11:49 MT quickcheck: quiet
+2026-10-12 12:52 MT quickcheck: quiet
+2026-10-12 13:50 MT quickcheck: quiet
+2026-10-12 17:39 MT quickcheck: quiet
+2026-10-12 18:09-18:20 MT (Trevor): inter-bot loans. One-off: SOL bot lent 0.478070233 SOL -> 0.00061423 WBTC to the BTC bot (sig 5sv2BHPw...), $50; SOL bal -0.478070233 with receivable (HWM unchanged), BTC bal +0.00061423 with payable (HWM unchanged). Standing rule (18:13 MT): a bot short of equity for its next resting rung requests a loan (<= $50, what the rung needs) via live/ib_loan.json; any flat bot without a loan funds it (swap own coin -> borrower coin); the lender opens nothing until repaid; on the borrower full close (flat) it swaps back the lent quantity (cost on the borrower), lender books it and re-enables. HWM/equity/withdrawable neutral both sides (bank.ib_adj). Never halts (errors logged, retried). Bot.ib_tick/ib_request/ib_borrower_repay; tests tests/test_ib_loan.py.
+2026-10-12 18:43 MT quickcheck: quiet (only bot restarts 18:12-18:16 for loan deploy; BTC add 18:07 preceded loan session)
