@@ -239,7 +239,7 @@ def test_bank_persists_in_state_json(ebot):
 def test_live_configs_ledger():
     for f, m in (("live_100", 0.0015), ("live_eth", 0.000066), ("live_btc", 0.00000195)):
         lc = load_config(f"configs/{f}.toml").ledger
-        assert lc.enabled and lc.min_profit_native == m and lc.withdraw_fraction == 0.55 and lc.ext_split == (0.5, 0.25, 0.25)
+        assert lc.enabled and lc.min_profit_native == m and lc.withdraw_fraction == 0.60 and lc.ext_split == (0.5, 0.25, 0.25)
         assert lc.ext_flow_mode == "alert"
     assert load_config("configs/default.toml").ledger.enabled is False
 
@@ -267,9 +267,9 @@ def test_bank_tick_and_daily_withdrawal_eth(ebot, monkeypatch):
     b["wd_last_date"] = None
     ebot.bank_daily(st2, None)
     sw = [a for c, a in calls if c == "swap"][0]
-    assert sw["inputMint"] == K.MINT["ETH"] and sw["outputMint"] == K.MINT["JUPSOL"] and sw["amountAtoms"] == "110000"
-    assert (b["bal"], b["hwm"], b["wd_mark"]) == pytest.approx((0.0159, 0.0159, 0.0159))
-    assert b["fee_sol"] == pytest.approx(0.000007) and b["wd_last_date"] and b["daily"][-1]["amount"] == pytest.approx(0.0011)
+    assert sw["inputMint"] == K.MINT["ETH"] and sw["outputMint"] == K.MINT["JUPSOL"] and sw["amountAtoms"] == "119999"
+    assert (b["bal"], b["hwm"], b["wd_mark"]) == pytest.approx((0.0158, 0.0158, 0.0158))
+    assert b["fee_sol"] == pytest.approx(0.000007) and b["wd_last_date"] and b["daily"][-1]["amount"] == pytest.approx(0.0012)
     n = len(calls)
     ebot.bank_daily(st2, None)                             # once a day
     assert len(calls) == n

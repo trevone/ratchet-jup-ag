@@ -297,7 +297,7 @@ export async function buildIncrease(conn: Connection, owner: PublicKey, side: Si
 /** Market decrease (partial: sizeUsd > 0; full: entire=true), or trigger (TP/SL) when triggerPriceUsd is set. */
 export async function buildDecrease(conn: Connection, owner: PublicKey, side: Side, opts: {
   sizeUsd?: number; entire?: boolean; priceSlippageUsd?: number; triggerPriceUsd?: number; triggerAbove?: boolean;
-  desiredMint?: PublicKey; }, mkt: Market = "SOL"): Promise<Built> {
+  desiredMint?: PublicKey | string; jupiterMinimumOut?: string | number | null; }, mkt: Market = "SOL"): Promise<Built> {
   const { perps } = programs(conn);
   const marketCustody = MARKETS[mkt].custody;
   const position = positionPda(owner, side, mkt);
@@ -306,7 +306,8 @@ export async function buildDecrease(conn: Connection, owner: PublicKey, side: Si
   // SOL market: proceeds as SOL (keeper swaps USDC -> SOL on shorts; verified by simulation). ETH/BTC markets reject
   // desiredMint = SOL (InvalidMint 6018, verified by simulation 2026-10-07) -> receive the collateral mint (ETH / WBTC /
   // USDC) and the bot's sweep swaps it back to SOL right after (live/sweep.py).
-  const desiredMint = opts.desiredMint ?? (mkt === "SOL" ? NATIVE_MINT : (side === "long" ? MARKETS[mkt].mint : USDC_MINT));
+  // 2026-10-13 short_payout_native: desiredMint may come as a base58 string from the CLI; jupiterMinimumOut = atoms
+  const desiredMint = opts.desiredMint ? new PublicKey(opts.desiredMint) : (mkt === "SOL" ? NATIVE_MINT : (side === "long" ? MARKETS[mkt].mint : USDC_MINT));
   const receivingAccount = getAssociatedTokenAddressSync(desiredMint, owner, true);
   const custody: any = await perps.account.custody.fetch(marketCustody);
   const collateralCustody = side === "long" ? marketCustody : USDC_CUSTODY;
@@ -314,7 +315,8 @@ export async function buildDecrease(conn: Connection, owner: PublicKey, side: Si
   const ix = await perps.methods.createDecreasePositionRequest2({
     collateralUsdDelta: new BN(0), sizeUsdDelta: usd(opts.entire ? 0 : opts.sizeUsd ?? 0),
     requestType: trigger ? { trigger: {} } : { market: {} },
-    priceSlippage: trigger ? null : usd(opts.priceSlippageUsd ?? 0), jupiterMinimumOut: null,
+    priceSlippage: trigger ? null : usd(opts.priceSlippageUsd ?? 0),
+    jupiterMinimumOut: opts.jupiterMinimumOut != null ? new BN(String(opts.jupiterMinimumOut)) : null,
     triggerPrice: trigger ? usd(opts.triggerPriceUsd!) : null, triggerAboveThreshold: trigger ? !!opts.triggerAbove : null,
     entirePosition: opts.entire ?? false, counter,
   } as any).accounts({

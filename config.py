@@ -249,6 +249,7 @@ class LiveConfig:
     min_collateral_usd: float = 10.0     # Jupiter's documented minimum for opening a position
     kill_switch_path: str = "live/KILL"  # if this file exists: no new orders
     close_all_on_kill: bool = False
+    short_payout_native: bool = False   # 2026-10-13: ETH/BTC short decreases pay out the market coin (desiredMint), not USDC
     price_slippage_pct: float = 0.01     # worst acceptable fill vs oracle for market requests
     max_oracle_age_sec: int = 60
     request_timeout_sec: int = 60        # keeper fulfillment wait before treating a request as failed

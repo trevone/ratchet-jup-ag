@@ -277,6 +277,9 @@ class Bot:
     def cmd(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         """Send when live, simulate when dry_run (same builders)."""
         live = not self.live.dry_run
+        if name == "decrease" and args.get("side") == "short" and self.asset in ("ETH", "BTC") \
+                and getattr(self.live, "short_payout_native", False):   # Trevor 2026-10-13: payout in own coin
+            args = {**args, "desiredMint": bankmod.MINT["ETH" if self.asset == "ETH" else "WBTC"]}
         res = jup(name if live else f"simulate-{name}", {**args, "market": self.asset, "send": live})
         log.info("%s %s -> %s", name, json.dumps(args), json.dumps({k: res.get(k) for k in
                  ("ok", "sig", "err", "error", "fulfillSec", "unitsConsumed")}))

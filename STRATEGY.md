@@ -304,3 +304,12 @@ A bot without enough free equity for its next resting rung requests a loan (what
 
 ### TP3 arm distance back to 0.65 % (Trevor 2026-10-12 20:29 MT)
 trim_arm_dist_pct = 0.0065 on all three bots (was 0.01 since 06:22 MT).
+
+### HWM reset (Trevor 2026-10-12 20:39 MT)
+SOL and ETH HWM set to the balance just before their current positions opened (SOL 0.771337416, ETH 0.02026193). BTC unchanged.
+
+### Withdrawal marks reset (Trevor 2026-10-12 20:47 MT)
+SOL and ETH wd_mark set to their new HWMs (SOL 0.771337416, ETH 0.02026193).
+
+### Short payout in own coin (2026-10-13, LIVE on ETH/BTC since 08:58 MT)
+`[live] short_payout_native` (default false): ETH/BTC short decreases (TP1/TP2/TP3, closes) request the market coin (desiredMint) instead of USDC. Simulation 2026-10-13 on the ETH short: accepted without min-out; any jupiterMinimumOut on a decrease is rejected (6015), so it cannot carry min-out protection. Trevor 08:56 MT: ON for ETH and BTC with no min-out (closes never blocked); sweep.py stays as fallback for any USDC; native payouts are booked as normal payouts.
