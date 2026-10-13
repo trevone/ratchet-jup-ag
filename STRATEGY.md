@@ -130,7 +130,7 @@ Two on-chain TPs: **TP1 closes 50%**, **TP2 the rest**. Calculated at **open and
 
 All three bots. Old 4h timer only applies in unused `trim_trigger = "time"` mode.
 
-1. **Arm** when price is **≥ 1%** against average (`trim_arm_dist_pct = 0.01`, Trevor 2026-10-12 06:22 MT; long ≤ avg×0.99, short ≥ avg×1.01). With `[resting] partials_enabled` (live) the arm only decides TP3; no market trim is sent. Stays armed until the trade closes (`state.json`).
+1. **Arm** when price is **≥ 0.65%** against average (`trim_arm_dist_pct = 0.0065`, Trevor 2026-10-12 20:29 MT, back from 1%; long ≤ avg×0.9935, short ≥ avg×1.0065). With `[resting] partials_enabled` (live) the arm only decides TP3; no market trim is sent. Stays armed until the trade closes (`state.json`).
 2. **While armed:** fire slightly **before** the next analyst level — front-run **0.15 ATR + 0.1 ATR tolerance** — using main 1h/4h levels **plus** `levels.fine` (15m/1h intraday, prior-day H/L, round numbers). Close every profitable **add** (never the first entry) with **≥ 0.5%** gain and **≥ $0.25** net (6+6 bps + `$0.02` network) in one market decrease.
 3. Collateral **stays** in the position. Liq does not move on partial close; later adds push it out. Rungs re-arm; TPs re-placed for new size.
 4. **Skip** if level files **&gt; 45 min** stale.
@@ -260,7 +260,7 @@ rung. Rungs the free collateral cannot cover are simply not placed ($10 minimum 
 
 ## TP3 = the only partial mechanism ([resting] partials_enabled, LIVE 2026-10-12 00:30 MT)
 When partials_enabled is on, the single partial TP order per position (TP3) is the only way lots are partially closed.
-The old market trim still arms (1% against avg since 2026-10-12 06:22 MT; was 0.65%) and computes eligible adds - that decides when / for which adds TP3
+The old market trim still arms (0.65% against avg; was 1% 2026-10-12 06:22-20:29 MT) and computes eligible adds - that decides when / for which adds TP3
 is placed - but it never sends a market close. TP3 is cancelled and re-placed when a new add fills. TP1/TP2 unchanged.
 live/manual_trim.sh <bot> --send refuses while a TP3 order is live (dry run works).
 
@@ -301,3 +301,6 @@ While an add/open is unresolved (add_pending), no new add (market or resting) is
 
 ### Inter-bot loans (Trevor 2026-10-12 18:09 / 18:13 MT)
 A bot without enough free equity for its next resting rung requests a loan (what the rung needs, max $50) through live/ib_loan.json. Any flat bot without a loan funds it by swapping its own coin into the borrower coin. The lender opens nothing until repaid. On the borrower full close it swaps back the quantity lent (swap cost on the borrower); the lender books it and is re-enabled. Loans never move HWM, equity or withdrawable amounts on either side. One loan at a time (live/ib_loan.json: requested -> funding -> funded -> open -> repaid -> settled). A lender must be flat with no loan of its own and keep >= $5 spare beyond the loan. Repayment targets the lent quantity at oracle prices + 0.4% buffer; the first repayment came back 0.000964 SOL short (swap price below oracle), which stayed with the borrower. Errors are logged and retried; never a halt. First loan: SOL -> BTC 0.478070233 SOL ($50) 18:13 MT.
+
+### TP3 arm distance back to 0.65 % (Trevor 2026-10-12 20:29 MT)
+trim_arm_dist_pct = 0.0065 on all three bots (was 0.01 since 06:22 MT).

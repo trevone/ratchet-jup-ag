@@ -83,7 +83,7 @@ def test_config_default_off_and_eth_btc_off():
     assert load_config("configs/default.toml").trim.enabled is False
     for f in ("live_eth", "live_btc"):                                     # 17:13 MT: all three bots aligned
         e = load_config(f"configs/{f}.toml")
-        assert (e.trim.enabled, e.trim.trim_trigger, e.trim.trim_arm_dist_pct) == (True, "distance_level", 0.01)
+        assert (e.trim.enabled, e.trim.trim_trigger, e.trim.trim_arm_dist_pct) == (True, "distance_level", 0.0065)
         assert e.profit_guard.enabled and e.profit_guard.min_trade_profit_sol == 0.001
     assert load_config("configs/default.toml").profit_guard.enabled is False
     c = load_config(LIVE).trim

@@ -174,7 +174,7 @@ trim_max_per_day = 0           # 0 = no daily limit
 # reaches an analyst resistance (long) / support (short) within trim_level_tol_atr x 1h ATR -> close every eligible add
 # (rule above) in one market decrease. Levels stale/missing -> no trim. trim_trigger = "time" restores trim_after_hours.
 trim_trigger = "distance_level"
-trim_arm_dist_pct = 0.01        # 1 % (Trevor 2026-10-12 06:22 MT, was 0.0065)
+trim_arm_dist_pct = 0.0065      # 0.65 % (Trevor 2026-10-12 20:29 MT, back from 0.01)
 trim_level_tol_atr = 0.05          # Trevor 2026-10-11 20:48 MT: partial fires 0.05 ATR before the level (total; was 0.1 tol + 0.15 front-run = 0.25)
 trim_level_front_run_atr = 0.0    # Trevor 2026-10-11 20:48 MT (was 0.15)
 trim_level_front_run_pct = 0.0   # 0.15 x 1h ATR + pct x level; total trigger distance = front_run + tol (0.25 ATR)
