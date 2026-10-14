@@ -717,10 +717,9 @@ class Bot:
             out = round(tp1 + pos.side * self.cfg.tp.tp_min_gap_usd, 2)
         return out
 
-    def tp2_set(self, pos: ChainPosition, st: dict[str, Any], f: Path) -> None:
-        """One-shot manual TP2 move (file TP2_SET with a price; Trevor 2026-10-13 20:57 MT): cancel the resting TP2 and
-        re-place it at that price (clamped) for the same TP2 size; recorded in local.tp2_override. Never halts."""
-        L, t = self.local, self.cfg.tp
+    @staticmethod
+    def set_file_price(f: Path) -> float | None:
+        """TP2_SET / TP3_SET: read the one price and delete the file; None (warning logged) when invalid."""
         try:
             raw = f.read_text().strip()
         except OSError as e:
@@ -730,8 +729,21 @@ class Bot:
             want = float(raw)
             if not math.isfinite(want) or want <= 0:
                 raise ValueError("not a positive price")
+            return want
         except ValueError as e:
-            log.warning("TP2_SET: invalid content %r (%s); file deleted, nothing changed", raw[:80], e)
+            log.warning("%s: invalid content %r (%s); file deleted, nothing changed", f.name, raw[:80], e)
+            return None
+
+    def move_trigger(self, pubkey: str, px: float) -> bool:
+        """Move a resting TP trigger in place (Jupiter updateDecreasePositionRequest2; same size, new price)."""
+        return bool(self.cmd("update-trigger", {"request": pubkey, "triggerPriceUsd": round(px, 2)}).get("ok"))
+
+    def tp2_set(self, pos: ChainPosition, st: dict[str, Any], f: Path) -> None:
+        """One-shot manual TP2 move (file TP2_SET with a price; Trevor 2026-10-13 20:57 MT): the resting TP2 trigger is
+        moved in place to that price (clamped; Trevor 2026-10-14); recorded in local.tp2_override. Never halts."""
+        L, t = self.local, self.cfg.tp
+        want = self.set_file_price(f)
+        if want is None:
             return
         n = len(t.ladder)
         if n < 2 or pos.tp_hits > 1:
@@ -754,24 +766,36 @@ class Bot:
             log.warning("TP2_SET %.2f: resting TP2 (%.2f) not identified among %s; nothing changed", want, old,
                         [r["triggerPrice"] for r in reqs])
             return
-        c = self.cancel_request(mine[0]["pubkey"], pos.size)
-        if c == "failed":
-            self.cancel_failed([mine[0]], "sync", "TP2 cancel (TP2_SET)")
-            self.save()
+        if not self.move_trigger(mine[0]["pubkey"], px):
+            log.error("TP2_SET %.2f: in-place update failed; TP2 unchanged at %.2f (no halt)", px, old)
             return
-        if c == "filled":
-            log.warning("TP2_SET %.2f: TP2 executed meanwhile; nothing placed", want)
+        L.tp_px[1] = L.tp2_override = px
+        log.warning("TP2_SET: TP2 %.2f -> %.2f in place (requested %.2f%s)", old, px, want,
+                    "" if abs(px - want) < 0.005 else ", clamped to fee minimum / TP1 + gap")
+        self.save()
+
+    def tp3_set(self, pos: ChainPosition, st: dict[str, Any], f: Path) -> None:
+        """One-shot manual TP3 move (file TP3_SET with a price; Trevor 2026-10-14): the resting TP3 (partial) trigger is
+        moved in place, clamped to the TP3 fee minimum; a new add re-places TP3 normally. Never halts."""
+        want = self.set_file_price(f)
+        if want is None:
             return
-        L.tp_px[1] = 0.0
-        side = "long" if pos.side == LONG else "short"
-        if self.place_tp(pos, side, 1, px, t.ladder[0].close_pct):
-            L.tp2_override = px
-            log.warning("TP2_SET: TP2 %.2f -> %.2f (requested %.2f%s)", old, px, want,
-                        "" if abs(px - want) < 0.005 else ", clamped to fee minimum / TP1 + gap")
-        else:
-            log.error("TP2_SET: placement at %.2f failed; re-placing TP2 next tick (no halt)", px)
-            L.tp2_override = px
-            L.tp_retry = True
+        if not self.local.partials:
+            log.warning("TP3_SET %.2f: no resting TP3; file deleted, nothing changed", want)
+            return
+        p = self.local.partials[0]
+        mn = self.tp3_fee_min(pos, p["entry"], p["size"], st)
+        px = mn if pos.side * (round(want, 2) - mn) < -1e-9 else round(want, 2)
+        price = st["oracle"]["price"]
+        if pos.side * (px - price) < self.cfg.tp.tp_market_gap - 1e-9:
+            log.warning("TP3_SET %.2f (clamped %.2f) not beyond market %.3f; file deleted, nothing changed", want, px, price)
+            return
+        if not self.move_trigger(p["pubkey"], px):
+            log.error("TP3_SET %.2f: in-place update failed; TP3 unchanged at %.2f (no halt)", px, p["px"])
+            return
+        log.warning("TP3_SET: TP3 %.2f -> %.2f in place (requested %.2f%s)", p["px"], px, want,
+                    "" if abs(px - want) < 0.005 else ", clamped to TP3 fee minimum")
+        p["px"] = px
         self.save()
 
     def resize_tps(self, pos: ChainPosition) -> None:
@@ -1688,10 +1712,7 @@ class Bot:
         tgt.update(rung=rung, entry=round(entry, 6), size=round(size, 2), n=0)
         # Trevor 2026-10-13 20:38 MT: TP3 portion nets >= tp3_fee_mult x its own fees (open + close on its size +
         # accrued borrow pro-rated by size share); zone / level kept when beyond that minimum, else placed at it.
-        st = getattr(self, "_last_st", None)   # latest state read (no extra RPC); None -> hourly estimate
-        borrow = self._accrued_borrow_usd(pos, st) * size / pos.size if pos.size > 0 else 0.0
-        f3 = tp_fee_total(size, size, c.open_fee, c.close_fee, borrow)
-        mn = tp_fee_min_price(pos.side, entry, size, f3, getattr(self.cfg.tp, "tp3_fee_mult", 2.0))
+        mn, f3 = self.tp3_fee_min(pos, entry, size, getattr(self, "_last_st", None), fees=True)
         tgt["fee_min"] = mn
         if pos.side * (tgt["px"] - mn) < -1e-9:
             log.info("TP3 fee minimum: %s %.2f inside min %.2f (fees $%.4f, entry %.4f) -> %.2f", tgt.get("mode"),
@@ -1699,6 +1720,14 @@ class Bot:
             tgt["px"], tgt["mode"] = mn, str(tgt.get("mode")) + "->fee_mult_min"
             tgt["net_usd"] = round(pos.side * size * (mn - entry) / entry - f3, 4)
         return tgt
+
+    def tp3_fee_min(self, pos: ChainPosition, entry: float, size: float, st: dict[str, Any] | None, fees: bool = False):
+        """TP3 fee-minimum price (tp3_fee_mult x its fees; borrow pro-rated by size share; st None -> hourly estimate)."""
+        c = self.cfg.costs
+        borrow = self._accrued_borrow_usd(pos, st) * size / pos.size if pos.size > 0 else 0.0
+        f3 = tp_fee_total(size, size, c.open_fee, c.close_fee, borrow)
+        mn = tp_fee_min_price(pos.side, entry, size, f3, getattr(self.cfg.tp, "tp3_fee_mult", 2.0))
+        return (mn, f3) if fees else mn
 
     def _place_partial(self, pos: ChainPosition, price: float, lots: list[dict[str, Any]], why: str) -> bool:
         L = self.local
@@ -2420,14 +2449,15 @@ class Bot:
                 self._fee_rechecked = True
                 if self.fee_min_recheck(pos, st):
                     return
-            tp2f = self.dir / "TP2_SET"   # one-shot manual TP2 move (Grok Bot), Trevor 2026-10-13 20:57 MT
-            if tp2f.exists():
-                try:
-                    self.tp2_set(pos, st, tp2f)
-                except Exception as e:  # noqa: BLE001 - never halt on a manual TP2 move
-                    tp2f.unlink(missing_ok=True)
-                    log.error("TP2_SET failed: %s (file deleted; no halt)", e)
-                return
+            for name, fn in (("TP2_SET", self.tp2_set), ("TP3_SET", self.tp3_set)):   # one-shot manual TP moves (Grok Bot)
+                tpf = self.dir / name
+                if tpf.exists():
+                    try:
+                        fn(pos, st, tpf)
+                    except Exception as e:  # noqa: BLE001 - never halt on a manual TP move
+                        tpf.unlink(missing_ok=True)
+                        log.error("%s failed: %s (file deleted; no halt)", name, e)
+                    return
             retp = self.dir / "RETP_NOW"   # one-shot manual TP re-place (Grok Bot / owner), via the normal placement path
             if retp.exists():
                 retp.unlink(missing_ok=True)

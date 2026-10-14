@@ -2,7 +2,7 @@
 // Market-specific commands take "market": "SOL" | "ETH" | "BTC" (default SOL = original behaviour).
 import { BN } from "@coral-xyz/anchor";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
-import { Built, buildCancelRequest, buildCloseEmptyAtas, buildDecrease, buildIncrease, connect, market, ownerTokenAccounts, positionFlows, positionIncreases, programs, readState, simulate } from "./jup";
+import { Built, buildCancelRequest, buildCloseEmptyAtas, buildUpdateTrigger, buildDecrease, buildIncrease, connect, market, ownerTokenAccounts, positionFlows, positionIncreases, programs, readState, simulate } from "./jup";
 import { awaitRequestGone, loadKeypair, sendBuilt } from "./send";
 import { buildCancelLimit, buildLimit, listLimitOrders, signAndSubmit, simulateApiTx } from "./limit";
 import { buildSendJupsol, buildSwap, quote, readStake, readSweepTokens, simulateBuilt, txDeltas, SwapBuilt, SWEEP_MINTS } from "./stake";
@@ -55,6 +55,8 @@ async function main() {
     out = await run(conn, await buildDecrease(conn, OWNER, a.side, a, market(a.market)), a, a.triggerPriceUsd === undefined);
   } else if (cmd === "simulate-cancel" || cmd === "cancel") {
     out = await run(conn, await buildCancelRequest(conn, OWNER, new PublicKey(a.request)), a, false);
+  } else if (cmd === "simulate-update-trigger" || cmd === "update-trigger") {   // TP2_SET / TP3_SET: move a TP in place
+    out = await run(conn, await buildUpdateTrigger(conn, OWNER, new PublicKey(a.request), a.triggerPriceUsd), a, false);
   } else if (cmd === "limit-orders") {   // read-only: this wallet's resting limit orders (Jupiter Perps API)
     out = await listLimitOrders(OWNER);
   } else if (cmd === "simulate-create-limit-order" || cmd === "create-limit-order") {

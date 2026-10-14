@@ -350,6 +350,17 @@ export async function buildCancelRequest(conn: Connection, owner: PublicKey, req
 }
 
 // ------------------------------------------------------------------ per-position SOL flows (shared-wallet ledger)
+/** Move a resting trigger (TP) in place: updateDecreasePositionRequest2, same size, new trigger price (TP2_SET / TP3_SET). */
+export async function buildUpdateTrigger(conn: Connection, owner: PublicKey, request: PublicKey, triggerPriceUsd: number): Promise<Built> {
+  const { perps } = programs(conn);
+  const r: any = await perps.account.positionRequest.fetch(request);
+  const c: any = await perps.account.custody.fetch(r.custody);
+  const ix = await perps.methods.updateDecreasePositionRequest2({ sizeUsdDelta: r.sizeUsdDelta, triggerPrice: usd(triggerPriceUsd) } as any)
+    .accounts({ owner, perpetuals: PERPETUALS, pool: POOL, position: r.position, positionRequest: request, custody: r.custody,
+      custodyDovesPriceAccount: c.dovesAgOracle, custodyPythnetPriceAccount: c.oracle.oracleAccount } as any).instruction();
+  return { label: `update trigger ${request.toBase58()} -> ${triggerPriceUsd}`, instructions: [ix], positionRequest: request };
+}
+
 /** Owner SOL flow of every tx that touched ``position`` from the slot of ``sinceSig`` (inclusive) on. Opens, adds, TP/cancel
  * requests (fees + request rent) and the keepers' executions (proceeds, rent refunds) all touch the position; deposits,
  * stake swaps and other markets' trades never do, so this is the bot's own realized flow on a shared wallet. Read-only.
