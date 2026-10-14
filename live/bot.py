@@ -116,6 +116,7 @@ class Local:
     last_partial_px: float | None = None
     rest_last_avg: float = 0.0
     add_pending: dict | None = None   # market add sent, fill not saved yet (cleared once its lot is saved)
+    tp2_override: float | None = None   # TP2_SET (Trevor 2026-10-13 20:57 MT): manual TP2 price, kept until the next add
 
 
 def load_local(path: Path) -> Local:
@@ -649,6 +650,10 @@ class Bot:
         L.tp_rsi_ext = L.tp_rsi_now
         targets = self.trim_tp_guard(pos, self.strategy.tp_targets(pos, price=price), "placement")
         targets = self.fee_min_targets(pos, targets, st, "placement")
+        if L.tp2_override and len(targets) > 1:   # TP2_SET override survives re-places until the next add
+            from strategy import TpTarget
+            targets = tuple(list(targets[:1]) + [TpTarget(self.tp2_clamp(pos, st, L.tp2_override, targets[0].price),
+                                                          targets[1].close_pct)] + list(targets[2:]))
         self.log_tp_reasons("placement")
         log.info("TP ladder for avg %.3f: %s", pos.avg_entry, ", ".join(f"{t.price:.2f} ({t.close_pct:.0%})" for t in targets))
         prev = targets[pos.tp_hits - 1].close_pct if pos.tp_hits else 0.0
@@ -714,6 +719,73 @@ class Bot:
         log.warning("TP fee minimum recheck: %s -> %s; re-placing", [L.tp_px[i] for i in pend], [new[i] for i in pend])
         self.resize_tps(pos)
         return True
+
+    def tp2_clamp(self, pos: ChainPosition, st: dict[str, Any] | None, px: float, tp1: float | None) -> float:
+        """TP2_SET price clamped to >= the TP2 fee minimum and beyond TP1 + tp_min_gap_usd (TP1 still pending)."""
+        mins, _ = self.tp_fee_mins(pos, st)
+        out = round(px, 2)
+        if pos.side * (out - mins[1]) < -1e-9:
+            out = mins[1]
+        if tp1 and pos.tp_hits == 0 and pos.side * (out - tp1) < self.cfg.tp.tp_min_gap_usd - 1e-9:
+            out = round(tp1 + pos.side * self.cfg.tp.tp_min_gap_usd, 2)
+        return out
+
+    def tp2_set(self, pos: ChainPosition, st: dict[str, Any], f: Path) -> None:
+        """One-shot manual TP2 move (file TP2_SET with a price; Trevor 2026-10-13 20:57 MT): cancel the resting TP2 and
+        re-place it at that price (clamped) for the same TP2 size; recorded in local.tp2_override. Never halts."""
+        L, t = self.local, self.cfg.tp
+        try:
+            raw = f.read_text().strip()
+        except OSError as e:
+            raw = f"<unreadable: {e}>"
+        f.unlink(missing_ok=True)
+        try:
+            want = float(raw)
+            if not math.isfinite(want) or want <= 0:
+                raise ValueError("not a positive price")
+        except ValueError as e:
+            log.warning("TP2_SET: invalid content %r (%s); file deleted, nothing changed", raw[:80], e)
+            return
+        n = len(t.ladder)
+        if n < 2 or pos.tp_hits > 1:
+            log.warning("TP2_SET %.2f: no pending TP2 (tp_hits %d); file deleted, nothing changed", want, pos.tp_hits)
+            return
+        if len(L.tp_px) < n:
+            L.tp_px = (L.tp_px + [0.0] * n)[:n]
+        old = L.tp_px[1]
+        tp1 = L.tp_px[0] if pos.tp_hits == 0 else None
+        px = self.tp2_clamp(pos, st, want, tp1)
+        price = st["oracle"]["price"]
+        if pos.side * (px - price) < t.tp_market_gap - 1e-9:
+            log.warning("TP2_SET %.2f (clamped %.2f) not beyond market %.3f; file deleted, nothing changed", want, px, price)
+            return
+        reqs = self.tp_requests(st)
+        mine = [r for r in reqs if old and abs(r["triggerPrice"] - old) < 0.006]
+        if not mine and old == 0.0 and len(reqs) == n - pos.tp_hits:   # no record: the farthest trigger is TP2
+            mine = sorted(reqs, key=lambda r: pos.side * r["triggerPrice"])[-1:]
+        if len(mine) != 1:
+            log.warning("TP2_SET %.2f: resting TP2 (%.2f) not identified among %s; nothing changed", want, old,
+                        [r["triggerPrice"] for r in reqs])
+            return
+        c = self.cancel_request(mine[0]["pubkey"], pos.size)
+        if c == "failed":
+            self.cancel_failed([mine[0]], "sync", "TP2 cancel (TP2_SET)")
+            self.save()
+            return
+        if c == "filled":
+            log.warning("TP2_SET %.2f: TP2 executed meanwhile; nothing placed", want)
+            return
+        L.tp_px[1] = 0.0
+        side = "long" if pos.side == LONG else "short"
+        if self.place_tp(pos, side, 1, px, t.ladder[0].close_pct):
+            L.tp2_override = px
+            log.warning("TP2_SET: TP2 %.2f -> %.2f (requested %.2f%s)", old, px, want,
+                        "" if abs(px - want) < 0.005 else ", clamped to fee minimum / TP1 + gap")
+        else:
+            log.error("TP2_SET: placement at %.2f failed; re-placing TP2 next tick (no halt)", px)
+            L.tp2_override = px
+            L.tp_retry = True
+        self.save()
 
     def resize_tps(self, pos: ChainPosition) -> None:
         """Trevor 2026-10-12 06:07 MT: after a TP3 (per-add partial) fill, cancel and re-place the pending TP1/TP2
@@ -822,6 +894,9 @@ class Bot:
             return
         targets = self.trim_tp_guard(pos, targets, "periodic")
         targets = self.fee_min_targets(pos, targets, st, "periodic")
+        if L.tp2_override and len(targets) > 1:
+            from strategy import TpTarget
+            targets = tuple(list(targets[:1]) + [TpTarget(L.tp2_override, targets[1].close_pct)] + list(targets[2:]))
         if res.faded and not L.tp_faded:
             L.tp_faded = True
             self.log_tp_reasons("fade")
@@ -1371,6 +1446,7 @@ class Bot:
             L.tp_hits, L.first_tp_time = 0, None   # fresh TP1 50% / TP2 100% ladder on the whole position
             L.lots.append(lot)
             L.trade_opened_usd += lot["size"]
+            L.tp2_override = None   # a new add re-places TPs normally (TP2_SET dropped)
         self.local.add_pending = None
         log.info("LOT added #%d: %s fill %.4f size $%.2f coll $%.2f x%g", len(self.local.lots), lot["time"][:19],
                  lot["price"], lot["size"], lot["coll"], lot["lev"])
@@ -1492,6 +1568,7 @@ class Bot:
         L.lots.sort(key=lambda x: pd.Timestamp(x["time"]))
         L.n_entries += 1
         L.trade_opened_usd += lot["size"]
+        L.tp2_override = None   # a new add re-places TPs normally (TP2_SET dropped)
         if newest:
             L.last_leverage = lev
             L.last_entry = float(pend["price"]) if pend and pend.get("price") else lot["price"]
@@ -1550,6 +1627,7 @@ class Bot:
                 L.tp_hits, L.first_tp_time = 0, None   # fresh TP1 / TP2 ladder on the whole position (as after a market add)
                 L.lots.append(lot)
                 L.trade_opened_usd += add_size
+                L.tp2_override = None   # a new add re-places TPs normally (TP2_SET dropped)
                 L.rest_add = None
                 resync = True
                 self.save()   # 2026-10-12: persist the booked fill at once (a restart must not lose the lot)
@@ -2458,6 +2536,14 @@ class Bot:
                 self._fee_rechecked = True
                 if self.fee_min_recheck(pos, st):
                     return
+            tp2f = self.dir / "TP2_SET"   # one-shot manual TP2 move (Grok Bot), Trevor 2026-10-13 20:57 MT
+            if tp2f.exists():
+                try:
+                    self.tp2_set(pos, st, tp2f)
+                except Exception as e:  # noqa: BLE001 - never halt on a manual TP2 move
+                    tp2f.unlink(missing_ok=True)
+                    log.error("TP2_SET failed: %s (file deleted; no halt)", e)
+                return
             retp = self.dir / "RETP_NOW"   # one-shot manual TP re-place (Grok Bot / owner), via the normal placement path
             if retp.exists():
                 retp.unlink(missing_ok=True)
