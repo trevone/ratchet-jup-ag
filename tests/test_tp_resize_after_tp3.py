@@ -7,8 +7,7 @@ from tests.test_resting import ON, mkbot, state
 def test_tps_resized_same_prices_after_tp3(monkeypatch, tmp_path):
     b = mkbot(monkeypatch, tmp_path, ON)
     st = state(size=115.50)
-    st["positions"]["long"]["borrowFeeUsd"] = 0.0   # fee minimum (2026-10-13) sits inside these TPs; isolate the resize
-    b.local.lots, b.local.trade_opened_usd = [], 115.50   # fees on this size only: both TPs sit beyond the fee minimum
+    st["positions"]["long"]["borrowFeeUsd"] = 0.0   # fixture has no on-chain borrow; the 10 h fallback estimate would apply
     b.chain = lambda: st
     b.cancel_reqs = lambda s, r: b.calls.append(("cancel", [x["pubkey"] for x in r])) or True
     pos = b.chain_position(st)

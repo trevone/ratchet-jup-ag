@@ -332,6 +332,7 @@ class Bot:
             raise RuntimeError(f"state read failed: {st}")
         if st.get("market", "SOL") != self.asset:
             raise RuntimeError(f"state is for market {st.get('market')} not {self.asset}")
+        self._last_st = st
         return st
 
     @staticmethod
@@ -678,8 +679,10 @@ class Bot:
     def tp_fee_mins(self, pos: ChainPosition, st: dict[str, Any] | None) -> tuple[list[float], float]:
         """Fee-based minimum TP1 / TP2 prices (Trevor 2026-10-13) and the trade's total fees used."""
         c, t, L = self.cfg.costs, self.cfg.tp, self.local
-        opened = max(L.trade_opened_usd, sum(float(l.get("size") or 0) for l in L.lots), pos.size)
-        fees = tp_fee_total(pos.size, opened, c.open_fee, c.close_fee, self._accrued_borrow_usd(pos, st))
+        # Trevor 2026-10-13 20:37 MT: only fees of the currently open size (TP3 partials covered their own): opening
+        # fee pro-rated = open_fee x size; borrow: on-chain accrual is already on the current size (Jupiter settles
+        # borrow into collateral on every increase / decrease), so it is used as is.
+        fees = tp_fee_total(pos.size, pos.size, c.open_fee, c.close_fee, self._accrued_borrow_usd(pos, st))
         mults = [getattr(t, "tp1_fee_mult", 2.0), getattr(t, "tp2_fee_mult", 3.0)]
         return [tp_fee_min_price(pos.side, pos.avg_entry, pos.size, fees, m) for m in mults], fees
 
@@ -1700,6 +1703,18 @@ class Bot:
             self._rest_note("partial_zone", f"TP3 for adds (entry {entry:.4f}, rung {rung}): {tgt.get('why')}", logging.WARNING)
             return None
         tgt.update(rung=rung, entry=round(entry, 6), size=round(size, 2), n=0)
+        # Trevor 2026-10-13 20:38 MT: TP3 portion nets >= tp3_fee_mult x its own fees (open + close on its size +
+        # accrued borrow pro-rated by size share); zone / level kept when beyond that minimum, else placed at it.
+        st = getattr(self, "_last_st", None)   # latest state read (no extra RPC); None -> hourly estimate
+        borrow = self._accrued_borrow_usd(pos, st) * size / pos.size if pos.size > 0 else 0.0
+        f3 = tp_fee_total(size, size, c.open_fee, c.close_fee, borrow)
+        mn = tp_fee_min_price(pos.side, entry, size, f3, getattr(self.cfg.tp, "tp3_fee_mult", 2.0))
+        tgt["fee_min"] = mn
+        if pos.side * (tgt["px"] - mn) < -1e-9:
+            log.info("TP3 fee minimum: %s %.2f inside min %.2f (fees $%.4f, entry %.4f) -> %.2f", tgt.get("mode"),
+                     tgt["px"], mn, f3, entry, mn)
+            tgt["px"], tgt["mode"] = mn, str(tgt.get("mode")) + "->fee_mult_min"
+            tgt["net_usd"] = round(pos.side * size * (mn - entry) / entry - f3, 4)
         return tgt
 
     def _place_partial(self, pos: ChainPosition, price: float, lots: list[dict[str, Any]], why: str) -> bool:

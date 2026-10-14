@@ -205,8 +205,10 @@ def test_add_fill_via_order_books_lot_leverage_step_and_partial(bot):
     assert not bot.calls
     # 2026-10-12 00:53 MT zone rule: TP3 between the add entry and avg; here no level in the zone -> fee-covering
     # 01:36 MT: no level in the zone -> zone edge (105.36 - 0.045 = 105.31), behind the market (105.6) -> not placed
+    bot._last_st = {"positions": {"long": {"borrowFeeUsd": 0.0}}}   # no on-chain borrow in this fixture (TP3 fee min)
     plan = bot.partial_plan(pos, [lot], LV)
-    assert plan["mode"] == "zone_edge" and lot["price"] < plan["px"] < pos.avg_entry
+    # zone edge sits inside the TP3 fee minimum (2 x its own fees, 2026-10-13) -> pushed out to exactly the minimum
+    assert plan["mode"] == "zone_edge->fee_mult_min" and plan["px"] == plan["fee_min"] and lot["price"] < plan["px"] < pos.avg_entry
     bot.place_missing_partials(pos, st2, 105.6)
     assert not [a for n, a in bot.calls if n == "decrease"] and not L.partials
 
