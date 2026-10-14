@@ -164,31 +164,6 @@ def test_long_eth_open_needs_no_swap(ebot):
     assert a["inputMint"] == K.MINT["ETH"] and "jupiterMinimumOut" not in a
 
 
-def test_short_close_usdc_swept_back_to_own_coin(ebot, monkeypatch):
-    from live import sweep as S
-    ebot.local.side = SHORT
-    st = _st(size=0, usdc=13_800_000, eth_atoms=1071429)
-    calls = []
-
-    def fake_jup(cmd, args):
-        calls.append((cmd, args))
-        return {"ok": True, "sig": "SW", "deltas": {"nativeDeltaLamports": -6000, "feeLamports": 6000,
-                                                   "tokenDeltaAtoms": {"ETH": "560000", "USDC": "-13800000"}}}
-    monkeypatch.setattr(S, "attribute", lambda name, me, st, *a: {"owner": "ETH", "side": "short", "open_sig": None,
-                                                               "position": None, "open_time": None})
-    monkeypatch.setattr("live.bot.jup", fake_jup)
-    ebot.sweep(st, None)
-    swap = [a for c, a in calls if c == "swap"][0]
-    assert swap["direction"] == "swap" and swap["inputMint"] == K.MINT["USDC"] and swap["outputMint"] == K.MINT["ETH"]
-    b = ebot.local.bank
-    assert b["window"] == 3
-    r = K.recon_token(b, 0.015 + 0.0056, 2450.0, 1.5, False)     # next read: the swapped ETH (fees included) = payout
-    assert r["action"] == "payout" and r["diff"] == pytest.approx(0.0056) and b["hwm"] == 0.0155
-    # BTC / ETH tokens themselves are never swept any more (they are the bots' balances)
-    assert S.self_heal_own(ebot.cfg, "ETH", _st(size=0, usdc=0, eth_atoms=99_000_000), fake_jup, dry_run=False,
-                           min_usd=0.1) == []
-
-
 def test_guard_closes_at_hwm_plus_min_and_never_moves_tps(ebot):
     b = ebot.local.bank
     ebot.local.side, ebot.local.n_entries, ebot.local.lots = SHORT, 2, [{"size": 52.5, "price": 2469.5}, {"size": 18.0, "price": 2481.8}]

@@ -17,7 +17,7 @@ SOL_LIVE, BTC_LIVE, ETH_LIVE = "configs/live_100.toml", "configs/live_btc.toml",
 PIN = ['tp.mode="price_abs"', 'tp.anchor="avg_entry"',
        'tp.levels=[{"dist":0.45,"close_pct":0.5},{"dist":0.75,"close_pct":1.0}]',
        "tp.smart_tp2=true", "tp.tp_res_buffer_atr=0.1", "tp.tp_min_net_usd=0.05", "tp.tp_min_gap_usd=0.05",
-       "tp.tp_min_move=0.05", "tp.tp_market_gap=0.02", "tp.tp_check_min=1.0", "tp.tp_near_miss_frac=0.85",
+       "tp.tp_min_move=0.05", "tp.tp_market_gap=0.02", "tp.tp_near_miss_frac=0.85",
        "tp.tp_fade_atr=0.3", "tp.tp_fade_rsi_drop=8.0", "tp.tp_swing_buffer_atr=0.05", "tp.tp_res_min_touches=0",
        "tp.deep_buffer_usd=0.15", 'tp.tp1_mode="ratio"', "tp.tp1_ratio=0.6", 'tp.tp1_ratio_scope="all"',
        "tp.tp_fade_floor_at_tp1=true", "costs.open_fee=0.0006", "costs.close_fee=0.0006", "live.dry_run=true"]
@@ -69,7 +69,7 @@ def test_config_keys_and_validation():
 def test_live_configs_use_ratio_rule(path):
     t = load_config(path).tp
     # Trevor 2026-10-11: live bots use the level rule (TP1 at nearest level, TP2 = avg + (TP1 - avg) / 0.6)
-    assert t.tp1_mode == "level" and t.tp2_from_tp1_ratio == 0.6 and t.tp_periodic is False
+    assert t.tp1_mode == "level" and t.tp2_from_tp1_ratio == 0.6
     assert t.tp_fade_floor_at_tp1 is True and t.smart_tp2 is True
 
 
@@ -237,18 +237,3 @@ def chain_pos():
                          last_entry=112.79, tp_hits=0, first_tp_time=None)
 
 
-def test_restart_adopts_and_replaces_above_water_tp1(bot):
-    """Fresh process (no tp_px record) with the 06:30 triggers 115.05 / 115.51 on-chain: adopt both, then re-place TP1
-    only (cancel old, place 115.21 for $66.75); TP2 untouched; no halt."""
-    st = {"openRequests": [{"pubkey": "R1", "triggerPrice": 115.05, "executed": False},
-                           {"pubkey": "R2", "triggerPrice": 115.51, "executed": False}]}
-    bot.local.side, bot.local.last_size, bot.local.n_entries = LONG, SIZE, 3
-    bot.check_tps(chain_pos(), st, 112.70)
-    assert bot.calls == [("cancel", {"request": "R1"}),
-                         ("decrease", {"side": "long", "triggerPriceUsd": 115.21, "triggerAbove": True, "sizeUsd": 66.75})]
-    assert bot.local.tp_px == [115.21, 115.51] and not bot.kill.exists()
-    bot.calls.clear()
-    bot._tp_checked = None
-    st["openRequests"][0] = {"pubkey": "R3", "triggerPrice": 115.21, "executed": False}
-    bot.check_tps(chain_pos(), st, 112.70)               # next check: stable, nothing re-placed
-    assert bot.calls == []

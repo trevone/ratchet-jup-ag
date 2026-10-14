@@ -35,13 +35,11 @@ close_remainder_after_min = 55.0
 deep_buffer_usd = 0.15         # tp1_mode = ladder only: after deep adds TP1 = avg + fees + $0.15 (unused in ratio mode)
 # smart TP2 / TP1 sanity (Trevor 2026-10-07 20:14 MT): at open, after each add and every tp_check_min
 smart_tp2 = true
-tp_periodic = false           # Trevor 2026-10-08 22:51 MT: no periodic TP2 re-place or fade; TPs reset only at open/add, only Grok Bot moves TP2
 tp_res_buffer_atr = 0.1        # TP2 = min(avg + 0.75, nearest resistance above avg - 0.1 x 1h ATR)
 tp_min_net_usd = 0.05          # each TP's closing chunk nets >= $0.05 after 6 bps open + 6 bps close fees
 tp_min_gap_usd = 0.05          # TP1 at least $0.05 inside TP2
 tp_min_move = 0.05             # periodic re-place only when a TP moves >= $0.05
 tp_market_gap = 0.02           # trigger always >= $0.02 beyond market
-tp_check_min = 1.0             # periodic check every loop tick (60 s)
 tp_near_miss_frac = 0.85       # fade armed when the best price reached 85% of TP2's distance ...
 tp_fade_atr = 0.3              # ... then pulled back > 0.3 ATR ...
 tp_fade_rsi_drop = 8.0         # ... or 15m RSI fell >= 8 pts from its post-placement high (longs)
@@ -63,7 +61,6 @@ trend_flip_exit = false        # trend only filters NEW entries (Trevor)
 # daily_loss_pct removed (off) by Trevor's choice
 
 [live]
-short_payout_native = true     # Trevor 2026-10-13 08:56 MT: short TPs/closes pay out the market coin (no min-out; Jupiter rejects it)
 dry_run = false
 max_collateral_usd = 1.0e12      # cap removed (Trevor): available = wallet SOL - sol_fee_reserve, re-read every loop
 max_position_usd = 1.0e12        # notional ceiling removed: redundant with max_leverage 30 per entry (notional <= 30x collateral <= 30x wallet)

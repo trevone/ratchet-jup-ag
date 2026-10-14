@@ -11,12 +11,11 @@ from pathlib import Path
 
 import pytest
 
-import live.bot as botmod
 import live.live_broker as lb
 from config import load_config
 from live import ledger, reclaim_rent as rr, sweep as sw, withdraw as wd
 from live.flows import flow_extras
-from test_multi_asset import SOL_PX, TOKS, eth_state, make_bot
+from test_multi_asset import SOL_PX
 
 R = 1_488_440            # rent-exempt minimum of a 165-byte token account (lamports, read on-chain 2026-10-07)
 L = 1_000_000_000
@@ -44,20 +43,6 @@ def test_swap_sol_change_excludes_recreated_wsol_rent():
     assert sol2 == pytest.approx(0.001)
 
 
-def test_run_sweeps_detail_reports_rent_and_dry_run_is_zero():
-    cfg = load_config("configs/live_eth.toml")
-    plans = [{"name": "USDC", "mint": TOKS["USDC"]["mint"], "atoms": 5_300_524, "usd": 5.3}]
-    live = sw.run_sweeps_detail(cfg, plans, True, lambda c, a: {"ok": True, "sig": "S", "deltas": {
-        "nativeDeltaLamports": 44_101_009, "wsolDeltaAtoms": "0", "rentDeltaLamports": R}})
-    assert live == {"sol": pytest.approx(0.045589449), "rent_sol": pytest.approx(0.00148844)}
-    calls = []
-    dry = sw.run_sweeps_detail(cfg, plans, False, lambda c, a: calls.append(c) or {"ok": True, "deltas": {
-        "nativeDeltaLamports": 1, "rentDeltaLamports": R}})
-    assert dry == {"sol": 0.0, "rent_sol": 0.0} and calls == ["simulate-swap"]
-    assert sw.run_sweeps(cfg, plans, True, lambda c, a: {"ok": True, "sig": "S", "deltas": {
-        "nativeDeltaLamports": 46_994_710, "wsolDeltaAtoms": "0", "rentDeltaLamports": 0}}) == pytest.approx(0.04699471)
-
-
 # ------------------------------------------------------------------ flows extras + ledger booking
 def test_flow_extras():
     res = {"ok": True, "netLamports": -91_909_460, "rentLamports": R, "pnlUsd": 0.356529, "decreases": 2, "eventErrors": []}
@@ -66,56 +51,6 @@ def test_flow_extras():
     assert flow_extras({**res, "decreases": 0}) == (pytest.approx(0.00148844), None)   # no decrease event seen
     assert flow_extras({**res, "eventErrors": ["x"]})[1] is None
     assert flow_extras({"ok": False}) == (None, None) and flow_extras(None) == (None, None)
-
-
-def _eth_trade_tonight(tmp_path, monkeypatch):
-    """Replays tonight's ETH short with the rent-fixed numbers (read on-chain, then frozen here)."""
-    b = make_bot(tmp_path, extra=("live.dry_run=false",))
-    monkeypatch.setenv("JUP_LIVE", "0")
-    ledger.on_open("2026-10-08 02:42:34+00:00", -1, 1.807310633, "2h7FASXR", 5000, position="JChssv")
-    ledger.update(opened_size_usd=73.5, size_usd=73.5, avg_entry=2580.502362)
-    sweeps = iter([{"nativeDeltaLamports": 44_101_009, "wsolDeltaAtoms": "0", "rentDeltaLamports": R},
-                   {"nativeDeltaLamports": 46_994_710, "wsolDeltaAtoms": "0", "rentDeltaLamports": 0}])
-    monkeypatch.setattr(botmod, "jup", lambda c, a: {"ok": True, "sig": "SW", "deltas": next(sweeps)})
-    for usdc in (5_300_524, 5_436_554):
-        st = eth_state()
-        st["sweepTokens"] = {"USDC": {"mint": TOKS["USDC"]["mint"], "atoms": str(usdc)}}
-        b.sweep(st, -1)
-    flows = {"ok": True, "netLamports": -91_909_460, "legacyNetLamports": -93_397_900, "rentLamports": R,
-             "pnlUsd": 0.356529, "decreases": 2, "eventErrors": [], "nTx": 18}
-    monkeypatch.setattr(botmod, "position_net_sol", lambda pos, sig: (flows["netLamports"] / L, flows))
-    st = eth_state()
-    st["positions"]["short"]["realisedPnlUsd"] = None         # closed side: unknown (TS state), events give the gross
-    # freeze the close time at the real close (2026-10-08 03:59:50 UTC): book_flat stamps "now", and the borrow
-    # estimate grows with open->close hours, so a wall-clock close made net_sol_est drift below net_sol after ~1 day
-    # (the test started failing 2026-10-08 evening, independent of the code changes then). Bank off here (no seeded
-    # bank): this replays the pre-ledger SOL-flow booking of 2026-10-08.
-    on_flat = ledger.on_flat
-    monkeypatch.setattr(ledger, "on_flat", lambda t, *a, **k: on_flat("2026-10-08 03:59:50+00:00", *a, **k))
-    assert not b.bank_on
-    b.book_flat(st, -1)
-    return wd.read_trades(ledger.TRADES)[-1]
-
-
-def b_cfg_borrow() -> float:
-    return load_config("configs/live_eth.toml").costs.borrow_per_hour    # custody {} in eth_state -> config borrow rate
-
-
-def test_tonights_eth_trade_books_true_net_and_rent_as_capital(tmp_path, monkeypatch):
-    row = _eth_trade_tonight(tmp_path, monkeypatch)
-    assert float(row["net_sol"]) == pytest.approx(0.000674699, abs=1e-9)        # was -0.002302181 with rent as a loss
-    assert float(row["rent_sol"]) == pytest.approx(2 * R / L)                     # USDC ATA + re-created wSOL ATA
-    assert float(row["net_sol"]) - float(row["rent_sol"]) == pytest.approx(-0.002302181, abs=1e-9)   # = old booking
-    assert row["gross_pnl_source"] == "position_events" and float(row["gross_pnl_usd"]) == pytest.approx(0.356529)
-    assert float(row["net_sol_est"]) > float(row["net_sol"])                    # est no longer fees-only
-    hours = (3 * 3600 + 59 * 60 + 50 - (2 * 3600 + 42 * 60 + 34)) / 3600         # 1.288 h open -> close
-    borrow = round(73.5 * b_cfg_borrow() * hours, 4)
-    assert float(row["borrow_usd_est"]) == pytest.approx(borrow)
-    assert float(row["net_sol_est"]) == pytest.approx((0.356529 - 0.0882 - borrow) / SOL_PX - float(row["network_fee_sol"]),
-                                                      abs=1e-9)
-    assert wd.trade_net_sol(row) == pytest.approx(0.000674699, abs=1e-9)         # what the daily stake counts
-    s = ledger._load(ledger.SUMMARY, {})
-    assert s["token_rent_sol"] == pytest.approx(2 * R / L) and s["net_sol"] == pytest.approx(0.000674699, abs=1e-9)
 
 
 def test_rent_only_trade_is_zero_and_refund_is_not_profit():
@@ -148,18 +83,6 @@ def test_gross_sources_and_estimate_rules():
     for g in (0.0, None):                           # wallet-delta fallback (deposit possible) keeps the conservative est
         r = trade(g, flows=None, after=2.0)
         assert r["net_sol_method"] == "wallet_delta" and wd.trade_net_sol(r) == pytest.approx(-0.0882 / SOL_PX - 5e-6)
-
-
-def test_sweep_row_after_booking_carries_rent(tmp_path, monkeypatch):
-    b = make_bot(tmp_path, extra=("live.dry_run=false",))
-    monkeypatch.setenv("JUP_LIVE", "0")
-    monkeypatch.setattr(botmod, "jup", lambda c, a: {"ok": True, "sig": "SW", "deltas": {
-        "nativeDeltaLamports": 3_000_000 - R, "wsolDeltaAtoms": "0", "rentDeltaLamports": R}})
-    st = eth_state()
-    st["sweepTokens"] = {"ETH": TOKS["ETH"]}
-    b.sweep(st, None)
-    row = wd.read_trades(ledger.TRADES)[-1]
-    assert row["side"] == "sweep" and float(row["net_sol"]) == pytest.approx(0.003) and float(row["rent_sol"]) == pytest.approx(R / L)
 
 
 # ------------------------------------------------------------------ daily stake across bots after the fix

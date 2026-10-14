@@ -161,7 +161,6 @@ class TakeProfitConfig:
     deep_buffer_usd: float = 0.15        # levels mode: above-water TP1 = avg + fees + buffer after deep adds
     # --- smart TP2 / TP1 sanity (Trevor 2026-10-07 20:14 MT); off by default so backtests are unchanged ---
     smart_tp2: bool = False
-    tp_periodic: bool = True             # False (Trevor 2026-10-08 22:51 MT): no periodic TP re-place / momentum fade; TPs set at open/add only, Grok Bot moves TP2
     tp_res_buffer_atr: float = 0.1       # TP2 <= nearest resistance above avg - this many 1h ATR (longs; support for shorts)
     tp_min_net_usd: float = 0.05         # each TP's closing chunk must net >= this after 6+6 bps open/close fees
     tp_min_gap_usd: float = 0.05         # TP1 sits at least this far inside TP2
@@ -170,7 +169,6 @@ class TakeProfitConfig:
     tp3_fee_mult: float = 2.0            # TP3 (per-add partial) nets >= this x its own fees (open+close on its size + pro-rated borrow)
     tp_min_move: float = 0.05            # periodic check re-places a TP only when it moves >= this (USD)
     tp_market_gap: float = 0.02          # a trigger must sit at least this far beyond market (Jupiter rejects otherwise)
-    tp_check_min: float = 1.0            # periodic TP check cadence (minutes; the loop ticks every 60 s)
     tp_near_miss_frac: float = 0.85      # momentum fade armed once the best price reached this fraction of TP2's distance
     tp_fade_atr: float = 0.3             # ... and then fell back more than this many ATR from that best price
     tp_fade_rsi_drop: float | None = 8.0  # ... or the 15m RSI rolled over this many points from its post-placement extreme
@@ -252,7 +250,6 @@ class LiveConfig:
     min_collateral_usd: float = 10.0     # Jupiter's documented minimum for opening a position
     kill_switch_path: str = "live/KILL"  # if this file exists: no new orders
     close_all_on_kill: bool = False
-    short_payout_native: bool = False   # 2026-10-13: ETH/BTC short decreases pay out the market coin (desiredMint), not USDC
     price_slippage_pct: float = 0.01     # worst acceptable fill vs oracle for market requests
     max_oracle_age_sec: int = 60
     request_timeout_sec: int = 60        # keeper fulfillment wait before treating a request as failed

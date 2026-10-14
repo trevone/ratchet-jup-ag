@@ -42,7 +42,7 @@ Grow each bot’s own coin (SOL / Wormhole ETH / WBTC) with small, fee-aware pro
 
 (~$0.11 each.)
 
-- Trades fund from and pay back to **that bot’s balance only**. Longs: own coin = collateral. Shorts: Jupiter swaps own coin → USDC inside the open request; USDC payouts swept back to the bot’s own coin.
+- Trades fund from and pay back to **that bot’s balance only**. Longs: own coin = collateral. Shorts: Jupiter swaps own coin → USDC inside the open request; every short decrease pays out in the bot’s own coin (SOL; ETH / BTC via desiredMint), so nothing is swept. Stray USDC is only logged (`sweep: stray USDC`), never swapped.
 - **No borrowing** from other bots: open/add skipped if own balance is short.
 - **External wallet changes: alert only (Trevor 2026-10-11 19:08 MT).** An unexplained wallet change **≥ $1.5** persisting **2 ticks** is never P&L and is no longer charged to the bots: the bot logs `WARNING UNEXPLAINED WALLET CHANGE`, appends to `live/EXT_FLOW_ALERT` (quickcheck prints `ALERT EXT`), and changes nothing in any bank (no 50/25/25 split, no ETH/BTC coin swaps). `[ledger] ext_flow_mode = "alert"` in all three configs (`"split"` = old rule, off). Resolve by hand (book a correction), then delete the flag file. Smaller SOL noise = fee reserve float. Background: 2026-10-11 18:41 MT a stray 0.207 SOL JupSOL stake was split as an external withdrawal and made ETH/BTC sell coin; reversed 19:10-19:15 MT.
 - ETH/BTC SOL network fees tracked as a small **fee debt**, settled daily when ≥ `0.005` SOL.
@@ -239,7 +239,6 @@ Built 2026-10-11 23:15 MT, approved spec; `adds_enabled`, `partials_enabled` and
 - Jupiter limits found: limit orders need **≥ $10 collateral each** (API `collateral_size_below_minimum`; the live ladder's $3 rungs are refused → with adds_enabled those rungs would never be placed, only logged/retried); max 20 limit orders per market+side; refused when utilisation > 80 %; ~0.0052 SOL request rent per order (refunded on fill/cancel).
 - `last_partial_rule` (default false): the price of the last partial (per-add partial fill or trim exit) is recorded; the next add order is planned from the more adverse of the last fill and that price and must lie beyond it.
 - TP1 / TP2 logic unchanged (its re-place never touches resting adds or per-add partials).
-- Preview (sends nothing): `.venv/bin/python -m live.resting_preview --config configs/live_100.toml`.
 
 
 ## Lot recovery after an unsaved add (2026-10-12)
@@ -311,8 +310,10 @@ SOL and ETH HWM set to the balance just before their current positions opened (S
 ### Withdrawal marks reset (Trevor 2026-10-12 20:47 MT)
 SOL and ETH wd_mark set to their new HWMs (SOL 0.771337416, ETH 0.02026193).
 
-### Short payout in own coin (2026-10-13, LIVE on ETH/BTC since 08:58 MT)
-`[live] short_payout_native` (default false): ETH/BTC short decreases (TP1/TP2/TP3, closes) request the market coin (desiredMint) instead of USDC. Simulation 2026-10-13 on the ETH short: accepted without min-out; any jupiterMinimumOut on a decrease is rejected (6015), so it cannot carry min-out protection. Trevor 08:56 MT: ON for ETH and BTC with no min-out (closes never blocked); sweep.py stays as fallback for any USDC; native payouts are booked as normal payouts.
+### Short payout in own coin (permanent since 2026-10-14)
+ETH/BTC short decreases (TP1/TP2/TP3, closes) always request the market coin (desiredMint; no flag). Jupiter rejects any
+jupiterMinimumOut on a decrease (6015), so payouts carry no min-out. The old USDC → coin sweep and its cross-bot USDC
+attribution were removed (2026-10-14; on 2026-10-13 04:31 MT it had handed an ETH close's $15.26 to the BTC bot).
 
 ## Fee-based minimum TP1 / TP2 distance (Trevor 2026-10-13)
 - At open, after every add, and whenever TP1/TP2 are re-placed or re-sized (and once per bot start on the open position), the fees of the CURRENTLY OPEN size are computed (TP3 partials covered their own; Trevor 2026-10-13 20:37 MT): F = open_fee (0.06%) x current size + close_fee (0.06%) x current size + accrued borrow fee of the open position (on-chain: (collateral-custody cumulativeInterestRate - position snapshot) x current size / 1e9; Jupiter settles borrow on every increase/decrease, so this is already the current size share; fallback est. hourly rate x size x hours).
@@ -320,12 +321,3 @@ SOL and ETH wd_mark set to their new HWMs (SOL 0.771337416, ETH 0.02026193).
 - Analyst / strategy TP1 / TP2 beyond P_min are kept; otherwise the TP is placed exactly at P_min. TP2 then stays beyond TP1 by >= tp_min_gap_usd. Re-placement uses the existing cancel/replace path. TP3, guard, entries unchanged; no min-out; no halt from this rule.
 - TP3 (per-add partial, Trevor 2026-10-13 20:38 MT): its portion (covered adds, size s, size-weighted entry e) must net >= tp3_fee_mult (default 2.0, [tp]) x its own fees F3 = (open_fee + close_fee) x s + accrued borrow x s / position size. P3_min = e x (1 +/- (1 + tp3_fee_mult) x F3 / s), rounded outward to the cent. The zone / level / zone-edge / fee-covering target is kept when beyond P3_min, else TP3 is placed exactly at P3_min (mode "...->fee_mult_min"). Zone logic otherwise unchanged.
 
-
-## USDC sweep attribution (2026-10-14, Trevor)
-
-USDC in the shared wallet is swept only by the bot whose short decrease produced it. Each ETH / BTC bot posts a pending
-payout claim (`live/usdc_claim_<ASSET>.json`) when it sends a USDC-paying short decrease and on every payout event; the
-USDC goes to the one claim whose amount matches (max $0.50 / 3 %). Without claims, the only short candidate (open, or closed
-and not yet booked) gets it. If two candidates or claims could own it, nothing is swept: it is logged and retried next tick,
-never guessed and never a halt. (Before: the open short won, ETH > BTC > SOL, which on 2026-10-13 04:31 MT handed the ETH
-close's $15.26 to the BTC bot.)

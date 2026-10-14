@@ -19,7 +19,7 @@ PINNED = [
     'tp.mode="price_abs"', 'tp.anchor="avg_entry"',
     'tp.levels=[{"dist":0.50,"close_pct":0.5},{"dist":0.75,"close_pct":1.0}]',
     "tp.smart_tp2=true", "tp.tp_res_buffer_atr=0.1", "tp.tp_min_net_usd=0.05", "tp.tp_min_gap_usd=0.05",
-    "tp.tp_min_move=0.05", "tp.tp_market_gap=0.02", "tp.tp_check_min=1.0", "tp.tp_near_miss_frac=0.85",
+    "tp.tp_min_move=0.05", "tp.tp_market_gap=0.02", "tp.tp_near_miss_frac=0.85",
     "tp.tp_fade_atr=0.3", "tp.tp_fade_rsi_drop=8.0", "tp.tp_swing_buffer_atr=0.05", "tp.tp_res_min_touches=0",
     'tp.tp1_mode="ladder"', "tp.tp_fade_floor_at_tp1=false",   # ladder TP1 rules verified here; ratio: test_tp1_ratio.py
     "costs.open_fee=0.0006", "costs.close_fee=0.0006",
@@ -77,10 +77,10 @@ def test_live_keys():
     assert len(lv) == 2 and all(isinstance(x.dist, float) and isinstance(x.close_pct, float) for x in lv)
     assert 0.0 < lv[0].dist < lv[1].dist and 0.0 < lv[0].close_pct < lv[1].close_pct == 1.0
     for k in ("tp_res_buffer_atr", "tp_min_net_usd", "tp_min_gap_usd", "tp_min_move", "tp_market_gap", "tp_fade_atr",
-              "tp_swing_buffer_atr", "tp_check_min"):
+              "tp_swing_buffer_atr"):
         v = getattr(t, k)
         assert isinstance(v, float) and v >= 0.0, k
-    assert t.tp_min_gap_usd < lv[1].dist and t.tp_check_min > 0.0
+    assert t.tp_min_gap_usd < lv[1].dist
     assert 0.0 < t.tp_near_miss_frac <= 1.0
     assert t.tp_fade_rsi_drop is None or (isinstance(t.tp_fade_rsi_drop, float) and t.tp_fade_rsi_drop > 0.0)
     assert isinstance(t.tp_res_min_touches, int) and t.tp_res_min_touches >= 0
@@ -242,48 +242,6 @@ def test_sync_places_smart_ladder_never_past_market(bot):
     assert bot.local.tp_px == [116.40, 116.65] and bot.local.tp_peak == 115.95 and not bot.kill.exists()
 
 
-def test_check_no_churn_then_fade_replaces_tp2_only(bot):
-    p = chain_pos(size=36.75, tp_hits=1)
-    bot.local.tp_px, bot.local.tp_since, bot.local.tp_peak = [116.40, 116.65], "2026-10-08 00:00:00+00:00", 116.60
-    bot.check_tps(p, reqs(116.65), 116.50)                              # near miss but no pullback -> nothing
-    assert bot.calls == []
-    bot._tp_checked = None
-    bot.check_tps(p, reqs(116.65), 116.30)                              # pullback 0.30 > 0.228 -> fade
-    assert bot.local.tp_faded
-    assert bot.calls[0] == ("cancel", {"request": "R116.65"})
-    assert bot.calls[1][1]["triggerPriceUsd"] == 116.56 and bot.calls[1][1]["entire"] is True
-    assert bot.local.tp_px[1] == 116.56
-    bot.calls.clear()
-    bot._tp_checked = None
-    bot.check_tps(p, reqs(116.56), 116.35)                               # same target -> no re-place
-    assert bot.calls == []
-
-
-def test_check_small_move_below_min_move_ignored(bot):
-    p = chain_pos()
-    bot.local.tp_px = [116.38, 116.62]                                   # desired 116.40 / 116.65: moves < 0.05
-    bot.check_tps(p, reqs(116.38, 116.62), 116.0)
-    assert bot.calls == []
-
-
-def test_check_never_chases_past_market_and_leaves_unknown_triggers(bot):
-    p = chain_pos()
-    bot.local.tp_px = [116.40, 116.65]
-    bot.strategy.levels_provider = lambda now: Levels((), (116.20,), ATR)   # TP2 wants 116.20 - 0.076, market 116.30
-    bot.check_tps(p, reqs(116.40, 116.65), 116.30)
-    assert all(a.get("triggerPriceUsd", 999) > 116.30 for _, a in bot.calls if "triggerPriceUsd" in a)
-    assert ("cancel", {"request": "R116.65"}) not in bot.calls
-    bot.strategy.levels_provider = lambda now: LV
-    bot.calls.clear()
-    bot._tp_checked = None
-    bot.check_tps(p, reqs(116.40, 116.65, 117.0), 116.0)                 # 3 triggers vs our 2 -> 116.40/116.65 matched
-    assert bot.calls == []
-    bot.local.tp_px = [0.0, 0.0]
-    bot._tp_checked = None
-    bot.check_tps(p, reqs(116.40, 116.65, 117.0), 116.0)                 # unknown set -> left alone
-    assert bot.calls == [] and not bot.kill.exists()
-
-
 # ------------------------------------------------------------------ cancel already gone (3012) / stale oracle (6003)
 # 2026-10-08 05:12 MT BTC halt: the escalated re-sign of a TP2 cancel landed first, the original then failed with Custom 3012
 # (AccountNotInitialized: request already closed) and the bot halted with TP2 gone. Now: re-read the chain and proceed.
@@ -307,60 +265,6 @@ def script_cmd(bot, *cancel_results):
             return queue.pop(0)
         return {"ok": True}
     bot.cmd = fake_cmd
-
-
-def fade_setup(bot):
-    p = chain_pos(size=36.75, tp_hits=1)
-    bot.local.tp_px, bot.local.tp_since, bot.local.tp_peak = [116.40, 116.65], "2026-10-08 00:00:00+00:00", 116.60
-    bot.local.side, bot.local.last_size = LONG, 36.75
-    return p
-
-
-def test_cancel_3012_request_gone_places_new_tp_without_halt(bot):
-    p = fade_setup(bot)
-    script_cmd(bot, {"ok": False, "sig": "x", "err": ERR_3012})
-    bot.chain = lambda: chain_st(36.75)                                  # TP2 request already gone, size unchanged
-    bot.check_tps(p, reqs(116.65), 116.30)                               # fade -> TP2 116.65 -> 116.56
-    assert bot.calls[0] == ("cancel", {"request": "R116.65"})
-    dec = [a for n, a in bot.calls if n == "decrease"]
-    assert len(dec) == 1 and dec[0]["triggerPriceUsd"] == 116.56 and dec[0]["entire"] is True
-    assert bot.local.tp_px[1] == 116.56 and not bot.kill.exists()
-
-
-def test_cancel_failed_request_still_there_halts(bot):
-    p = fade_setup(bot)
-    script_cmd(bot, {"ok": False, "sig": "x", "err": ERR_3012})
-    bot.chain = lambda: chain_st(36.75, 116.65)                          # still on-chain: a real failure
-    bot.check_tps(p, reqs(116.65), 116.30)
-    assert [n for n, _ in bot.calls] == ["cancel"] and not bot.kill.exists() and bot.local.pending_cancels
-
-
-def test_cancel_gone_but_size_changed_places_nothing(bot):
-    p = fade_setup(bot)
-    script_cmd(bot, {"ok": False, "sig": "x", "err": ERR_3012})
-    bot.chain = lambda: chain_st(0.0)                                    # TP2 executed: position closed
-    bot.check_tps(p, reqs(116.65), 116.30)
-    assert [n for n, _ in bot.calls] == ["cancel"] and not bot.kill.exists() and bot.local.tp_px[1] == 0.0
-
-
-def test_cancel_stale_oracle_6003_retried(bot, monkeypatch):
-    import live.bot as B
-    sleeps = []
-    monkeypatch.setattr(B.time, "sleep", lambda s: sleeps.append(s))
-    p = fade_setup(bot)
-    script_cmd(bot, {"ok": False, "err": ERR_6003}, {"ok": False, "err": ERR_6003})   # 3rd attempt succeeds
-    bot.chain = lambda: (_ for _ in ()).throw(AssertionError("no re-read needed when the retry works"))
-    bot.check_tps(p, reqs(116.65), 116.30)
-    assert [n for n, _ in bot.calls] == ["cancel", "cancel", "cancel", "decrease"] and sleeps == [5, 5]
-    assert bot.local.tp_px[1] == 116.56 and not bot.kill.exists()
-    # 6003 three times and still on-chain -> halt (no endless loop)
-    bot.calls.clear()
-    bot._tp_checked = None
-    bot.local.tp_px[1] = 116.65
-    script_cmd(bot, *[{"ok": False, "err": ERR_6003}] * 3)
-    bot.chain = lambda: chain_st(36.75, 116.65)
-    bot.check_tps(p, reqs(116.65), 116.30)
-    assert [n for n, _ in bot.calls] == ["cancel"] * 3 and not bot.kill.exists() and bot.local.pending_cancels
 
 
 def test_cancel_all_treats_gone_request_as_cancelled(bot):
@@ -434,3 +338,23 @@ def test_idle_entries_respect_trend_and_reset_after_entry():
     go(s, bar_at(120, 49.0), flat_account())
     assert s.entry_thresholds(bar_at(120, 49.0))[:2] == (45.0, 55.0)
     assert s.entry_thresholds(bar_at(120 + 60, 49.0))[:2] == (48.0, 52.0)
+
+
+def test_cancel_request_outcomes(bot, monkeypatch):
+    # (was covered through the removed periodic check_tps, 2026-10-14) 3012 gone + size unchanged -> ok; gone + size
+    # changed -> filled; still on-chain -> failed; StaleOracle 6003 retried 2x with 5 s waits
+    import live.bot as B
+    sleeps = []
+    monkeypatch.setattr(B.time, "sleep", lambda s: sleeps.append(s))
+    script_cmd(bot, {"ok": False, "sig": "x", "err": ERR_3012})
+    bot.chain = lambda: chain_st(36.75)
+    assert bot.cancel_request("R116.65", 36.75) == "ok"
+    script_cmd(bot, {"ok": False, "sig": "x", "err": ERR_3012})
+    bot.chain = lambda: chain_st(0.0)
+    assert bot.cancel_request("R116.65", 36.75) == "filled"
+    script_cmd(bot, {"ok": False, "sig": "x", "err": ERR_3012})
+    bot.chain = lambda: chain_st(36.75, 116.65)
+    assert bot.cancel_request("R116.65", 36.75) == "failed"
+    bot.calls.clear()
+    script_cmd(bot, {"ok": False, "err": ERR_6003}, {"ok": False, "err": ERR_6003})
+    assert bot.cancel_request("R116.65", 36.75) == "ok" and [n for n, _ in bot.calls] == ["cancel"] * 3 and sleeps == [5, 5]

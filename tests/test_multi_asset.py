@@ -332,70 +332,11 @@ TOKS = {"USDC": {"mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "atoms"
         "WBTC": {"mint": "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh", "atoms": "50"}}
 
 
-def test_sweep_attribution_no_double_claims():
-    st = {"sweepTokens": TOKS}
-    px = {"ETH": 2578.0, "WBTC": 83100.0}
-    eth_long = [p["name"] for p in sw.plan_sweeps(st, "ETH", 1, px, 0.10)]
-    btc_short = [p["name"] for p in sw.plan_sweeps(st, "BTC", -1, px, 0.10)]
-    sol_flat = [p["name"] for p in sw.plan_sweeps(st, "SOL", None, px, 0.10)]
-    sol_short = [p["name"] for p in sw.plan_sweeps(st, "SOL", -1, px, 0.10)]
-    assert eth_long == ["ETH"] and sol_flat == [] and sol_short == ["USDC"]
-    assert btc_short == ["USDC"]          # WBTC 50 atoms = $0.04 < $0.10 -> dust, left alone
-    assert sw.plan_sweeps({"sweepTokens": {"error": "x"}}, "ETH", 1, px, 0.1) == []
-
-
 def test_sweep_args_locked_and_capped():
     cfg = load_config("tests/fixtures/configs_pre_c/live_eth.toml")
     a = sw.sweep_args(cfg, TOKS["USDC"]["mint"], 2500000)
     assert a["direction"] == "sweep" and a["slippageBps"] == cfg.withdraw.unstake_slippage_bps <= cfg.withdraw.stake_max_slippage_bps
     assert a["amountAtoms"] == "2500000"
-
-
-def test_sweep_books_into_trade(tmp_path, monkeypatch):
-    calls = []
-    fake = lambda cmd, args: calls.append((cmd, args)) or {"ok": True, "sig": "SW", "deltas": {"nativeDeltaLamports": 21_000_000, "wsolDeltaAtoms": "0"}}
-    b = make_bot(tmp_path, extra=("live.dry_run=false",))
-    monkeypatch.setattr(botmod, "jup", fake)
-    monkeypatch.setenv("JUP_LIVE", "0")
-    ledger.on_open("2026-10-08 01:00:00+00:00", -1, 1.0, "SIG", 5000, position="ETHSHORTPDA")
-    st = eth_state()
-    st["sweepTokens"] = TOKS
-    b.sweep(st, -1)
-    assert [c[0] for c in calls] == ["swap", "swap"] and {c[1]["inputMint"] for c in calls} == {TOKS["USDC"]["mint"], TOKS["ETH"]["mint"]}
-    # 2026-10-08 attribution: the USDC is this open short's proceeds -> its open record; ETH can only come from an ETH
-    # LONG close, so while short it belongs to an earlier (booked) long trade -> its own late sweep row (same 0.042 total)
-    late = wd.read_trades(ledger.TRADES)
-    assert len(late) == 1 and late[0]["side"] == "sweep" and float(late[0]["net_sol"]) == pytest.approx(0.021)
-    assert "ETH" in late[0]["note"] and "long" in late[0]["note"]
-    row = ledger.on_flat("2026-10-08 02:00:00+00:00", 1.0, SOL_PX, 2.0, 0.0, flows_net_sol=-0.05)
-    assert row["net_sol"] == pytest.approx(-0.05 + 0.021)   # position flows + the USDC swap's SOL
-    assert sum(float(r["net_sol"]) for r in wd.read_trades(ledger.TRADES)) == pytest.approx(-0.05 + 0.042)
-    # in-flight market request of ANY bot -> no sweep this tick
-    calls.clear()
-    st["allOpenRequests"] = [{"requestType": "market"}]
-    b.sweep(st, -1)
-    assert calls == []
-
-
-def test_sweep_after_booking_gets_its_own_row(tmp_path, monkeypatch):
-    b = make_bot(tmp_path, extra=("live.dry_run=false",))
-    monkeypatch.setattr(botmod, "jup", lambda c, a: {"ok": True, "sig": "SW", "deltas": {"nativeDeltaLamports": 3_000_000}})
-    monkeypatch.setenv("JUP_LIVE", "0")   # run_sweeps sets it in live mode; keep it scoped to this test
-    st = eth_state()
-    st["sweepTokens"] = {"ETH": TOKS["ETH"]}
-    b.sweep(st, None)
-    rows = wd.read_trades(ledger.TRADES)
-    assert rows[-1]["side"] == "sweep" and float(rows[-1]["net_sol"]) == pytest.approx(0.003)
-
-
-def test_dry_run_sweep_only_simulates(tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(botmod, "jup", lambda c, a: calls.append(c) or {"ok": True})
-    b = make_bot(tmp_path)
-    st = eth_state()
-    st["sweepTokens"] = {"ETH": TOKS["ETH"]}
-    b.sweep(st, 1)
-    assert calls == ["simulate-swap"] and not ledger.OPEN.exists()
 
 
 def test_deposit_seen_by_all_budgets_once_and_never_profit():
@@ -411,19 +352,3 @@ def test_deposit_seen_by_all_budgets_once_and_never_profit():
     assert wd.trade_net_sol(row) == pytest.approx(0.002)
 
 
-def test_usdc_sweep_tiebreak_when_eth_and_btc_both_short():
-    from live import sweep as sw
-    st = {"sweepTokens": {"USDC": {"atoms": 5_000_000, "mint": "U"}, "WBTC": {"atoms": 0, "mint": "W"}},
-          "allPositions": [{"market": "ETH", "side": "short"}, {"market": "BTC", "side": "short"}]}
-    assert [p["name"] for p in sw.plan_sweeps(st, "ETH", -1, {"ETH": 2500.0}, 0.1)] == ["USDC"]
-    assert sw.plan_sweeps(st, "BTC", -1, {"WBTC": 80000.0}, 0.1) == []
-    st["allPositions"] = [{"market": "BTC", "side": "short"}]
-    assert [p["name"] for p in sw.plan_sweeps(st, "BTC", -1, {"WBTC": 80000.0}, 0.1)] == ["USDC"]
-
-
-def test_sol_bot_leaves_usdc_to_eth_btc_shorts():
-    from live import sweep as sw
-    st = {"sweepTokens": {"USDC": {"atoms": 5_000_000, "mint": "U"}}, "allPositions": [{"market": "BTC", "side": "short"}]}
-    assert sw.plan_sweeps(st, "SOL", -1, {}, 0.1) == []
-    st["allPositions"] = [{"market": "SOL", "side": "short"}]
-    assert [p["name"] for p in sw.plan_sweeps(st, "SOL", -1, {}, 0.1)] == ["USDC"]

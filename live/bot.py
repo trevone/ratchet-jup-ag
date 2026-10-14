@@ -33,7 +33,7 @@ from live.live_broker import jup
 from live import ledger
 from live.run_dry import KLINES, HTTP_TIMEOUT
 from strategy import LONG, SHORT, Action, DcaStrategy, Intent
-from dca_levels import TpFade, load_analyst_levels
+from dca_levels import load_analyst_levels
 from asset_scale import atr_from_klines, levels_with_fallback, scale_config, scaled_summary
 from live.budget import budget_from_state
 from live.flows import flow_extras, position_net_sol
@@ -254,7 +254,6 @@ class Bot:
             self.strategy.levels_provider = lambda now: levels_with_fallback(
                 load_analyst_levels(cfg.dca.levels_path, cfg.dca.levels_max_age_min), self._own_atr, cfg.scale.own_atr_fallback)
         self.local = load_local(self.state_path)
-        self._tp_checked: pd.Timestamp | None = None
         self._fee_rechecked = False
         self.kill = ROOT / self.live.kill_switch_path
         self.kill_all = ROOT / cfg.bot.global_kill_path
@@ -311,11 +310,8 @@ class Bot:
     def cmd(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         """Send when live, simulate when dry_run (same builders)."""
         live = not self.live.dry_run
-        if name == "decrease" and args.get("side") == "short" and self.asset in ("ETH", "BTC") \
-                and getattr(self.live, "short_payout_native", False):   # Trevor 2026-10-13: payout in own coin
-            args = {**args, "desiredMint": bankmod.MINT["ETH" if self.asset == "ETH" else "WBTC"]}
-        if live and self._usdc_payout_expected(name, args):   # Trevor 2026-10-14: claim the USDC before it lands
-            sweepmod.post_claim(self.asset, None, f"{name} sent")
+        if name == "decrease" and args.get("side") == "short" and self.asset in ("ETH", "BTC"):
+            args = {**args, "desiredMint": bankmod.MINT["ETH" if self.asset == "ETH" else "WBTC"]}   # paid in own coin
         res = jup(name if live else f"simulate-{name}", {**args, "market": self.asset, "send": live})
         log.info("%s %s -> %s", name, json.dumps(args), json.dumps({k: res.get(k) for k in
                  ("ok", "sig", "err", "error", "fulfillSec", "unitsConsumed")}))
@@ -431,20 +427,9 @@ class Bot:
         self.save()
 
     def sweep(self, st: dict[str, Any], side: int | None) -> None:
-        """SOL in / SOL out, self-healing (2026-10-08): every tick, flat or in a position, swap any USDC / ETH / WBTC above
-        dust back to SOL with backoff + API-base fallback, one bot at a time (file lock), booked into the trade that
-        produced it (live/sweep.py self_heal). Skipped while any market request is in flight (its tokens may still be
-        moving). ``side`` is kept for the call sites; attribution comes from the chain + the bots' ledgers."""
-        b = self.cfg.bot
-        if not b.sweep_enabled:
-            return
-        if [r for r in st.get("allOpenRequests", st["openRequests"]) if r.get("requestType") != "trigger"]:
-            return
-        if self.bank_on:   # own-coin ledger: only USDC is swept, into the producing bot's own coin
-            for bk in sweepmod.self_heal_own(self.cfg, self.asset, st, jup, dry_run=self.live.dry_run, min_usd=b.sweep_min_usd):
-                self.bank_sweep_booked(bk, st)
-            return
-        sweepmod.self_heal(self.cfg, self.asset, st, jup, dry_run=self.live.dry_run, min_usd=b.sweep_min_usd)
+        """Every short pays out in its own coin (2026-10-14), so nothing is swapped: stray USDC is only logged."""
+        if self.cfg.bot.sweep_enabled:
+            sweepmod.stray_usdc(st, self.cfg.bot.sweep_min_usd)
 
     def cancel_all(self, st: dict[str, Any]) -> bool:
         """Cancel this market's requests. A request that is already gone on-chain (cancel failed with 3012
@@ -850,88 +835,6 @@ class Bot:
 
     def tp_requests(self, st: dict[str, Any]) -> list[dict[str, Any]]:
         return [r for r in self.ladder_requests(st) if r.get("triggerPrice") and not r.get("executed")]
-
-    def check_tps(self, pos: ChainPosition, st: dict[str, Any], price: float) -> None:
-        """Periodic smart-TP check (tp.smart_tp2): track the best price, detect a momentum fade, recompute the ladder
-        and re-place only pending TPs that moved >= tp_min_move and still sit beyond market. Only triggers that match
-        what this bot placed (or, after a restart without that record, exactly one trigger per pending level) are
-        touched; anything else is logged and left alone."""
-        t, L = self.cfg.tp, self.local
-        s = pos.side
-        n = len(t.ladder)
-        L.tp_peak = price if not L.tp_peak else (max(L.tp_peak, price) if s == LONG else min(L.tp_peak, price))
-        now = pd.Timestamp.now(tz="UTC")
-        if self._tp_checked is not None and now - self._tp_checked < pd.Timedelta(minutes=t.tp_check_min) - pd.Timedelta(seconds=5):
-            return
-        self._tp_checked = now
-        pending = list(range(pos.tp_hits, n))
-        reqs = self.tp_requests(st)
-        if not pending or not reqs:
-            return
-        if len(L.tp_px) != n:
-            L.tp_px = (L.tp_px + [0.0] * n)[:n]
-        by_level: dict[int, dict[str, Any]] = {}
-        for i in pending:
-            m = [r for r in reqs if L.tp_px[i] and abs(r["triggerPrice"] - L.tp_px[i]) < 0.006]
-            if len(m) == 1:
-                by_level[i] = m[0]
-        if len(by_level) != len(pending):
-            if len(reqs) == len(pending):   # restart without a record: adopt by price order (nearest = lowest level)
-                srt = sorted(reqs, key=lambda r: s * r["triggerPrice"])
-                for i, r in zip(pending, srt):
-                    by_level[i] = r
-                    L.tp_px[i] = round(r["triggerPrice"], 2)
-                log.info("TP check: adopted on-chain triggers %s", [L.tp_px[i] for i in pending])
-                if not L.tp_since:
-                    L.tp_since = str(now)
-                self.save()
-            else:
-                log.warning("TP check skipped: %d on-chain triggers %s vs %d pending levels %s",
-                            len(reqs), [r["triggerPrice"] for r in reqs], len(pending), [L.tp_px[i] for i in pending])
-                return
-        fade = TpFade(L.tp_peak, price, L.tp_rsi_ext, L.tp_rsi_now)
-        targets = self.strategy.tp_targets(pos, price=price, fade=fade, prev_faded=L.tp_faded)
-        res = self.strategy.last_tp
-        if res is None:
-            return
-        targets = self.trim_tp_guard(pos, targets, "periodic")
-        targets = self.fee_min_targets(pos, targets, st, "periodic")
-        if L.tp2_override and len(targets) > 1:
-            from strategy import TpTarget
-            targets = tuple(list(targets[:1]) + [TpTarget(L.tp2_override, targets[1].close_pct)] + list(targets[2:]))
-        if res.faded and not L.tp_faded:
-            L.tp_faded = True
-            self.log_tp_reasons("fade")
-            self.save()
-        side = "long" if s == LONG else "short"
-        logged = False
-        for i in pending:
-            new, old = round(targets[i].price, 2), L.tp_px[i]
-            if abs(new - old) < t.tp_min_move - 1e-9:
-                continue
-            if res.past_market[i]:
-                log.info("TP%d check: wanted %.2f is not beyond market %.3f + %.2f; keeping %.2f", i + 1,
-                         self.strategy.last_tp_raw(i), price, t.tp_market_gap, old)
-                continue
-            if not logged:
-                self.log_tp_reasons("periodic")
-                logged = True
-            log.info("TP%d re-place %.2f -> %.2f (move %+.2f >= %.2f)", i + 1, old, new, new - old, t.tp_min_move)
-            c = self.cancel_request(by_level[i]["pubkey"], pos.size)
-            if c == "failed":
-                self.cancel_failed([by_level[i]], "sync", f"TP{i + 1} cancel")
-                self.save()
-                return
-            L.tp_px[i] = 0.0
-            if c == "filled":   # a trigger executed meanwhile: place nothing on a stale size; next tick sees the fill
-                self.save()
-                return
-            prev = t.ladder[i - 1].close_pct if i else 0.0
-            if not self.place_tp(pos, side, i, new, prev):
-                self.halt(f"TP{i + 1} re-place failed")
-                self.save()
-                return
-            self.save()
 
     # ------------------------------------------------------------- confirmation / per-add trim
     def confirm_size(self, size_before: float, direction: int, tries: int | None = None,
@@ -1888,14 +1791,6 @@ class Bot:
             b["fee_sol"] = round(b.get("fee_sol", 0.0) + f, 9)
             b["totals"]["fees_sol"] = round(b["totals"].get("fees_sol", 0.0) + f, 9)
 
-    def _usdc_payout_expected(self, name: str = "decrease", args: dict[str, Any] | None = None) -> bool:
-        """An ETH / BTC short decrease that pays USDC (short_payout_native off / not applied)."""
-        if self.asset not in ("ETH", "BTC") or name != "decrease":
-            return False
-        if args is not None:
-            return args.get("side") == "short" and not args.get("desiredMint")
-        return int(self.local.side or 0) < 0 and not getattr(self.live, "short_payout_native", False)
-
     def bank_payout(self, usd: float, why: str) -> None:
         """A payout event (TP fill, trim, close, position gone). SOL bot: credit the estimate (collateral returned + PnL -
         close fee at the SOL oracle; trued up on flat). ETH / BTC: open the payout window; the real own-token change
@@ -1904,8 +1799,6 @@ class Bot:
             return
         b = self.local.bank
         b["window"] = max(b.get("window", 0), self.cfg.ledger.window_ticks)
-        if self._usdc_payout_expected():   # Trevor 2026-10-14: this bot's USDC, so no other bot sweeps it
-            sweepmod.post_claim(self.asset, usd, why)
         if self.asset == "SOL" and self._sol_px:
             amt = max(usd, 0.0) / self._sol_px
             bankmod.credit(b, amt, "payout_est", f"{why}: ${usd:.4f} at SOL {self._sol_px:.3f}")
@@ -1939,32 +1832,11 @@ class Bot:
         b["window"] = max(b.get("window", 0), self.cfg.ledger.window_ticks)
         self.save()
 
-    def bank_sweep_booked(self, bk: dict[str, Any], st: dict[str, Any]) -> None:
-        if not self.bank_on:
-            return
-        b = self.local.bank
-        nat = bk.get("native")
-        b["window"] = max(b.get("window", 0), self.cfg.ledger.window_ticks)   # ETH / BTC: the coin lands next read
-        if self.asset == "SOL" and nat is not None:
-            if bk.get("unattributed") and self.cfg.ledger.ext_flow_mode == "alert":
-                line = bankmod.write_alert("SOL", f"unattributed USDC {bk.get('usd')} swept to {nat:.9f} SOL; banks untouched "
-                                           "(ext_flow_mode=alert)")
-                log.warning("BANK %s", line)
-            elif bk.get("unattributed"):   # USDC nobody's short produced -> external deposit, split 50/25/25
-                ev = bankmod.post_external(nat, self.sol_price(st), tuple(self.cfg.ledger.ext_split),
-                                           f"unattributed USDC {bk.get('usd')} swept to SOL")
-                bankmod.apply_external(b, ev["shares"]["SOL"], f"ext #{ev['id']} (unattributed USDC)")
-                log.warning("BANK external (unattributed USDC -> %.9f SOL): event #%d shares %s", nat, ev["id"], ev["shares"])
-            else:
-                bankmod.credit(b, nat, "payout", f"USDC -> SOL sweep {bk.get('sig')}")
-        self.save()
-
     def _busy(self, st: dict[str, Any], all_markets: bool) -> bool:
         reqs = st.get("allOpenRequests", st["openRequests"]) if all_markets else st["openRequests"]
         if [r for r in reqs if r.get("requestType") != "trigger"]:
             return True
-        usdc = int(((st.get("sweepTokens") or {}).get("USDC") or {}).get("atoms") or 0)
-        return usdc / 1e6 >= self.cfg.bot.sweep_min_usd
+        return False
 
     def bank_tick(self, st: dict[str, Any], pos: ChainPosition | None, price: float) -> None:
         """Reconcile this bot's balance with the wallet, settle external-event shares, raise the HWM when flat."""
@@ -2562,11 +2434,6 @@ class Bot:
                 log.warning("RETP_NOW: re-placing TP ladder once on the open position (manual request)")
                 self.sync_tp_ladder(pos)
                 return
-            if self.cfg.tp.smart_tp2 and getattr(self.cfg.tp, "tp_periodic", True):
-                try:
-                    self.check_tps(pos, st, price)
-                except Exception as e:  # noqa: BLE001 - a failed check leaves the placed TPs as they are
-                    log.warning("TP check failed: %s", e)
             if self.cfg.trim.enabled:
                 self._trim_sent = False
                 try:
