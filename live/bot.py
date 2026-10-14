@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import logging
 import os
 import time
@@ -164,6 +165,37 @@ class ChainPosition:  # satisfies strategy.PositionView
         return self.side * (self.qty * price - self.size)
 
 
+def tp_fee_total(size: float, opened_usd: float, open_fee: float, close_fee: float, borrow_usd: float) -> float:
+    """Trade's total fees (USD): opening fees of every open/add + est. close fee on the current size + accrued borrow."""
+    return open_fee * opened_usd + close_fee * size + max(borrow_usd or 0.0, 0.0)
+
+
+def tp_fee_min_price(side: int, avg: float, size: float, total_fees: float, mult: float) -> float:
+    """Minimum TP price so the TP's portion nets >= mult x its fee share. A portion of c USD carries fees
+    F * c / size; it nets c * side * (P - avg) / avg - F * c / size >= mult * F * c / size
+    <=> P = avg * (1 + side * (1 + mult) * F / size) (independent of the portion's size). Rounded outward to cents."""
+    raw = avg * (1.0 + side * (1.0 + mult) * total_fees / size)
+    return (math.ceil(raw * 100 - 1e-6) if side > 0 else math.floor(raw * 100 + 1e-6)) / 100.0
+
+
+def apply_tp_fee_min(side: int, prices: list[float], pending: list[int], mins: list[float],
+                     gap: float) -> tuple[list[float], list[str]]:
+    """TP1 (index 0) / TP2 (index 1): keep the analyst/strategy price when it is at or beyond its fee minimum, else
+    place it exactly at the minimum; then keep TP2 beyond TP1 by >= gap. Other indices untouched."""
+    out, why = list(prices), []
+    for i in pending:
+        if i > 1 or i >= len(mins):
+            continue
+        if side * (out[i] - mins[i]) < -1e-9:
+            why.append(f"TP{i + 1} {out[i]:.2f} inside fee minimum -> {mins[i]:.2f}")
+            out[i] = mins[i]
+    if 0 in pending and 1 in pending and len(out) > 1 and side * (out[1] - out[0]) < gap - 1e-9:
+        nv = round(out[0] + side * gap, 2)
+        why.append(f"TP2 {out[1]:.2f} not beyond TP1 {out[0]:.2f} + {gap:.2f} -> {nv:.2f}")
+        out[1] = nv
+    return out, why
+
+
 def margin_sol(st: dict[str, Any]) -> float:
     """Bot margin / ladder budget source: NATIVE SOL lamports of the wallet only (getBalance). The JupSOL stake bucket
     (st["stake"]) is a separate token account and is never margin."""
@@ -222,6 +254,7 @@ class Bot:
                 load_analyst_levels(cfg.dca.levels_path, cfg.dca.levels_max_age_min), self._own_atr, cfg.scale.own_atr_fallback)
         self.local = load_local(self.state_path)
         self._tp_checked: pd.Timestamp | None = None
+        self._fee_rechecked = False
         self.kill = ROOT / self.live.kill_switch_path
         self.kill_all = ROOT / cfg.bot.global_kill_path
         self._first_entry_logged = False
@@ -614,6 +647,7 @@ class Bot:
         L.tp_px, L.tp_since, L.tp_peak, L.tp_faded = [0.0] * n, str(pd.Timestamp.now(tz="UTC")), price, False
         L.tp_rsi_ext = L.tp_rsi_now
         targets = self.trim_tp_guard(pos, self.strategy.tp_targets(pos, price=price), "placement")
+        targets = self.fee_min_targets(pos, targets, st, "placement")
         self.log_tp_reasons("placement")
         log.info("TP ladder for avg %.3f: %s", pos.avg_entry, ", ".join(f"{t.price:.2f} ({t.close_pct:.0%})" for t in targets))
         prev = targets[pos.tp_hits - 1].close_pct if pos.tp_hits else 0.0
@@ -629,6 +663,54 @@ class Bot:
                 return
             prev = lv.close_pct
         self.save()
+
+    def _accrued_borrow_usd(self, pos: ChainPosition, st: dict[str, Any] | None) -> float:
+        """Accrued borrow fee of the open position: on-chain (jup.ts borrowFeeUsd), else est. hourly rate x size x hours."""
+        try:
+            v = ((st or {}).get("positions") or {}).get("long" if pos.side == LONG else "short", {}).get("borrowFeeUsd")
+            if v is not None:
+                return max(float(v), 0.0)
+        except (AttributeError, TypeError, ValueError):
+            pass
+        hrs = max((pd.Timestamp.now(tz="UTC") - pos.opened).total_seconds() / 3600.0, 0.0)
+        return self.cfg.costs.borrow_per_hour * pos.size * hrs
+
+    def tp_fee_mins(self, pos: ChainPosition, st: dict[str, Any] | None) -> tuple[list[float], float]:
+        """Fee-based minimum TP1 / TP2 prices (Trevor 2026-10-13) and the trade's total fees used."""
+        c, t, L = self.cfg.costs, self.cfg.tp, self.local
+        opened = max(L.trade_opened_usd, sum(float(l.get("size") or 0) for l in L.lots), pos.size)
+        fees = tp_fee_total(pos.size, opened, c.open_fee, c.close_fee, self._accrued_borrow_usd(pos, st))
+        mults = [getattr(t, "tp1_fee_mult", 2.0), getattr(t, "tp2_fee_mult", 3.0)]
+        return [tp_fee_min_price(pos.side, pos.avg_entry, pos.size, fees, m) for m in mults], fees
+
+    def fee_min_prices(self, pos: ChainPosition, st: dict[str, Any] | None, prices: list[float], ctx: str) -> list[float]:
+        pend = list(range(pos.tp_hits, len(prices)))
+        mins, fees = self.tp_fee_mins(pos, st)
+        out, why = apply_tp_fee_min(pos.side, [round(p, 2) for p in prices], pend, mins, self.cfg.tp.tp_min_gap_usd)
+        log.info("TP fee minimum (%s): total fees $%.4f -> TP1 min %.2f, TP2 min %.2f%s", ctx, fees, mins[0], mins[1],
+                 "; " + "; ".join(why) if why else " (levels kept)")
+        return out
+
+    def fee_min_targets(self, pos: ChainPosition, targets: tuple, st: dict[str, Any] | None, ctx: str) -> tuple:
+        if not targets:
+            return targets
+        from strategy import TpTarget
+        px = self.fee_min_prices(pos, st, [t.price for t in targets], ctx)
+        return tuple(TpTarget(p, t.close_pct) if abs(p - t.price) > 1e-9 else t for p, t in zip(px, targets))
+
+    def fee_min_recheck(self, pos: ChainPosition, st: dict[str, Any]) -> bool:
+        """Once per process with an open position: if a recorded pending TP1/TP2 sits inside its fee minimum,
+        cancel/re-place via resize_tps (same prices otherwise). Returns True when it re-placed."""
+        L, n = self.local, len(self.cfg.tp.ladder)
+        pend = list(range(pos.tp_hits, n))
+        if not pend or len(L.tp_px) < n or any(not L.tp_px[i] for i in pend):
+            return False
+        new = self.fee_min_prices(pos, st, list(L.tp_px[:n]), "recheck")
+        if all(abs(new[i] - L.tp_px[i]) < 0.005 for i in pend):
+            return False
+        log.warning("TP fee minimum recheck: %s -> %s; re-placing", [L.tp_px[i] for i in pend], [new[i] for i in pend])
+        self.resize_tps(pos)
+        return True
 
     def resize_tps(self, pos: ChainPosition) -> None:
         """Trevor 2026-10-12 06:07 MT: after a TP3 (per-add partial) fill, cancel and re-place the pending TP1/TP2
@@ -647,6 +729,7 @@ class Bot:
         side = "long" if pos.side == LONG else "short"
         price = st["oracle"]["price"]
         pxs = list(self.local.tp_px)
+        pxs[:n] = self.fee_min_prices(pos, st, pxs[:n], "resize")
         prev = self.cfg.tp.ladder[pos.tp_hits - 1].close_pct if pos.tp_hits else 0.0
         for i in pend:
             px = pxs[i]
@@ -735,6 +818,7 @@ class Bot:
         if res is None:
             return
         targets = self.trim_tp_guard(pos, targets, "periodic")
+        targets = self.fee_min_targets(pos, targets, st, "periodic")
         if res.faded and not L.tp_faded:
             L.tp_faded = True
             self.log_tp_reasons("fade")
@@ -2355,6 +2439,10 @@ class Bot:
                 if expired:
                     log.info("timer expired but remainder at net %+.3f%s; holding (TPs stay, DCA active)", net,
                              f" / {pg_note}" if pg_note else "")
+            if not self._fee_rechecked:   # fee-based TP minimum (Trevor 2026-10-13): once per process on the open position
+                self._fee_rechecked = True
+                if self.fee_min_recheck(pos, st):
+                    return
             retp = self.dir / "RETP_NOW"   # one-shot manual TP re-place (Grok Bot / owner), via the normal placement path
             if retp.exists():
                 retp.unlink(missing_ok=True)

@@ -200,12 +200,17 @@ export async function readState(conn: Connection, owner: PublicKey, mkt: Market 
   const oracle: any = await readOracle(doves, custody);
   const solOracle: any = mkt === "SOL" ? oracle : await readOracle(doves, await perps.account.custody.fetch(SOL_CUSTODY));
   const positions: Record<string, unknown> = {};
+  const cust: Record<string, any> = {};
   for (const side of ["long", "short"] as Side[]) {
     const pda = positionPda(owner, side, mkt);
     const p: any = await perps.account.position.fetchNullable(pda);
+    // borrow accrues on the COLLATERAL custody (longs: the market token; shorts: USDC / USDT)
+    if (p && !p.sizeUsd.isZero()) cust[side] = p.collateralCustody.equals(MARKETS[mkt].custody) ? custody : await perps.account.custody.fetch(p.collateralCustody);
     positions[side] = p && !p.sizeUsd.isZero()
       ? { pubkey: pda.toBase58(), sizeUsd: p.sizeUsd.toNumber() / USD, collateralUsd: p.collateralUsd.toNumber() / USD,
-          price: p.price.toNumber() / USD, openTime: p.openTime.toNumber(), realisedPnlUsd: p.realisedPnlUsd.toNumber() / USD }
+          price: p.price.toNumber() / USD, openTime: p.openTime.toNumber(), realisedPnlUsd: p.realisedPnlUsd.toNumber() / USD,
+          // accrued (unrealised) borrow fee: (custody cumulativeInterestRate - position snapshot) x size / RATE_POWER (1e9)
+          borrowFeeUsd: (() => { try { return p.sizeUsd.mul(cust[side].fundingRateState.cumulativeInterestRate.sub(p.cumulativeInterestSnapshot)).div(new BN(1e9)).toNumber() / USD; } catch { return null; } })() }
       // closed side: the account no longer holds the finished trade's realized P&L (it reads 0), so report it as unknown
       // (null): a 0 here made the ledger's net_sol_est fees-only and min(net_sol, net_sol_est) under-count the daily
       // stake (2026-10-07). The raw field stays visible as closedAccountRealisedPnlUsd; the ledger takes the gross from

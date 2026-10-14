@@ -313,3 +313,8 @@ SOL and ETH wd_mark set to their new HWMs (SOL 0.771337416, ETH 0.02026193).
 
 ### Short payout in own coin (2026-10-13, LIVE on ETH/BTC since 08:58 MT)
 `[live] short_payout_native` (default false): ETH/BTC short decreases (TP1/TP2/TP3, closes) request the market coin (desiredMint) instead of USDC. Simulation 2026-10-13 on the ETH short: accepted without min-out; any jupiterMinimumOut on a decrease is rejected (6015), so it cannot carry min-out protection. Trevor 08:56 MT: ON for ETH and BTC with no min-out (closes never blocked); sweep.py stays as fallback for any USDC; native payouts are booked as normal payouts.
+
+## Fee-based minimum TP1 / TP2 distance (Trevor 2026-10-13)
+- At open, after every add, and whenever TP1/TP2 are re-placed or re-sized (and once per bot start on the open position), the trade total fees are computed: F = open_fee x (all USD opened by opens/adds this trade) + close_fee (0.06%) x current size + accrued borrow fee (on-chain: (collateral-custody cumulativeInterestRate - position snapshot) x size / 1e9; fallback est. hourly rate x size x hours).
+- A TP portion of c USD carries fees F x c / size and must net >= mult x that after fees: c x |P - avg| / avg - F c/size >= mult F c/size, i.e. minimum price P_min = avg x (1 +/- (1 + mult) x F / size) (+ long, - short), rounded outward to the cent. mult = tp1_fee_mult (default 2.0) for TP1, tp2_fee_mult (default 3.0) for TP2, per bot in [tp].
+- Analyst / strategy TP1 / TP2 beyond P_min are kept; otherwise the TP is placed exactly at P_min. TP2 then stays beyond TP1 by >= tp_min_gap_usd. Re-placement uses the existing cancel/replace path. TP3, guard, entries unchanged; no min-out; no halt from this rule.

@@ -165,6 +165,8 @@ class TakeProfitConfig:
     tp_res_buffer_atr: float = 0.1       # TP2 <= nearest resistance above avg - this many 1h ATR (longs; support for shorts)
     tp_min_net_usd: float = 0.05         # each TP's closing chunk must net >= this after 6+6 bps open/close fees
     tp_min_gap_usd: float = 0.05         # TP1 sits at least this far inside TP2
+    tp1_fee_mult: float = 2.0            # Trevor 2026-10-13: TP1 portion must net >= this x its share of the trade's total fees
+    tp2_fee_mult: float = 3.0            # ... TP2 likewise (fees = all opening fees + est. close fee + accrued borrow)
     tp_min_move: float = 0.05            # periodic check re-places a TP only when it moves >= this (USD)
     tp_market_gap: float = 0.02          # a trigger must sit at least this far beyond market (Jupiter rejects otherwise)
     tp_check_min: float = 1.0            # periodic TP check cadence (minutes; the loop ticks every 60 s)
