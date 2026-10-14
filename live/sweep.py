@@ -88,7 +88,7 @@ def plan_sweeps(st: dict[str, Any], asset: str, side: int | None, prices: dict[s
     return out
 
 
-def sweep_args(cfg: Any, mint: str, atoms: int, out_mint: str | None = None) -> dict[str, Any]:
+def sweep_args(cfg: Any, mint: str, atoms: int, out_mint: str | None = None, swap_mode: str | None = None) -> dict[str, Any]:
     """Swap args (slippage / impact caps from [withdraw]). out_mint None = old "sweep" to SOL; else the generic "swap"
     direction (own-coin ledger: USDC -> the bot's own coin, coin -> JupSOL, SOL <-> coin; pairs allowlisted in stake.ts)."""
     w = cfg.withdraw
@@ -100,6 +100,8 @@ def sweep_args(cfg: Any, mint: str, atoms: int, out_mint: str | None = None) -> 
          "onlyDirectRoutes": w.stake_only_direct_routes}
     if out_mint is not None:
         a.update(direction="swap", outputMint=out_mint)
+        if swap_mode is not None:   # "ExactOut" (inter-bot loan repay): atoms = exact output atoms
+            a["swapMode"] = swap_mode
     return a
 
 
@@ -184,7 +186,8 @@ def classify(res: dict[str, Any]) -> str:
 
 
 def swap_with_backoff(cfg: Any, plan: dict[str, Any], jup: Jup, sleep: Callable[[float], None] = time.sleep,
-                      rounds: int = ROUNDS_PER_TICK, out_mint: str | None = None) -> tuple[dict[str, Any], str, list[str]]:
+                      rounds: int = ROUNDS_PER_TICK, out_mint: str | None = None,
+                      swap_mode: str | None = None) -> tuple[dict[str, Any], str, list[str]]:
     """One token -> SOL. Each attempt pins ONE API base (api.jup.ag, then lite-api.jup.ag); only 'retry' failures are
     asked again, with exponential backoff between rounds. Returns (last result, kind, attempt log)."""
     bases = list(cfg.withdraw.stake_api_bases)
@@ -197,7 +200,7 @@ def swap_with_backoff(cfg: Any, plan: dict[str, Any], jup: Jup, sleep: Callable[
             log_.append(f"wait {wait:.1f}s")
             sleep(wait)
         for base in bases:
-            args = {**sweep_args(cfg, plan["mint"], plan["atoms"], out_mint), "apiBases": [base], "send": True}
+            args = {**sweep_args(cfg, plan["mint"], plan["atoms"], out_mint, swap_mode), "apiBases": [base], "send": True}
             os.environ["JUP_LIVE"] = "1"
             try:
                 res = jup("swap", args)

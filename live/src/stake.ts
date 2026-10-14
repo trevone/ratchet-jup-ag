@@ -77,7 +77,11 @@ async function jfetch(bases: string[], path: string, init?: RequestInit): Promis
 }
 
 export async function quote(a: { direction: "stake" | "unstake" | "sweep" | "swap"; amountAtoms: string; slippageBps: number;
-                                 apiBases?: string[]; onlyDirectRoutes?: boolean; inputMint?: string; outputMint?: string }) {
+                                 apiBases?: string[]; onlyDirectRoutes?: boolean; inputMint?: string; outputMint?: string;
+                                 swapMode?: "ExactIn" | "ExactOut" }) {
+  // ExactOut (2026-10-13, inter-bot loan repayment only): amountAtoms = exact OUTPUT atoms; slippage caps the input.
+  const mode = a.swapMode ?? "ExactIn";
+  if (mode !== "ExactIn" && !(mode === "ExactOut" && a.direction === "swap")) throw new Error(`swapMode ${mode} not allowed for ${a.direction}`);
   if (!(a.slippageBps >= 1 && a.slippageBps <= HARD_MAX_SLIPPAGE_BPS)) throw new Error(`slippageBps ${a.slippageBps} outside 1..${HARD_MAX_SLIPPAGE_BPS}`);
   if (!(BigInt(a.amountAtoms) > 0n)) throw new Error("amount must be > 0");
   if (a.direction === "sweep" && !Object.values(SWEEP_MINTS).includes(a.inputMint ?? "")) throw new Error(`sweep input mint ${a.inputMint} not allowed`);
@@ -93,11 +97,11 @@ export async function quote(a: { direction: "stake" | "unstake" | "sweep" | "swa
     : a.direction === "swap" ? [new PublicKey(a.inputMint!), new PublicKey(a.outputMint!)] : [null, null];
   if (!inMint || !outMint) throw new Error("direction must be stake|unstake|sweep|swap");
   const q = new URLSearchParams({ inputMint: inMint.toBase58(), outputMint: outMint.toBase58(), amount: a.amountAtoms,
-    slippageBps: String(a.slippageBps), swapMode: "ExactIn", restrictIntermediateTokens: "true",
+    slippageBps: String(a.slippageBps), swapMode: mode, restrictIntermediateTokens: "true",
     onlyDirectRoutes: String(!!a.onlyDirectRoutes) });
   const { base, body } = await jfetch(a.apiBases?.length ? a.apiBases : DEFAULT_BASES, `/quote?${q}`);
-  if (body.inputMint !== inMint.toBase58() || body.outputMint !== outMint.toBase58() || body.inAmount !== a.amountAtoms
-      || body.swapMode !== "ExactIn" || Number(body.slippageBps) !== a.slippageBps) throw new Error(`quote mismatch ${JSON.stringify(body).slice(0, 200)}`);
+  if (body.inputMint !== inMint.toBase58() || body.outputMint !== outMint.toBase58() || (mode === "ExactIn" ? body.inAmount : body.outAmount) !== a.amountAtoms
+      || body.swapMode !== mode || Number(body.slippageBps) !== a.slippageBps) throw new Error(`quote mismatch ${JSON.stringify(body).slice(0, 200)}`);
   return { base, quote: body, inMint, outMint };
 }
 
@@ -112,7 +116,8 @@ const toIx = (j: any) => new TransactionInstruction({ programId: new PublicKey(j
  * with the ATA already open (it is persistent now: buildIncrease no longer closes it) the rent leaves and returns within
  * the tx (net 0). The input USDC / ETH / WBTC ATA is never closed: it stays open at 0 for the next TP payout. */
 export async function buildSwap(conn: Connection, owner: PublicKey, a: { direction: "stake" | "unstake" | "sweep" | "swap"; amountAtoms: string;
-    slippageBps: number; maxPriceImpactPct?: number; apiBases?: string[]; onlyDirectRoutes?: boolean; inputMint?: string; outputMint?: string }): Promise<SwapBuilt> {
+    slippageBps: number; maxPriceImpactPct?: number; apiBases?: string[]; onlyDirectRoutes?: boolean; inputMint?: string; outputMint?: string;
+    swapMode?: "ExactIn" | "ExactOut" }): Promise<SwapBuilt> {
   const { base, quote: qr, inMint, outMint } = await quote(a);
   const impact = Number(qr.priceImpactPct ?? 0) * 100;   // API returns a fraction
   if (a.maxPriceImpactPct !== undefined && impact > a.maxPriceImpactPct) throw new Error(`price impact ${impact}% > ${a.maxPriceImpactPct}%`);
@@ -141,7 +146,7 @@ export async function buildSwap(conn: Connection, owner: PublicKey, a: { directi
   const lookupTables = (await Promise.all((si.addressLookupTableAddresses ?? []).map((k: string) =>
     conn.getAddressLookupTable(new PublicKey(k)).then(r => r.value)))).filter(Boolean) as AddressLookupTableAccount[];
   const info = { direction: a.direction, api: base, inputMint: inMint.toBase58(), outputMint: outMint.toBase58(),
-    inAmount: qr.inAmount, quotedOut: qr.outAmount, minOut: qr.otherAmountThreshold, slippageBps: a.slippageBps,
+    inAmount: qr.inAmount, quotedOut: qr.outAmount, swapMode: qr.swapMode, minOut: qr.otherAmountThreshold, slippageBps: a.slippageBps,
     priceImpactPct: impact, route: (qr.routePlan ?? []).map((r: any) => r.swapInfo?.label).join(" > ") };
   return { label: `swap ${a.direction} ${qr.inAmount}`, instructions: ixs, positionRequest: owner, lookupTables, info };
 }

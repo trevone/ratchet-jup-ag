@@ -1959,8 +1959,10 @@ class Bot:
             log.error("INTER-BOT LOAN request failed: %s", e)
 
     def ib_borrower_repay(self, sol_px: float, cpx: float) -> None:
-        """Flat after the trade -> swap own coin back to the lender's coin, the quantity lent (cost on this bot), clear
-        the payable and flag the repayment for the lender (live/ib_loan.json)."""
+        """Flat after the trade -> Jupiter ExactOut swap of own coin for exactly the lender quantity still owed (swap cost
+        on this bot), clear the payable and flag the repayment for the lender (live/ib_loan.json). Trevor 2026-10-13:
+        the received amount is verified from the tx balance deltas; if it is still short the loan stays open with the
+        remaining shortfall (ib_loan.repaid_got accumulates) and is topped up next tick before it is marked repaid."""
         b = self.local.bank
         ln = b["ib_loan"]
         with bankmod.journal_lock():
@@ -1968,30 +1970,57 @@ class Bot:
             if rec.get("status") != "open" or rec.get("borrower") != self.asset:
                 return
             lc = ln.get("lender_coin") or "SOL"
-            coin, dec = b["coin"], bankmod.DECIMALS[b["coin"]]
-            lpx = sol_px if lc == "SOL" else self._coin_usd(lc)
-            want = min(float(ln["sol"]) * lpx / cpx * 1.004, b["bal"])   # small buffer: >= the quantity lent arrives
-            res, kind, att = sweepmod.swap_with_backoff(self.cfg, {"mint": bankmod.MINT[coin], "atoms": int(want * 10 ** dec)},
-                                                        jup, out_mint=bankmod.MINT[lc])
-            self.bank_fee((res.get("deltas") or {}).get("feeLamports") or res.get("feeLamports"))
-            if kind != "ok":
-                log.error("INTER-BOT LOAN repay swap failed (%s): %s; retry next tick", kind, att)
-                return
-            spent = int(want * 10 ** dec) / 10 ** dec
-            got = self._swap_got(res, lc)
-            b["bal"] = round(b["bal"] - spent, 9)
-            bankmod.note(b, "ib_repay", -spent, f"loan repaid: {spent:.9f} {coin} -> {got:.9f} {lc} (lent {ln['sol']}) "
-                                                f"sig {res.get('sig')}")
-            b["ib_loans_done"] = (b.get("ib_loans_done") or [])[-9:] + [{**ln, "repaid_coin": spent, "repaid_got": got,
-                                                                           "sig_repay": res.get("sig")}]
+            coin, ldec = b["coin"], bankmod.DECIMALS[lc]
+            owed_atoms = int(round(float(ln["sol"]) * 10 ** ldec))
+            out_atoms = owed_atoms - int(round(float(ln.get("repaid_got") or 0) * 10 ** ldec))
+            if out_atoms > 0:
+                res, kind, att = sweepmod.swap_with_backoff(self.cfg, {"mint": bankmod.MINT[coin], "atoms": out_atoms}, jup,
+                                                            out_mint=bankmod.MINT[lc], swap_mode="ExactOut")
+                fee = (res.get("deltas") or {}).get("feeLamports") or res.get("feeLamports")
+                self.bank_fee(fee)
+                if kind != "ok":
+                    log.error("INTER-BOT LOAN repay swap failed (%s): %s; retry next tick", kind, att)
+                    return
+                spent, got = self._ib_repay_amounts(res, coin, lc, fee)
+                b["bal"] = round(b["bal"] - spent, 9)
+                ln["repaid_coin"] = round(float(ln.get("repaid_coin") or 0) + spent, 9)
+                ln["repaid_got"] = round(float(ln.get("repaid_got") or 0) + got, 9)
+                ln["repay_sigs"] = (ln.get("repay_sigs") or []) + [res.get("sig")]
+                bankmod.note(b, "ib_repay", -spent, f"loan repay: {spent:.9f} {coin} -> {got:.9f} {lc} (ExactOut "
+                                                    f"{out_atoms / 10 ** ldec:.9f}, lent {ln['sol']}) sig {res.get('sig')}")
+                short = owed_atoms - int(round(ln["repaid_got"] * 10 ** ldec))
+                if short > 0:
+                    self.save()
+                    log.error("INTER-BOT LOAN repay short by %.9f %s (got %.9f of %.9f); loan stays open, top-up next tick",
+                              short / 10 ** ldec, lc, ln["repaid_got"], float(ln["sol"]))
+                    return
+            spent, got = float(ln.get("repaid_coin") or 0), float(ln.get("repaid_got") or 0)
+            sigs = ln.get("repay_sigs") or []
+            sig = sigs[-1] if sigs else None
+            b["ib_loans_done"] = (b.get("ib_loans_done") or [])[-9:] + [{**ln, "sig_repay": sig}]
             b.pop("ib_loan", None)
             b["window"] = max(b.get("window", 0), self.cfg.ledger.window_ticks)
-            rec.update(status="repaid", repaid_got=round(got, 9), sol_got=round(got, 9), repay_sig=res.get("sig"),
+            rec.update(status="repaid", repaid_got=round(got, 9), sol_got=round(got, 9), repay_sig=sig,
                        repaid=str(pd.Timestamp.now(tz="UTC")))
             self._ib_write(rec)
             self.save()
         log.error("INTER-BOT LOAN REPAID: %.9f %s -> %.9f %s to %s (lent %.9f) sig %s", spent, coin, got, lc,
-                  ln.get("peer"), float(ln["sol"]), res.get("sig"))
+                  ln.get("peer"), float(ln["sol"]), sig)
+
+    def _ib_repay_amounts(self, res: dict[str, Any], coin: str, lc: str, fee: Any) -> tuple[float, float]:
+        """(own coin spent, lender coin received) of a confirmed repay swap from its chain balance deltas (quote as
+        fallback). SOL received excludes the network fee (that is booked on this bot via bank_fee): the swap output."""
+        d = res.get("deltas") or {}
+        if coin == "SOL":
+            spent = -sweepmod.swap_sol_change(d)[0] if d.get("nativeDeltaLamports") is not None else \
+                int(res.get("inAmount") or 0) / LAMPORTS
+        else:
+            ta = (d.get("tokenDeltaAtoms") or {}).get(coin)
+            spent = (-int(ta) if ta is not None else int(res.get("inAmount") or 0)) / 10 ** bankmod.DECIMALS[coin]
+        got = self._swap_got(res, lc)
+        if lc == "SOL" and d.get("nativeDeltaLamports") is not None:
+            got = round(got + int(fee or 0) / LAMPORTS, 9)
+        return round(spent, 9), round(got, 9)
 
     def bank_settle_external(self, st: dict[str, Any], sol_px: float, cpx: float) -> None:
         """ETH / BTC: swap this bot's share of an external SOL deposit SOL -> own coin (withdrawal: coin -> SOL)."""
