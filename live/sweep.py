@@ -26,8 +26,11 @@ retried because the bot was flat): ``self_heal`` runs on EVERY tick of every bot
     only under that lock) holds each pending token's claim, its backoff and the last confirmed sweep. A bot whose
     balance view predates another bot's sweep of that token skips it.
   * Attribution, fixed when the balance first appears (or grows): ETH -> the ETH bot, WBTC -> the BTC bot (long
-    closes); USDC -> the open short (priority ETH > BTC > SOL, approximate when two are short at once, as before), else
-    a short that has just closed but isn't booked yet, else the most recently closed short trade. If that trade is
+    closes); USDC -> ONLY the bot whose decrease produced it (Trevor 2026-10-14, after
+    the Oct 13 04:31 MT ETH close whose $15.26 USDC was swept by the BTC bot because its short was still open): that
+    bot's pending-payout claim (live/usdc_claim_<ASSET>.json, written when a short decrease is sent and on each payout
+    event) matched by amount; without claims the single short candidate (open or closed-not-booked); ambiguous ->
+    left unswept, logged, retried next tick (never guessed, never halts); nobody short -> the most recently closed short. If that trade is
     still open, only its own bot sweeps and books into ledger_open.json (sweep_sol). Once it is booked, the sweep is a
     late ``sweep`` row in THAT bot's trades.csv, carrying the trade's open_sig / position. Its own bot sweeps
     immediately; any other bot takes over after FOREIGN_GRACE_SEC (e.g. the owner runs older code or is down).
@@ -316,20 +319,106 @@ def _last_trade(asset: str, me: str, side: str) -> dict[str, Any] | None:
     return max(rows, key=lambda r: _ts(r.get("close_time"))) if rows else None
 
 
-def attribute(name: str, me: str, st: dict[str, Any]) -> dict[str, Any]:
-    """Which bot's trade produced this token balance (see the module doc)."""
+CLAIM_MAX_AGE_SEC = 6 * 3600.0                            # a pending-payout claim older than this is ignored
+CLAIM_TOL_USD, CLAIM_TOL_PCT = 0.50, 0.03                 # USDC amount vs claimed payout: max($0.50, 3 %)
+
+
+def _claim_path(asset: str) -> Path:
+    return _shared(f"usdc_claim_{asset}.json")
+
+
+def post_claim(asset: str, usd: float | None, why: str, now: float | None = None) -> None:
+    """Pending USDC payout of THIS bot's short (Trevor 2026-10-14, after the Oct 13 04:31 MT misattribution). Written
+    when a short decrease is sent (usd None = amount not known yet) and on each payout event (usd added). Only the
+    owning bot writes its own file (atomic replace); the sweeper of that USDC clears it."""
+    now = time.time() if now is None else now
+    p = _claim_path(asset)
+    try:
+        c = json.loads(p.read_text())
+    except (OSError, ValueError):
+        c = None
+    if not c or now - float(c.get("time") or 0) > CLAIM_MAX_AGE_SEC:
+        c = {"asset": asset, "usd": None, "events": []}
+    if usd is not None:
+        c["usd"] = round(float(c.get("usd") or 0.0) + max(float(usd), 0.0), 4)
+    c.update(time=now, utc=_utc(now))
+    c["events"] = (c.get("events") or [])[-9:] + [{"utc": _utc(now), "usd": usd, "why": str(why)[:80]}]
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(c, indent=1))
+        os.replace(tmp, p)
+    except OSError as e:
+        log.warning("usdc claim write failed (%s): %s", asset, e)
+
+
+def clear_claim(asset: str | None) -> None:
+    if asset:
+        try:
+            _claim_path(asset).unlink()
+        except OSError:
+            pass
+
+
+def load_claims(now: float | None = None) -> dict[str, dict[str, Any]]:
+    now = time.time() if now is None else now
+    out = {}
+    for a in USDC_PRIORITY:
+        try:
+            c = json.loads(_claim_path(a).read_text())
+        except (OSError, ValueError):
+            continue
+        if now - float(c.get("time") or 0) > CLAIM_MAX_AGE_SEC:
+            log.warning("sweep: stale USDC payout claim of %s (%s) ignored", a, c.get("utc"))
+            continue
+        out[a] = c
+    return out
+
+
+def usdc_owner(st: dict[str, Any], me: str, usd: float | None, now: float | None = None) -> tuple[str | None, str]:
+    """(owner, why) of a USDC balance (Trevor 2026-10-14). USDC goes ONLY to the bot whose decrease produced it:
+      1. pending-payout claims first (a just-closed / decreased short's own logged payout): exactly one claim whose
+         amount matches (max($0.50, 3 %)) and no other bot with a claim of unknown amount -> that bot;
+         any claim present but no unique match -> ambiguous;
+      2. no claim: the candidates (open shorts + shorts closed but not booked yet; SOL shorts are paid in SOL, so SOL
+         only counts when no ETH / BTC candidate) -> exactly one -> it; several -> ambiguous;
+      3. none at all: the most recently closed short trade (late leftovers, as before).
+    Ambiguous -> owner None + why starting with "ambiguous": the caller leaves it unswept and retries next tick."""
+    claims = load_claims(now)
+    known = {a: float(c["usd"]) for a, c in claims.items() if c.get("usd") is not None}
+    unknown = {a for a, c in claims.items() if c.get("usd") is None}
+    if known and usd is not None:
+        match = [a for a, v in known.items() if abs(usd - v) <= max(CLAIM_TOL_USD, CLAIM_TOL_PCT * v)]
+        if len(match) == 1 and not (unknown - set(match)):
+            return match[0], f"payout claim ${known[match[0]]:.2f} of {match[0]} matches ${usd:.2f}"
+        return None, f"ambiguous: USDC ${usd:.2f} vs payout claims {known} (unknown amount: {sorted(unknown)})"
+    shorts = {p.get("market") for p in st.get("allPositions") or [] if p.get("side") == "short"}
+    unbooked = {a for a in USDC_PRIORITY if (_open_rec(a, me) or {}).get("side") == "short"}
+    cands = (shorts | unbooked | unknown | set(known)) & set(USDC_PRIORITY)
+    if cands - {"SOL"}:
+        cands -= {"SOL"}
+    if len(cands) == 1:
+        a = next(iter(cands))
+        return a, f"only short candidate ({a})"
+    if len(cands) > 1:
+        return None, f"ambiguous: several short candidates {sorted(cands)} and no matching payout claim"
+    last = [(_ts(t.get("close_time")), a) for a in USDC_PRIORITY if (t := _last_trade(a, me, "short"))]
+    return (max(last)[1], "most recently closed short") if last else (None, "unattributed")
+
+
+def attribute(name: str, me: str, st: dict[str, Any], usd: float | None = None, now: float | None = None) -> dict[str, Any]:
+    """Which bot's trade produced this token balance (see the module doc / usdc_owner)."""
     side = "long" if name in LONG_TOKEN_BOT else "short"
+    why = "long token"
     if name in LONG_TOKEN_BOT:
         owner: str | None = LONG_TOKEN_BOT[name]
     else:
-        shorts = {p.get("market") for p in st.get("allPositions") or [] if p.get("side") == "short"}
-        owner = next((a for a in USDC_PRIORITY if a in shorts), None)
-        if owner is None:   # just closed, not booked yet
-            owner = next((a for a in USDC_PRIORITY if (_open_rec(a, me) or {}).get("side") == "short"), None)
-        if owner is None:   # most recently closed short trade
-            last = [(_ts(t.get("close_time")), a) for a in USDC_PRIORITY if (t := _last_trade(a, me, "short"))]
-            owner = max(last)[1] if last else None
-    claim: dict[str, Any] = {"owner": owner, "side": side, "open_sig": None, "position": None, "open_time": None}
+        owner, why = usdc_owner(st, me, usd, now)
+    claim: dict[str, Any] = {"owner": owner, "side": side, "open_sig": None, "position": None, "open_time": None,
+                             "why": why}
+    if why.startswith("ambiguous"):
+        claim["ambiguous"] = True
+        return claim
     if owner is None:
         return claim
     rec = _open_rec(owner, me)
@@ -434,10 +523,15 @@ def self_heal(cfg: Any, me: str, st: dict[str, Any], jup: Jup, *, dry_run: bool,
                 continue
             ent = state["tokens"].get(name)
             if ent is None or p["atoms"] > int(ent.get("atoms") or 0):   # new proceeds: (re)attribute, reset backoff
-                ent = {"first_seen": ent["first_seen"] if ent else now, "claim": attribute(name, me, st),
+                ent = {"first_seen": ent["first_seen"] if ent else now, "claim": attribute(name, me, st, p["usd"], now),
                        "fails": 0, "next_try": 0.0}
             ent.update(atoms=p["atoms"], usd=p["usd"], seen_at=now)
             state["tokens"][name] = ent
+            if ent["claim"].get("ambiguous"):   # Trevor 2026-10-14: never guess; retry next tick
+                state["tokens"].pop(name, None)
+                log.warning("sweep: %s %d atoms (~$%.2f) owner unclear, left unswept (retry next tick): %s", name,
+                            p["atoms"], p["usd"], ent["claim"].get("why"))
+                continue
             mode, why = decide(ent, me, now)
             if mode is None:
                 log.info("sweep: %s %d atoms (~$%.2f) not mine now: %s", name, p["atoms"], p["usd"], why)
@@ -457,6 +551,8 @@ def self_heal(cfg: Any, me: str, st: dict[str, Any], jup: Jup, *, dry_run: bool,
                 state["last_sweep"][name] = {"time": t_end, "utc": _utc(t_end), "by": me, "sig": res.get("sig"),
                                              "atoms": p["atoms"], "sol": sol, "claim": ent["claim"]}
                 del state["tokens"][name]
+                if name == "USDC":
+                    clear_claim(ent["claim"].get("owner"))
                 save_state(state)   # before booking: a booking error must never cause a second swap
                 if sol is None:
                     log.error("sweep %s confirmed (%s) but its SOL result is unknown: NOT booked", name, res.get("sig"))
@@ -531,10 +627,15 @@ def self_heal_own(cfg: Any, me: str, st: dict[str, Any], jup: Jup, *, dry_run: b
                 continue
             ent = state["tokens"].get(name)
             if ent is None or p["atoms"] > int(ent.get("atoms") or 0):
-                ent = {"first_seen": ent["first_seen"] if ent else now, "claim": attribute(name, me, st),
+                ent = {"first_seen": ent["first_seen"] if ent else now, "claim": attribute(name, me, st, p["usd"], now),
                        "fails": 0, "next_try": 0.0}
             ent.update(atoms=p["atoms"], usd=p["usd"], seen_at=now)
             state["tokens"][name] = ent
+            if ent["claim"].get("ambiguous"):   # Trevor 2026-10-14: never guess; retry next tick
+                state["tokens"].pop(name, None)
+                log.warning("sweep: %s %d atoms (~$%.2f) owner unclear, left unswept (retry next tick): %s", name,
+                            p["atoms"], p["usd"], ent["claim"].get("why"))
+                continue
             owner = ent["claim"].get("owner")
             unattributed = owner is None
             if (owner or "SOL") != me:
@@ -555,6 +656,7 @@ def self_heal_own(cfg: Any, me: str, st: dict[str, Any], jup: Jup, *, dry_run: b
                 state["last_sweep"][name] = {"time": t_end, "utc": _utc(t_end), "by": me, "sig": res.get("sig"),
                                              "atoms": p["atoms"], "native": nat, "coin": OWN_COIN[me][0], "claim": ent["claim"]}
                 del state["tokens"][name]
+                clear_claim(ent["claim"].get("owner"))
                 save_state(state)
                 log.info("SWEEP USDC %d atoms (~$%.2f) -> %s %s: sig %s attempts=%s (SOL change %s)", p["atoms"], p["usd"],
                          nat, OWN_COIN[me][0], res.get("sig"), attempts, sol)

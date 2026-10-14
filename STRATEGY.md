@@ -319,3 +319,13 @@ SOL and ETH wd_mark set to their new HWMs (SOL 0.771337416, ETH 0.02026193).
 - A TP portion of c USD carries fees F x c / size and must net >= mult x that after fees: c x |P - avg| / avg - F c/size >= mult F c/size, i.e. minimum price P_min = avg x (1 +/- (1 + mult) x F / size) (+ long, - short), rounded outward to the cent. mult = tp1_fee_mult (default 2.0) for TP1, tp2_fee_mult (default 3.0) for TP2, per bot in [tp].
 - Analyst / strategy TP1 / TP2 beyond P_min are kept; otherwise the TP is placed exactly at P_min. TP2 then stays beyond TP1 by >= tp_min_gap_usd. Re-placement uses the existing cancel/replace path. TP3, guard, entries unchanged; no min-out; no halt from this rule.
 - TP3 (per-add partial, Trevor 2026-10-13 20:38 MT): its portion (covered adds, size s, size-weighted entry e) must net >= tp3_fee_mult (default 2.0, [tp]) x its own fees F3 = (open_fee + close_fee) x s + accrued borrow x s / position size. P3_min = e x (1 +/- (1 + tp3_fee_mult) x F3 / s), rounded outward to the cent. The zone / level / zone-edge / fee-covering target is kept when beyond P3_min, else TP3 is placed exactly at P3_min (mode "...->fee_mult_min"). Zone logic otherwise unchanged.
+
+
+## USDC sweep attribution (2026-10-14, Trevor)
+
+USDC in the shared wallet is swept only by the bot whose short decrease produced it. Each ETH / BTC bot posts a pending
+payout claim (`live/usdc_claim_<ASSET>.json`) when it sends a USDC-paying short decrease and on every payout event; the
+USDC goes to the one claim whose amount matches (max $0.50 / 3 %). Without claims, the only short candidate (open, or closed
+and not yet booked) gets it. If two candidates or claims could own it, nothing is swept: it is logged and retried next tick,
+never guessed and never a halt. (Before: the open short won, ETH > BTC > SOL, which on 2026-10-13 04:31 MT handed the ETH
+close's $15.26 to the BTC bot.)

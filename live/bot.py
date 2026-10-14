@@ -314,6 +314,8 @@ class Bot:
         if name == "decrease" and args.get("side") == "short" and self.asset in ("ETH", "BTC") \
                 and getattr(self.live, "short_payout_native", False):   # Trevor 2026-10-13: payout in own coin
             args = {**args, "desiredMint": bankmod.MINT["ETH" if self.asset == "ETH" else "WBTC"]}
+        if live and self._usdc_payout_expected(name, args):   # Trevor 2026-10-14: claim the USDC before it lands
+            sweepmod.post_claim(self.asset, None, f"{name} sent")
         res = jup(name if live else f"simulate-{name}", {**args, "market": self.asset, "send": live})
         log.info("%s %s -> %s", name, json.dumps(args), json.dumps({k: res.get(k) for k in
                  ("ok", "sig", "err", "error", "fulfillSec", "unitsConsumed")}))
@@ -1886,6 +1888,14 @@ class Bot:
             b["fee_sol"] = round(b.get("fee_sol", 0.0) + f, 9)
             b["totals"]["fees_sol"] = round(b["totals"].get("fees_sol", 0.0) + f, 9)
 
+    def _usdc_payout_expected(self, name: str = "decrease", args: dict[str, Any] | None = None) -> bool:
+        """An ETH / BTC short decrease that pays USDC (short_payout_native off / not applied)."""
+        if self.asset not in ("ETH", "BTC") or name != "decrease":
+            return False
+        if args is not None:
+            return args.get("side") == "short" and not args.get("desiredMint")
+        return int(self.local.side or 0) < 0 and not getattr(self.live, "short_payout_native", False)
+
     def bank_payout(self, usd: float, why: str) -> None:
         """A payout event (TP fill, trim, close, position gone). SOL bot: credit the estimate (collateral returned + PnL -
         close fee at the SOL oracle; trued up on flat). ETH / BTC: open the payout window; the real own-token change
@@ -1894,6 +1904,8 @@ class Bot:
             return
         b = self.local.bank
         b["window"] = max(b.get("window", 0), self.cfg.ledger.window_ticks)
+        if self._usdc_payout_expected():   # Trevor 2026-10-14: this bot's USDC, so no other bot sweeps it
+            sweepmod.post_claim(self.asset, usd, why)
         if self.asset == "SOL" and self._sol_px:
             amt = max(usd, 0.0) / self._sol_px
             bankmod.credit(b, amt, "payout_est", f"{why}: ${usd:.4f} at SOL {self._sol_px:.3f}")

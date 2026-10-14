@@ -255,9 +255,9 @@ def test_open_trade_tokens_are_left_to_their_own_bot(cfg):
 
 
 def test_usdc_attribution_rules():
-    # open shorts: ETH > BTC > SOL (approximate when two are short at once, as before)
+    # two open shorts and no payout claim: ambiguous, never guessed (Trevor 2026-10-14; was ETH > BTC > SOL)
     st = st_with(usdc=1, positions=[{"market": "BTC", "side": "short"}, {"market": "ETH", "side": "short"}])
-    assert sw.attribute("USDC", "SOL", st)["owner"] == "ETH"
+    assert sw.attribute("USDC", "SOL", st)["owner"] is None and sw.attribute("USDC", "SOL", st).get("ambiguous")
     assert sw.attribute("USDC", "SOL", st_with(usdc=1, positions=[{"market": "BTC", "side": "short"}]))["owner"] == "BTC"
     # nobody short: most recently closed short trade
     for a, close in (("ETH", "2026-10-08 07:59:46+00:00"), ("BTC", "2026-10-08 08:30:00+00:00")):

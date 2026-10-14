@@ -174,7 +174,7 @@ def test_short_close_usdc_swept_back_to_own_coin(ebot, monkeypatch):
         calls.append((cmd, args))
         return {"ok": True, "sig": "SW", "deltas": {"nativeDeltaLamports": -6000, "feeLamports": 6000,
                                                    "tokenDeltaAtoms": {"ETH": "560000", "USDC": "-13800000"}}}
-    monkeypatch.setattr(S, "attribute", lambda name, me, st: {"owner": "ETH", "side": "short", "open_sig": None,
+    monkeypatch.setattr(S, "attribute", lambda name, me, st, *a: {"owner": "ETH", "side": "short", "open_sig": None,
                                                                "position": None, "open_time": None})
     monkeypatch.setattr("live.bot.jup", fake_jup)
     ebot.sweep(st, None)
@@ -237,9 +237,9 @@ def test_bank_persists_in_state_json(ebot):
 
 
 def test_live_configs_ledger():
-    for f, m in (("live_100", 0.0015), ("live_eth", 0.000066), ("live_btc", 0.00000195)):
+    for f, m, wf in (("live_100", 0.0015, 0.65), ("live_eth", 0.000066, 0.65), ("live_btc", 0.00000195, 0.70)):
         lc = load_config(f"configs/{f}.toml").ledger
-        assert lc.enabled and lc.min_profit_native == m and lc.withdraw_fraction == 0.60 and lc.ext_split == (0.5, 0.25, 0.25)
+        assert lc.enabled and lc.min_profit_native == m and lc.withdraw_fraction == wf and lc.ext_split == (0.5, 0.25, 0.25)
         assert lc.ext_flow_mode == "alert"
     assert load_config("configs/default.toml").ledger.enabled is False
 
@@ -267,9 +267,9 @@ def test_bank_tick_and_daily_withdrawal_eth(ebot, monkeypatch):
     b["wd_last_date"] = None
     ebot.bank_daily(st2, None)
     sw = [a for c, a in calls if c == "swap"][0]
-    assert sw["inputMint"] == K.MINT["ETH"] and sw["outputMint"] == K.MINT["JUPSOL"] and sw["amountAtoms"] == "119999"
-    assert (b["bal"], b["hwm"], b["wd_mark"]) == pytest.approx((0.0158, 0.0158, 0.0158))
-    assert b["fee_sol"] == pytest.approx(0.000007) and b["wd_last_date"] and b["daily"][-1]["amount"] == pytest.approx(0.0012)
+    assert sw["inputMint"] == K.MINT["ETH"] and sw["outputMint"] == K.MINT["JUPSOL"] and sw["amountAtoms"] == "130000"
+    assert (b["bal"], b["hwm"], b["wd_mark"]) == pytest.approx((0.0157, 0.0157, 0.0157))
+    assert b["fee_sol"] == pytest.approx(0.000007) and b["wd_last_date"] and b["daily"][-1]["amount"] == pytest.approx(0.0013)
     n = len(calls)
     ebot.bank_daily(st2, None)                             # once a day
     assert len(calls) == n
