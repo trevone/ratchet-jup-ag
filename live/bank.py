@@ -144,7 +144,8 @@ def apply_withdrawal(b: dict[str, Any], amt_in: float, why: str = "") -> None:
 
 # ------------------------------------------------------------------ inter-bot loan (Trevor 2026-10-12 18:09 MT)
 IB_FILE = "live/ib_loan.json"
-IB_MAX_USD = 50.0   # per-loan cap (Trevor 18:09 MT approved $50)
+IB_MIN_USD = 2.0            # smallest request / top-up (Trevor 2026-10-15: no loan cap)
+IB_TOPUP_TIMEOUT_S = 1800   # a pending / stuck top-up is cancelled / reverted after ~30 min
 
 
 def ib_adj(b: dict[str, Any]) -> float:

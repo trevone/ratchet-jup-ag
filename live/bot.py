@@ -1811,9 +1811,9 @@ class Bot:
             p = _dc.replace(pos, last_entry=restmod.add_ref(pos.side, pos.last_entry, L.last_partial_px))
         plan = self.strategy.plan_next_add(p, cash, pd.Timestamp.now(tz="UTC"))
         if plan is None:
-            big = self.strategy.plan_next_add(p, cash + bankmod.IB_MAX_USD, pd.Timestamp.now(tz="UTC"))
-            if big is not None and big.margin > cash:   # Trevor 18:13 MT: short of equity -> borrow from a flat bot
-                self.ib_request(min(big.margin - cash + 1.0, bankmod.IB_MAX_USD))   # what the rung needs, <= cap
+            big = self.strategy.plan_next_add(p, cash + 1e9, pd.Timestamp.now(tz="UTC"))
+            if big is not None and big.margin > cash:   # Trevor 18:13 MT: short of equity -> borrow from a flat bot (no cap, 10-15)
+                self.ib_request(max(bankmod.IB_MIN_USD, big.margin - cash + 1.0))   # shortfall + $1, min $2
             return None, "no ladder plan (budget / liq rule)"
         if not self.strategy._adds_left(pos):
             return None, "no adds left (max_adds / allow_after_partial)"
@@ -2164,8 +2164,35 @@ class Bot:
             with bankmod.journal_lock():
                 rec = self._ib_read()
                 s = rec.get("status")
+                mine = me in (rec.get("borrower"), rec.get("lender"))
+                if s == "funding" and rec.get("topup") and mine and self._ib_age(rec, "funding_at") > bankmod.IB_TOPUP_TIMEOUT_S:
+                    # stuck funding (crash mid-swap): marks / banks untouched, record back to open, wallet diff gets alerted
+                    self._ib_topup_revert(rec, "stuck funding")
+                    bankmod.write_alert(me, f"inter-bot top-up funding stuck > {bankmod.IB_TOPUP_TIMEOUT_S // 60} min and reverted; "
+                                            f"check the lender wallet vs bank (a swap may have landed)")
+                    return False
                 if s == "funding" and rec.get("borrower") == me:
                     return True
+                if s == "topup_requested" and rec.get("borrower") == me and \
+                        (pos is None or self._ib_age(rec, "topup_requested") > bankmod.IB_TOPUP_TIMEOUT_S):
+                    self._ib_topup_revert(rec, "borrower flat" if pos is None else "timeout")   # then repay proceeds if flat
+                    return False
+                my_ln = b.get("ib_loan") or {}
+                if s == "funded" and rec.get("borrower") == me and rec.get("topup") and my_ln.get("role") == "borrower":
+                    got, spent = float(rec["topup_got"]), float(rec["topup_spent"])   # delta only; marks untouched
+                    b["bal"] = round(b["bal"] + got, 9)
+                    my_ln["sol"] = round(float(my_ln["sol"]) + spent, 9)
+                    my_ln["coin"] = round(float(my_ln["coin"]) + got, 9)
+                    bankmod.note(b, "ib_borrow", got, f"top-up from {rec.get('lender')}: +{spent} {rec.get('lender_coin')} "
+                                                      f"-> +{got} {coin} (total lent {my_ln['sol']}) sig {rec.get('topup_sig')}")
+                    for k in ("topup", "topup_requested", "topup_prev", "funding_at", "topup_spent", "topup_got", "topup_sig"):
+                        rec.pop(k, None)
+                    rec["status"] = "open"
+                    self._ib_write(rec)
+                    self.save()
+                    log.error("INTER-BOT LOAN top-up received from %s: +%.9f %s (payable total lent %s; HWM unchanged)",
+                              rec.get("lender"), got, coin, my_ln["sol"])
+                    return False
                 if s == "funded" and rec.get("borrower") == me and not b.get("ib_loan"):
                     got = float(rec["coin"])
                     b["bal"] = round(b["bal"] + got, 9)
@@ -2190,26 +2217,48 @@ class Bot:
                     self.save()
                     log.error("INTER-BOT LOAN settled: +%.9f %s back from %s; opens re-enabled", got, coin, rec.get("borrower"))
                     return False
-                if s == "requested" and rec.get("borrower") != me and pos is None and not b.get("ib_loan") \
-                        and not self._busy(st, me == "SOL") and b.get("window", 0) == 0:
+                topup = s == "topup_requested" and rec.get("lender") == me and my_ln.get("role") == "lender" \
+                    and my_ln.get("peer") == rec.get("borrower")   # same lender / borrower pair only
+                if (topup or (s == "requested" and rec.get("borrower") != me and not b.get("ib_loan"))) \
+                        and pos is None and not self._busy(st, me == "SOL") and b.get("window", 0) == 0:
                     px = self.coin_px(st)
                     need = float(rec["need_usd"]) / px
                     if (b["bal"] - bankmod.loan_outstanding(b)) * px < float(rec["need_usd"]) + 5.0:
                         return False
                     rec.update(status="funding", lender=me, lender_coin=coin)
+                    if topup:
+                        rec.update(funding_at=str(pd.Timestamp.now(tz="UTC")))   # topup_prev was saved by the borrower's request
                     self._ib_write(rec)
                     res, kind, att = sweepmod.swap_with_backoff(
                         self.cfg, {"mint": bankmod.MINT[coin], "atoms": int(need * 10 ** bankmod.DECIMALS[coin])}, jup,
                         out_mint=bankmod.MINT[rec["coin_name"]])
                     self.bank_fee((res.get("deltas") or {}).get("feeLamports") or res.get("feeLamports"))
                     if kind != "ok":
-                        rec.update(status="requested", lender=None, lender_coin=None)
+                        if topup:
+                            prev = rec.get("topup_prev") or {}   # sol / coin as before the attempt; need_usd stays for the retry
+                            rec.update(sol=prev.get("sol", rec.get("sol")), coin=prev.get("coin", rec.get("coin")), status="topup_requested")
+                            rec.pop("funding_at", None)
+                        else:
+                            rec.update(status="requested", lender=None, lender_coin=None)
                         self._ib_write(rec)
                         log.error("INTER-BOT LOAN funding swap failed (%s): %s; request left open", kind, att)
                         return False
                     spent = int(need * 10 ** bankmod.DECIMALS[coin]) / 10 ** bankmod.DECIMALS[coin]
                     got = self._swap_got(res, rec["coin_name"])
                     now = str(pd.Timestamp.now(tz="UTC"))
+                    if topup:   # cumulative lent quantity in lender coin; lender equity unchanged (bal down, ib_adj up)
+                        b["bal"] = round(b["bal"] - spent, 9)
+                        my_ln["sol"] = round(float(my_ln["sol"]) + spent, 9)
+                        my_ln["coin"] = round(float(my_ln["coin"]) + got, 9)
+                        bankmod.note(b, "ib_lend", -spent, f"top-up to {rec['borrower']}: {spent} {coin} -> {got} "
+                                                           f"{rec['coin_name']} (total lent {my_ln['sol']}) sig {res.get('sig')}")
+                        rec.update(status="funded", sol=my_ln["sol"], coin=my_ln["coin"], topup_spent=spent, topup_got=got,
+                                   topup_sig=res.get("sig"))
+                        self._ib_write(rec)
+                        self.save()
+                        log.error("INTER-BOT LOAN top-up funded for %s: %.9f %s -> %.9f %s (total lent %s) sig %s",
+                                  rec["borrower"], spent, coin, got, rec["coin_name"], my_ln["sol"], res.get("sig"))
+                        return False
                     b["bal"] = round(b["bal"] - spent, 9)
                     b["ib_loan"] = {"role": "lender", "peer": rec["borrower"], "sol": spent, "coin": got,
                                     "lender_coin": coin, "sig": res.get("sig"), "opened": now}
@@ -2225,19 +2274,47 @@ class Bot:
             log.error("INTER-BOT LOAN tick error (retry next tick): %s", e)
         return False
 
+    def _ib_age(self, rec: dict[str, Any], key: str) -> float:
+        """Seconds since rec[key] (0 when missing / unparsable, so nothing is cancelled on bad data)."""
+        try:
+            return (pd.Timestamp.now(tz="UTC") - pd.Timestamp(rec[key])).total_seconds()
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    def _ib_topup_revert(self, rec: dict[str, Any], why: str) -> None:
+        """Pending / stuck top-up -> back to the plain open loan (sol / coin / need_usd restored from topup_prev)."""
+        rec.update(rec.get("topup_prev") or {})
+        for k in ("topup", "topup_requested", "topup_prev", "funding_at", "topup_spent", "topup_got", "topup_sig"):
+            rec.pop(k, None)
+        rec["status"] = "open"
+        self._ib_write(rec)
+        log.error("INTER-BOT LOAN top-up cancelled (%s); loan stays open", why)
+
     def ib_request(self, need_usd: float) -> None:
-        """Borrower side: not enough free for the next rung -> ask a flat bot for ``need_usd`` (one loan at a time)."""
+        """Borrower side: not enough free for the next rung -> ask a flat bot for ``need_usd`` (no cap; min $2). With an open
+        loan of its own it asks its lender for a top-up of that loan instead (Trevor 2026-10-15)."""
         b = self.local.bank
-        if b.get("ib_loan") or not self.bank_on or self.live.dry_run:
+        ln = b.get("ib_loan")
+        if (ln and ln.get("role") != "borrower") or not self.bank_on or self.live.dry_run:
             return
         try:
+            need_usd = max(bankmod.IB_MIN_USD, need_usd)
+            now = str(pd.Timestamp.now(tz="UTC"))
             with bankmod.journal_lock():
                 rec = self._ib_read()
-                if rec.get("status") not in (None, "settled"):
-                    return
-                self._ib_write({"status": "requested", "borrower": self.asset, "coin_name": b["coin"],
-                                "need_usd": round(need_usd, 2), "requested": str(pd.Timestamp.now(tz="UTC"))})
-            log.error("INTER-BOT LOAN requested: %s needs $%.2f for its next rung", self.asset, need_usd)
+                if ln:
+                    if rec.get("status") != "open" or rec.get("borrower") != self.asset:
+                        return
+                    rec.update(status="topup_requested", topup=True, need_usd=round(need_usd, 2), topup_requested=now,
+                               topup_prev={k: rec.get(k) for k in ("sol", "coin", "need_usd")})
+                    self._ib_write(rec)
+                else:
+                    if rec.get("status") not in (None, "settled"):
+                        return
+                    self._ib_write({"status": "requested", "borrower": self.asset, "coin_name": b["coin"],
+                                    "need_usd": round(need_usd, 2), "requested": now})
+            log.error("INTER-BOT LOAN %s: %s needs $%.2f for its next rung", "top-up requested" if ln else "requested",
+                      self.asset, need_usd)
         except Exception as e:  # noqa: BLE001
             log.error("INTER-BOT LOAN request failed: %s", e)
 

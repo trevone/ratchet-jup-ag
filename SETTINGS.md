@@ -57,3 +57,4 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 | rescue_cfg.json | repay_margin_pct / repay_profit_share | 5 / 0 | same | same | Repay to JupSOL when flat: principal x 1.05 (+ share of profit over loan-time HWM) |
 | rescue_cfg.json | emergency_min_push_pct / emergency_min_collat_pct | 2 / 10 | same | same | EMERGENCY (notify Trevor) if all JupSOL pushes liq < 2 pts or < 10% of collateral |
 | rescue_cfg.json | extend_rungs | 6 | 6 | 6 | `rescue.sh extend`: temp +ladder_max_rungs, auto-restored on repay |
+| (code) bank.py | IB_MIN_USD / IB_TOPUP_TIMEOUT_S | 2.0 / 1800 | same | same | Inter-bot loans (Trevor 2026-10-15): NO loan cap (old IB_MAX_USD $50 removed); request/top-up = shortfall + $1, min $2; pending/stuck top-up cancelled after 30 min |
