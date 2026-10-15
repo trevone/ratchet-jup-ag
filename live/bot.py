@@ -657,7 +657,7 @@ class Bot:
         return hi
 
     def guard_tp_targets(self, pos: ChainPosition, st: dict[str, Any], targets: tuple) -> tuple:
-        """tps_at_guard: TP1 and TP2 at the guard close price, then the fee-minimum floors and TP2 >= TP1 + gap apply. Guard
+        """tps_at_guard: TP1 and TP2 at the guard close price, then the fee-minimum floors apply (no tp_min_gap_usd gap in guard mode: TP1 == TP2 price unless the floors differ). Guard
         already met at market (None): both at market, i.e. clamped to the fee floors (the guard fires this tick)."""
         from strategy import TpTarget
         gp = self.guard_price(pos, st)
@@ -806,7 +806,8 @@ class Bot:
     def fee_min_prices(self, pos: ChainPosition, st: dict[str, Any] | None, prices: list[float], ctx: str) -> list[float]:
         pend = list(range(pos.tp_hits, len(prices)))
         mins, fees = self.tp_fee_mins(pos, st)
-        out, why = apply_tp_fee_min(pos.side, [round(p, 2) for p in prices], pend, mins, self.cfg.tp.tp_min_gap_usd)
+        out, why = apply_tp_fee_min(pos.side, [round(p, 2) for p in prices], pend, mins,
+                                   0.0 if self.tps_at_guard() else self.cfg.tp.tp_min_gap_usd)   # guard mode: TP1 == TP2 price
         log.info("TP fee minimum (%s): total fees $%.4f -> TP1 min %.2f, TP2 min %.2f%s", ctx, fees, mins[0], mins[1],
                  "; " + "; ".join(why) if why else " (levels kept)")
         return out

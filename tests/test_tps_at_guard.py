@@ -60,9 +60,9 @@ def test_tps_placed_at_guard_price_after_partial_resting_add_kept(monkeypatch, t
     b.local.tp_px = [110.33, 110.63]
     b.resize_tps(pos)
     mins, _ = b.tp_fee_mins(pos, st)
-    want = max(gp, mins[0]), max(round(gp, 2) + b.cfg.tp.tp_min_gap_usd, gp, mins[1])
+    want = max(gp, mins[0]), max(gp, mins[1])
     got = _placed(b)
-    assert abs(got[0] - want[0]) < 0.01 and got[1] >= got[0] + b.cfg.tp.tp_min_gap_usd - 1e-9 and got[1] - got[0] < 1.0
+    assert abs(got[0] - want[0]) < 0.01 and abs(got[1] - want[1]) < 0.01 and got[1] >= got[0]
     assert b.calls[0] == ("cancel", ["R110.33", "R110.63"])   # never PT (TP3 partial) nor RA (resting add)
     assert not b.local.tp_retry
 
@@ -168,9 +168,9 @@ def test_tps_placed_at_guard_price_after_partial_resting_add_kept(monkeypatch, t
     b.local.tp_px = [110.33, 110.63]
     b.resize_tps(pos)
     mins, _ = b.tp_fee_mins(pos, st)
-    want = max(gp, mins[0]), max(round(gp, 2) + b.cfg.tp.tp_min_gap_usd, gp, mins[1])
+    want = max(gp, mins[0]), max(gp, mins[1])
     got = _placed(b)
-    assert abs(got[0] - want[0]) < 0.01 and got[1] >= got[0] + b.cfg.tp.tp_min_gap_usd - 1e-9 and got[1] - got[0] < 1.0
+    assert abs(got[0] - want[0]) < 0.01 and abs(got[1] - want[1]) < 0.01 and got[1] >= got[0]
     assert b.calls[0] == ("cancel", ["R110.33", "R110.63"])   # never PT (TP3 partial) nor RA (resting add)
     assert not b.local.tp_retry
 
@@ -284,3 +284,26 @@ def test_bank_payout_sets_pay_wait_and_recon_clears(monkeypatch, tmp_path):
     b.asset = "BTC"
     b.bank_payout(10.0, "TP3 partial")
     assert bk["pay_wait"] == b.GUARD_DEFER_MAX and b.guard_bank_stale({"sweepTokens": {"WBTC": {"atoms": 100000}}})
+
+
+def test_guard_tp1_tp2_same_price_no_churn(monkeypatch, tmp_path):
+    b, st, pos = _setup(monkeypatch, tmp_path, ON + [FLAG])
+    b.guard_price = lambda *a: 111.0   # above both fee floors
+    gp = round(b.guard_price(pos, st), 2)
+    mins, _ = b.tp_fee_mins(pos, st)
+    assert gp >= max(mins[0], mins[1])
+    b.sync_tp_ladder(pos)
+    got = _placed(b)
+    assert got[0] == got[1] == gp                       # same trigger price, no tp_min_gap_usd gap
+    assert b.local.tp_px[0] == b.local.tp_px[1] == gp
+    assert b.fee_min_recheck(pos, st) is False          # equal prices are not a mismatch: no re-place
+    assert b.fee_min_prices(pos, st, [gp, gp], "t") == [gp, gp]
+    n = len(b.calls)
+    b.fee_min_recheck(pos, st)
+    assert len(b.calls) == n
+
+
+def test_gap_only_removed_with_zero_gap():
+    from live.bot import apply_tp_fee_min
+    assert apply_tp_fee_min(1, [100.0, 100.0], [0, 1], [90.0, 90.0], 0.05)[0] == [100.0, 100.05]
+    assert apply_tp_fee_min(1, [100.0, 100.0], [0, 1], [90.0, 90.0], 0.0)[0] == [100.0, 100.0]
