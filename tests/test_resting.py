@@ -37,29 +37,6 @@ def test_partial_levels_n_linear_rounded(rung, n):
     assert R.partial_levels_n(rung, 1, 4, 14) == n
 
 
-def test_partial_target_nth_level_offset_and_fees():
-    # long add at 106.44: trim levels beyond = 107.2, 108.1, 110.9, 112.5, 114.0 (main + fine)
-    t1 = R.partial_target(LONG, 106.44, 78.0, LV, 1, tol_atr=0.05, front_atr=0.0, front_pct=0.0, open_fee=0.0006,
-                          close_fee=0.0006, network_usd=0.02)
-    assert t1["level"] == 107.2 and t1["px"] == round(T.trigger_price(LONG, 107.2, 0.9, 0.05), 2) == 107.16
-    t3 = R.partial_target(LONG, 106.44, 78.0, LV, 3, tol_atr=0.05, front_atr=0.0, front_pct=0.0, open_fee=0.0006,
-                          close_fee=0.0006, network_usd=0.02)
-    assert t3["level"] == 110.9 and t3["level_index"] == 3
-    # not enough levels beyond the entry -> no target
-    assert R.partial_target(LONG, 106.44, 78.0, LV, 6, tol_atr=0.05, front_atr=0, front_pct=0, open_fee=0.0006,
-                            close_fee=0.0006, network_usd=0.02) is None
-    # fees not covered at the 1st level (entry right under it) -> the next level out that covers them
-    t = R.partial_target(LONG, 107.10, 20.0, LV, 1, tol_atr=0.05, front_atr=0, front_pct=0, open_fee=0.0006,
-                         close_fee=0.0006, network_usd=0.02)
-    assert t["level"] == 108.1 and t["level_index"] == 2 and t["net_usd"] > 0
-
-
-def test_partial_target_short_uses_supports():
-    t = R.partial_target(SHORT, 106.0, 50.0, LV, 2, tol_atr=0.05, front_atr=0, front_pct=0, open_fee=0.0006,
-                         close_fee=0.0006, network_usd=0.02)
-    assert t["level"] == 104.2 and t["px"] == round(104.2 + 0.05 * 0.9, 2)   # 105.0 is #1, fine 104.2 is #2
-
-
 def test_last_partial_reference_and_beyond():
     assert R.add_ref(LONG, 100.0, 102.0) == 100.0 and R.add_ref(LONG, 100.0, 97.0) == 97.0
     assert R.add_ref(SHORT, 100.0, 98.0) == 100.0 and R.add_ref(SHORT, 100.0, 103.0) == 103.0

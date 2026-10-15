@@ -4,14 +4,15 @@ Owner reference for Trevor’s three live bots. Numbers from `configs/live_100.t
 
 ---
 
-## TP rules (Trevor 2026-10-11, do not change without his say-so)
+## TP rules (Trevor 2026-10-15, Option A; replaces the 2026-10-11 level rule)
 
-Applies identically to all three bots (SOL, ETH, BTC); only per-asset unit scaling differs. Config: `[tp] tp1_mode = "level"`, `tp2_from_tp1_ratio = 0.6`, `tp_periodic = false`.
+Applies identically to all three bots (SOL, ETH, BTC). Config: `[tp] tp1_pct = 0.008`, `tp2_pct = 0.015` (fractions, `0 < tp1_pct < tp2_pct`, set together, two-level ladder).
 
-- **TP1 is set ONCE** when a position is opened or added to. It goes just before (front-run on the profit side by `tp_res_buffer_atr` x 1h ATR) the nearest support (shorts) / resistance (longs) / analyst level beyond the average in the profit direction. Analyst levels come from `market-analysis/latest.json` (`eth/`, `btc/`) via `dca_levels.py`; both the main supports/resistances and `levels.fine` are considered, and the nearest qualifying level is used. TP1 must NOT move until the next add.
-- **TP2 = avg + (TP1 - avg) / 0.6** (longs; mirrored for shorts), so TP1 sits ~60% of the way from the average to TP2.
-- **TP2 only moves when Grok Bot (the monitoring agent) decides there is more profit to be made.** No automatic process moves TP1 or TP2 between adds (no periodic re-place, no fade, no guard moving TPs). A one-shot manual re-place via the normal placement path: `touch live/RETP_NOW` (or `live/eth/`, `live/btc/`).
-- Safety floors kept: each TP must net >= fees (`tp_min_net_usd` fee floor) and stay beyond market by `tp_market_gap`; if the nearest level is inside the fee floor (or market gap), the next level out is used. No qualifying level -> ladder TP1 (or its fee floor), TP2 by the same 0.6 rule.
+- **TP1 = avg x (1 -/+ tp1_pct), TP2 = avg x (1 -/+ tp2_pct)** (shorts below, longs above the average entry), set at open / add / re-place. Analyst levels, ATR and the old 60% ratio play no part. `tp.levels` only supplies the 50% / 100% close split (its `dist` is unused while the pct keys are set; SOL's `tp.mode = "price_abs"` now says its dists are USD).
+- Safety kept: fee-floor minimums (`tp_min_net_usd` chunk floor, then `apply_tp_fee_min` 3.0x / 4.5x; the floor wins if the pct price is inside it), TP1 at least `tp_min_gap_usd` inside TP2, never a trigger at/through market (`tp_market_gap`).
+- **TP2 only moves when Grok Bot decides** (`TP2_SET`). No automatic process moves TP1 or TP2 between adds (no periodic re-place, no fade, no guard moving TPs). A one-shot manual re-place via the normal placement path: `touch live/RETP_NOW` (or `live/eth/`, `live/btc/`).
+- BTC has `[profit_guard] tps_at_guard = true`: TP1/TP2 are placed at the guard close price, so BTC's `tp1_pct` / `tp2_pct` are set but not used there.
+- Removed with this rule: the level rule (TP1 front-running analyst levels, `tp1_mode`, `tp2_from_tp1_ratio`), the 60% ratio (`tp1_ratio*`), the TP2 resistance cap (`tp_res_*`, analyst touch counts), the momentum fade (`tp_fade_*`, `tp_near_miss_frac`, `tp_swing_buffer_atr`; the bot never passed fade inputs) and the above-water TP1 (`deep_buffer_*`).
 
 ## 1. Goal and philosophy
 
@@ -108,19 +109,9 @@ Ladder budgets remaining free (own-coin) collateral across rungs. Insufficient o
 
 Two on-chain TPs: **TP1 closes 50%**, **TP2 the rest**. Calculated at **open and on each add**.
 
-**Base distances** (ladder fallback; ratio mode sets TP1 from actual TP2):
+**Placement (Trevor 2026-10-15):** TP1 = avg x (1 -/+ 0.8%), TP2 = avg x (1 -/+ 1.5%), all bots (see "TP rules" at the top). Fee floors, TP1 >= `tp_min_gap_usd` inside TP2 and the market clamp still apply. Example: SOL short avg 104.3207 -> TP1 103.49, TP2 102.76.
 
-| Bot | TP2 base | TP1 base (ladder) |
-|-----|----------|-------------------|
-| SOL | avg + **$0.75** | avg + **$0.45** |
-| ETH / BTC | avg × **0.75%** | avg × **0.45%** |
-
-**TP1 ratio (all bots, scope `all`):**  
-`TP1 = avg + 0.6 × (actual smart TP2 − avg)`.
-
-**Smart TP2:** `min(avg + distance, nearest qualifying resistance − 0.1 × 1h ATR)` (shorts: support + buffer). ETH/BTC: only levels with ≥ 2 touches. Fee floors unchanged (chunk ≥ $0.05 net, TP1 ≥ $0.05 inside TP2, etc.).
-
-**Who moves TPs:** set at open/add. **No automatic guard ever moves TPs.** Only **Grok Bot** moves TP2 from the analyst read. Bot keeps its own **post-TP1 fade** for TP2 (85% of distance, then pullback &gt; `0.3` ATR or 15m RSI rolls ≥ `8` → pull to `max(fee floor, TP1 + gap, best − 0.05 ATR)`; `tp_fade_floor_at_tp1 = true`). Grok Bot also manually closes partials the bot misses. **TP2_SET** (Trevor 2026-10-13 20:57 MT): Grok Bot moves TP2 proactively by writing a price to `live/TP2_SET` (`live/eth/`, `live/btc/`). Next tick the bot moves the resting TP2 trigger in place (Jupiter `updateDecreasePositionRequest2`, same size; 2026-10-14) to that price clamped to >= the TP2 fee minimum and beyond TP1 + `tp_min_gap_usd`; recorded as `tp2_override` in state so restarts / resizes / re-places keep it until the next add re-places TPs normally. File deleted after use; invalid content is logged and deleted (never halts/KILL). Log tag `TP2_SET`. **TP3_SET** (Trevor 2026-10-14): same for the resting TP3 (partial) via `live/TP3_SET` (`live/eth/`, `live/btc/`): one price, moved in place, no fee clamp (since 2026-10-15), must be beyond market else warning + nothing changed; updates the partial record's `px`; the next add / resize re-plans TP3. Log tag `TP3_SET`.
+**Who moves TPs:** set at open/add. **No automatic guard ever moves TPs.** Only **Grok Bot** moves TP2 from the analyst read. No fade (removed 2026-10-15). Grok Bot also manually closes partials the bot misses. **TP2_SET** (Trevor 2026-10-13 20:57 MT): Grok Bot moves TP2 proactively by writing a price to `live/TP2_SET` (`live/eth/`, `live/btc/`). Next tick the bot moves the resting TP2 trigger in place (Jupiter `updateDecreasePositionRequest2`, same size; 2026-10-14) to that price clamped to >= the TP2 fee minimum and beyond TP1 + `tp_min_gap_usd`; recorded as `tp2_override` in state so restarts / resizes / re-places keep it until the next add re-places TPs normally. File deleted after use; invalid content is logged and deleted (never halts/KILL). Log tag `TP2_SET`. **TP3_SET** (Trevor 2026-10-14): same for the resting TP3 (partial) via `live/TP3_SET` (`live/eth/`, `live/btc/`): one price, moved in place, no fee clamp (since 2026-10-15), must be beyond market else warning + nothing changed; updates the partial record's `px`; the next add / resize re-plans TP3. Log tag `TP3_SET`.
 
 **TP timer:** `close_remainder_after_min = 55`, counted from the first TP1 fill (`first_tp_time`). It closes only IN PROFIT (Trevor 2026-10-14): price beyond the average entry plus fees, i.e. `net_close_pnl > 0` (after accrued borrow, close fee and slippage; open fees are already sunk) with `[tp] timer_require_profit = true`, plus the HWM check. Exactly what the code does:
 - **Live per-tick path** (`live/bot.py` tick): after 55 min, closes only if `net_close_pnl > 0` **and** `hwm_check(..., 0)` (equity-if-closed incl. the resting add >= HWM; `pg_close_ok` when the bank is off); otherwise logs `timer expired ... holding` and keeps TPs / DCA active.

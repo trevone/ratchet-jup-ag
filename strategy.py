@@ -25,8 +25,7 @@ import pandas as pd
 from typing import Callable
 
 from config import Config
-from dca_levels import (AddPlan, LadderParams, Levels, SmartTpParams, SmartTpResult, TpFade, above_water_tps,
-                        plan_add, project_ladder, smart_tps)
+from dca_levels import AddPlan, LadderParams, Levels, SmartTpParams, SmartTpResult, plan_add, project_ladder, smart_tps
 
 LONG, SHORT = 1, -1
 
@@ -130,12 +129,8 @@ class DcaStrategy:
         self.skip_log: list[str] = []
         self._flat_since: pd.Timestamp | None = None
         self.levels_provider: Callable[[pd.Timestamp], Levels | None] | None = None
-        self.last_plan: AddPlan | None = None
-        self._last_price: float | None = None
         self._levels: Levels | None = None
         self.last_tp: SmartTpResult | None = None   # smart-TP result of the last tp_targets call (reasons for the log)
-        self._tp_atr: float | None = None           # last known analyst ATR (fade still works if levels go stale)
-        self._aw_key: tuple[int, int, float] | None = None   # position whose above-water TPs are latched (hysteresis)
 
     # ----------------------------------------------------------------- callbacks
     def on_fill(self, time: pd.Timestamp, action: Action) -> None:
@@ -168,59 +163,24 @@ class DcaStrategy:
         nearest = max(stops, key=lambda x: s * x.price) if stops else None
         return ExitLevels(take_profits=targets, stop=nearest)
 
-    def tp_targets(self, pos: PositionView, price: float | None = None, fade: TpFade | None = None,
-                   prev_faded: bool = False, levels: Levels | None = None) -> tuple[TpTarget, ...]:
-        """Full ladder on the current position (levels mode: above-water prices after deep adds).
+    def tp_targets(self, pos: PositionView, price: float | None = None) -> tuple[TpTarget, ...]:
+        """Full ladder on the current position. tp.tp1_pct / tp2_pct set: TP1 / TP2 = avg x (1 +/- pct) (long above,
+        short below the average), else the tp.levels distances.
 
-        tp.smart_tp2: TP2 under the nearest resistance, fee floors, TP1 inside TP2, momentum fade (``fade``) and,
-        when ``price`` is given, no trigger at/through market. Result details land in ``self.last_tp``."""
+        tp.smart_tp2: fee floors (a floor beyond the pct price wins), TP1 inside TP2 and, when ``price`` is given, no
+        trigger at/through market. Result details land in ``self.last_tp``."""
         tp_cfg = self.cfg.tp
         anchor = pos.avg_entry if tp_cfg.anchor == "avg_entry" else pos.first_entry
         prices = [self._tp_price(pos, anchor, lv.dist) for lv in tp_cfg.ladder]
-        plan, lv, px = self.last_plan, self._levels, self._last_price
-        ratio = self.tp1_ratio_for(pos)
-        # tp1_mode = "ratio" (Trevor 2026-10-08 06:51 MT): the above-water TP1 (avg + fees + buffer after deep adds) is
-        # OFF; TP1 = avg + tp1_ratio x (actual TP2 - avg) instead, so a built-up position is not exited for pennies.
-        if (self.cfg.dca.mode == "levels" and pos.n_entries > 1 and lv is not None and px is not None
-                and plan is not None and len(prices) >= 2 and tp_cfg.tp1_mode != "ratio"):
-            fee_frac = self.cfg.costs.open_fee + self.cfg.costs.close_fee
-            aw = above_water_tps(pos.side, pos.avg_entry, px, lv.atr, plan.target_level, prices[-1], fee_frac,
-                                 tp_cfg.deep_buffer_usd)
-            # Hysteresis (2026-10-08, live smart-TP only): once above-water TPs engaged for this exact position (same
-            # side, entry count and avg), keep them while it is unchanged, so price hovering ~1 ATR under the average
-            # no longer flips TP1 between the normal and above-water price (BTC re-placed TP1 5x in 6.5 h).
-            key = (pos.side, pos.n_entries, round(pos.avg_entry, 6))
-            if aw is None and tp_cfg.smart_tp2 and self._aw_key == key:
-                deep_px = pos.avg_entry - pos.side * (2.0 * lv.atr + 1e-6 * pos.avg_entry)
-                aw = above_water_tps(pos.side, pos.avg_entry, deep_px, lv.atr, plan.target_level, prices[-1],
-                                     fee_frac, tp_cfg.deep_buffer_usd)
-            if aw is not None:
-                if tp_cfg.smart_tp2:
-                    self._aw_key = key
-                prices = [aw[0]] * (len(prices) - 1) + [aw[1]]
+        if tp_cfg.tp1_pct is not None:
+            prices = [pos.avg_entry * (1 + pos.side * tp_cfg.tp1_pct), pos.avg_entry * (1 + pos.side * tp_cfg.tp2_pct)]
         self.last_tp = None
         if tp_cfg.smart_tp2:
-            lvs = levels if levels is not None else (
-                self.levels_provider(pd.Timestamp.now(tz="UTC")) if self.levels_provider else None)
-            if lvs is not None:
-                self._tp_atr = lvs.atr
             res = smart_tps(pos.side, pos.avg_entry, pos.size, prices, [x.close_pct for x in tp_cfg.ladder],
-                            pos.tp_hits, lvs, self.smart_tp_params(), atr=self._tp_atr, market=price, fade=fade,
-                            prev_faded=prev_faded, tp1_ratio=ratio, fade_floor_tp1=tp_cfg.tp_fade_floor_at_tp1,
-                            tp1_level=tp_cfg.tp1_mode == "level", tp2_from_tp1_ratio=tp_cfg.tp2_from_tp1_ratio)
+                            pos.tp_hits, self.smart_tp_params(), market=price)
             self.last_tp = res
             prices = list(res.prices)
-        elif ratio is not None and len(prices) >= 2:
-            prices[0] = anchor + ratio * (prices[-1] - anchor)
         return tuple(TpTarget(p, lv_.close_pct) for p, lv_ in zip(prices, tp_cfg.ladder))
-
-    def tp1_ratio_for(self, pos: PositionView) -> float | None:
-        """tp.tp1_ratio when the ratio rule applies to ``pos`` (tp1_mode = ratio; scope all, or after_add with >= 1
-        add), else None (ladder TP1)."""
-        t = self.cfg.tp
-        if t.tp1_mode != "ratio" or (t.tp1_ratio_scope == "after_add" and pos.n_entries <= 1):
-            return None
-        return t.tp1_ratio
 
     def last_tp_raw(self, i: int) -> float:
         r = self.last_tp
@@ -228,10 +188,7 @@ class DcaStrategy:
 
     def smart_tp_params(self) -> SmartTpParams:
         t, c = self.cfg.tp, self.cfg.costs
-        return SmartTpParams(res_buffer_atr=t.tp_res_buffer_atr, min_net_usd=t.tp_min_net_usd, min_gap_usd=t.tp_min_gap_usd,
-                             market_gap=t.tp_market_gap, near_miss_frac=t.tp_near_miss_frac, fade_atr=t.tp_fade_atr,
-                             fade_rsi_drop=t.tp_fade_rsi_drop, swing_buffer_atr=t.tp_swing_buffer_atr,
-                             res_min_touches=t.tp_res_min_touches, res_min_dist_frac=t.tp_res_min_dist_frac,
+        return SmartTpParams(min_net_usd=t.tp_min_net_usd, min_gap_usd=t.tp_min_gap_usd, market_gap=t.tp_market_gap,
                              open_fee=c.open_fee, close_fee=c.close_fee)
 
     def _tp_price(self, pos: PositionView, anchor: float, dist: float) -> float:
@@ -283,11 +240,9 @@ class DcaStrategy:
             return [Intent(Action.OPEN, side, bar.close, self.initial_margin(account.cash),
                            self.cfg.dca.lev_start)]
         self._flat_since = None
-        self._last_price = bar.close
         if self.cfg.dca.mode == "levels":
             plan = self.plan_next_add(pos, account.cash, bar.time)
             if plan is not None and pos.side * (bar.close - plan.trigger) <= 0 and self._adds_left(pos):
-                self.last_plan = plan
                 return [Intent(Action.ADD, pos.side, bar.close, plan.margin, plan.leverage)]
             return []
         if self._add_due(pos, bar.close, oversold, overbought):

@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
-from live import trim as trimmod
-
 
 def partial_levels_n(rung: int, n_min: int, n_max: int, max_rungs: int) -> int:
     """N for the add on ladder rung ``rung`` (1 = first add): linear from n_min at rung 1 to n_max at rung max_rungs,
@@ -21,38 +19,9 @@ def partial_levels_n(rung: int, n_min: int, n_max: int, max_rungs: int) -> int:
     return int(min(n_max, max(n_min, int(x + 0.5))))
 
 
-def trim_levels(side: int, lv: Any) -> list[float]:
-    """The levels the trim uses on the profit side: resistances + fine resistances (long) / supports + fine supports
-    (short), positive, exact duplicates dropped."""
-    if lv is None:
-        return []
-    fine = tuple(getattr(lv, "fine_resistances" if side > 0 else "fine_supports", ()) or ())
-    pool = tuple(lv.resistances if side > 0 else lv.supports) + fine
-    return sorted({float(x) for x in pool if x and x > 0})
-
-
 def lot_net_at(side: int, entry: float, size: float, px: float, open_fee: float, close_fee: float, network_usd: float) -> float:
     """Net USD of closing a lot of ``size`` USD opened at ``entry`` at ``px`` after 6+6 bps style fees + network est."""
     return side * size * (px - entry) / entry - (open_fee + close_fee) * size - network_usd
-
-
-def partial_target(side: int, entry: float, size: float, lv: Any, n: int, *, tol_atr: float, front_atr: float,
-                   front_pct: float, open_fee: float, close_fee: float, network_usd: float) -> dict[str, Any] | None:
-    """Partial TP for an add filled at ``entry``: the n-th trim level beyond ``entry`` in the profit direction; fired at
-    trim.trigger_price (tol + front-run before the level). Must cover fees: if the n-th level's fire price does not, the
-    next level further out is used (the first one that does). None = not enough levels / none covers fees."""
-    if lv is None or n < 1:
-        return None
-    beyond = [x for x in trim_levels(side, lv) if side * (x - entry) > 0]
-    beyond.sort(key=lambda x: side * x)          # nearest first
-    for k in range(n - 1, len(beyond)):
-        level = beyond[k]
-        fire = trimmod.trigger_price(side, level, lv.atr, tol_atr, front_atr, front_pct)
-        net = lot_net_at(side, entry, size, fire, open_fee, close_fee, network_usd)
-        if side * (fire - entry) > 0 and net > 0:
-            return {"level": round(level, 6), "px": round(fire, 2), "n": n, "level_index": k + 1, "net_usd": round(net, 4),
-                    "levels_beyond": len(beyond)}
-    return None
 
 
 def zone_f(rung: int, max_rungs: int, f_first: float, f_deep: float) -> float:

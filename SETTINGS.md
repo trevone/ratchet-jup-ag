@@ -28,10 +28,9 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 | [live] | sol_fee_reserve | 0.02 | 0.02 | 0.02 | Native SOL kept for fees |
 | [live] | max_collateral_usd / max_position_usd / max_daily_loss_usd | 1e12 | 1e12 | 1e12 | Caps effectively off |
 | [live] | kill_switch_path | live/KILL | live/eth/KILL | live/btc/KILL | Per-bot kill file (global: live/KILL_ALL) |
-| [tp] | levels (TP1 / TP2 dist) | $0.45 / $0.75 | 0.45% / 0.75% | 0.45% / 0.75% | Base TP distances (TP1 closes 50%, TP2 rest) |
-| [tp] | tp1_mode / tp2_from_tp1_ratio | level / 0.6 | level / 0.6 | level / 0.6 | Trevor 2026-10-11: TP1 front-runs nearest analyst level (main+fine) beyond avg clearing fee floor/market gap, set once at open/add; TP2 = avg + (TP1-avg)/0.6 (see STRATEGY.md TP rules). tp1_ratio unused in level mode |
-| [tp] | smart_tp2 / tp_res_buffer_atr | true / 0.1 | true / 0.1 | true / 0.1 | TP2 capped at nearest resistance - 0.1 ATR |
-| [tp] | tp_res_min_touches | 2 | 2 | 2 | Only levels with >= 2 touches cap TP2 |
+| [tp] | levels (TP1 / TP2 dist) | $0.45 / $0.75 (mode price_abs) | 0.45% / 0.75% | 0.45% / 0.75% | Close split 50% / 100%; dist only used when tp1_pct / tp2_pct are unset |
+| [tp] | tp1_pct / tp2_pct | 0.008 / 0.015 | 0.008 / 0.015 | 0.008 / 0.015 (unused: tps_at_guard) | Trevor 2026-10-15 (Option A): TP1 = avg x (1 -/+ 0.8%), TP2 = avg x (1 -/+ 1.5%); 0 < tp1_pct < tp2_pct, set together; fee floors / min gap / market clamp still apply; levels give only the close split. Unset = levels dist |
+| [tp] | smart_tp2 | true | true | true | Fee floors, TP1 inside TP2, never past market (resistance cap / fade removed 2026-10-15) |
 | [tp] | tp_periodic | false | false | false | TPs set only at open/add |
 | [tp] | tp1_fee_mult / tp2_fee_mult | 3.0 / 4.5 | same | same | Fee-minimum TP1 / TP2 floors (code defaults, config.py): a TP portion nets >= mult x its fees. 2026-10-15: was 2.0 / 3.0. tp3_fee_mult removed (TP3 = adds that net > 0 after fees) |
 | [resting] | partial_zone_f_first / partial_zone_f_deep | 0.50 / 0.27 | same | same | TP3 target = avg + f x (furthest open add - avg); f tapers linearly rung 1 (open adds) -> ladder_max_rungs; TP3 size = adds netting > 0 after fees + network at the target |

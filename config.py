@@ -158,30 +158,18 @@ class TakeProfitConfig:
     move_stop_to_breakeven_after_partial: bool = False
     close_remainder_after_min: float | None = None  # market-close the rest this long after TP1 fills
     timer_require_profit: bool = True
-    deep_buffer_usd: float = 0.15        # levels mode: above-water TP1 = avg + fees + buffer after deep adds
-    # --- smart TP2 / TP1 sanity (Trevor 2026-10-07 20:14 MT); off by default so backtests are unchanged ---
+    # --- smart TP sanity (Trevor 2026-10-07 20:14 MT); off by default so backtests are unchanged ---
     smart_tp2: bool = False
-    tp_res_buffer_atr: float = 0.1       # TP2 <= nearest resistance above avg - this many 1h ATR (longs; support for shorts)
     tp_min_net_usd: float = 0.05         # each TP's closing chunk must net >= this after 6+6 bps open/close fees
     tp_min_gap_usd: float = 0.05         # TP1 sits at least this far inside TP2
     tp1_fee_mult: float = 3.0            # Trevor 2026-10-13: TP1 portion must net >= this x its share of the trade's total fees
     tp2_fee_mult: float = 4.5            # ... TP2 likewise (fees = all opening fees + est. close fee + accrued borrow)
     tp_min_move: float = 0.05            # periodic check re-places a TP only when it moves >= this (USD)
     tp_market_gap: float = 0.02          # a trigger must sit at least this far beyond market (Jupiter rejects otherwise)
-    tp_near_miss_frac: float = 0.85      # momentum fade armed once the best price reached this fraction of TP2's distance
-    tp_fade_atr: float = 0.3             # ... and then fell back more than this many ATR from that best price
-    tp_fade_rsi_drop: float | None = 8.0  # ... or the 15m RSI rolled over this many points from its post-placement extreme
-    tp_swing_buffer_atr: float = 0.05    # faded TP2 = max(fee floor, best price - this many ATR)
-    tp_res_min_touches: int = 0          # >= 2: TP2 cap skips analyst levels with fewer touches (0/1 = every level caps)
-    # --- TP1 placement rule (Trevor 2026-10-08 06:51 MT: "be profit aware"); defaults keep backtests unchanged ---
-    tp1_mode: Literal["ladder", "ratio", "level"] = "ladder"   # ladder: TP1 = levels[0].dist (+ above-water TP1 after deep adds);
-                                         # ratio: TP1 = avg + tp1_ratio x (actual TP2 - avg), above-water TP1 OFF
-    tp2_from_tp1_ratio: float = 0.6      # level mode (Trevor 2026-10-11): TP1 sits at this fraction of TP2 distance
-    tp1_ratio: float = 0.6               # ratio mode: TP1 at this fraction of the (smart) TP2 distance from avg
-    tp1_ratio_scope: Literal["all", "after_add"] = "all"   # ratio applies to every position, or only after >= 1 add
-    tp_fade_floor_at_tp1: bool = False   # momentum fade never pulls TP2 inside TP1 (pre-fade) + tp_min_gap_usd
-    tp_res_min_dist_frac: float = 0.0    # > 0: TP2 resistance cap skips levels closer to avg than this x the plain
-                                         # TP2 distance (0 = off: any level above avg caps, as before)
+    # --- explicit TP placement (Trevor 2026-10-15, Option A): TP1/TP2 = avg x (1 -/+ pct) (short below / long above avg).
+    # When set they replace the levels' dist (the levels still give close_pct); fee floors / ordering / market clamp apply.
+    tp1_pct: float | None = None
+    tp2_pct: float | None = None
     # (timer_require_profit) timer only closes when net of est. close fee + slippage + borrow > 0
 
     def __post_init__(self) -> None:
@@ -191,20 +179,15 @@ class TakeProfitConfig:
             raise ValueError("tp.levels must ascend in dist and close_pct, ending at close_pct = 1.0")
         if self.mode == "price_abs" and not lv:
             raise ValueError("tp.mode = price_abs needs tp.levels")
-        if self.tp_min_move < 0 or self.tp_market_gap < 0 or self.tp_min_gap_usd < 0 or self.tp_res_buffer_atr < 0:
-            raise ValueError("tp.tp_min_move / tp_market_gap / tp_min_gap_usd / tp_res_buffer_atr must be >= 0")
-        if self.tp_res_min_touches < 0:
-            raise ValueError("tp.tp_res_min_touches must be >= 0")
-        if not 0.0 < self.tp_near_miss_frac <= 1.0:
-            raise ValueError("tp.tp_near_miss_frac must be in (0, 1]")
-        if not 0.0 <= self.tp_res_min_dist_frac < 1.0:
-            raise ValueError("tp.tp_res_min_dist_frac must be in [0, 1)")
-        if not 0.0 < self.tp1_ratio < 1.0:
-            raise ValueError("tp.tp1_ratio must be in (0, 1)")
-        if not 0.0 < self.tp2_from_tp1_ratio < 1.0:
-            raise ValueError("tp.tp2_from_tp1_ratio must be in (0, 1)")
-        if self.tp1_mode not in ("ladder", "ratio", "level") or self.tp1_ratio_scope not in ("all", "after_add"):
-            raise ValueError("tp.tp1_mode must be ladder|ratio and tp.tp1_ratio_scope all|after_add")
+        if self.tp_min_move < 0 or self.tp_market_gap < 0 or self.tp_min_gap_usd < 0:
+            raise ValueError("tp.tp_min_move / tp_market_gap / tp_min_gap_usd must be >= 0")
+        if (self.tp1_pct is None) != (self.tp2_pct is None):
+            raise ValueError("tp.tp1_pct and tp.tp2_pct must be set together")
+        if self.tp1_pct is not None:
+            if not 0.0 < self.tp1_pct < self.tp2_pct:
+                raise ValueError("tp.tp1_pct / tp2_pct must satisfy 0 < tp1_pct < tp2_pct")
+            if len(self.ladder) != 2:
+                raise ValueError("tp.tp1_pct / tp2_pct need a two-level tp.levels ladder")
 
     @property
     def ladder(self) -> tuple[TpLevel, ...]:
@@ -282,7 +265,6 @@ class ScaleConfig:
     atr_len: int = 14
     trigger_dist_atr: float | None = None    # dca.trigger_dist = this * own ATR (fixed spacing / levels fallback)
     trigger_dist_pct: float | None = None    # ... or this * price (used only if trigger_dist_atr is unset)
-    deep_buffer_pct: float | None = None     # tp.deep_buffer_usd = this * price
     tp_min_gap_pct: float | None = None      # tp.tp_min_gap_usd = this * price
     tp_min_move_pct: float | None = None     # tp.tp_min_move = this * price
     tp_market_gap_pct: float | None = None   # tp.tp_market_gap = this * price

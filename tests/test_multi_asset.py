@@ -130,7 +130,7 @@ def test_scaled_distances(asset):
     c = scale_config(load_config(f), px, atr)
     assert c.dca.trigger_dist == pytest.approx(1.15 * atr)
     assert c.tp.tp_min_move == pytest.approx(0.00043 * px) and c.tp.tp_market_gap == pytest.approx(0.00017 * px)
-    assert c.tp.deep_buffer_usd == pytest.approx(0.0013 * px) and c.tp.tp_min_gap_usd == pytest.approx(0.00043 * px)
+    assert c.tp.tp_min_gap_usd == pytest.approx(0.00043 * px)
     c0 = scale_config(load_config(f), px, None)            # no ATR yet -> percent fallback
     assert c0.dca.trigger_dist == pytest.approx(0.0073 * px)
     sol = load_config("tests/fixtures/configs_pre_c/live_100.toml")

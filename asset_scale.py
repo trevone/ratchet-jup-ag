@@ -5,7 +5,6 @@ gaps of a few cents). Those are meaningless at ETH ~$2.6k or BTC ~$83k, so the [
 tick from the current price and the asset's own 1h ATR:
 
     dca.trigger_dist        = trigger_dist_atr * ATR(1h)        (or trigger_dist_pct * price)
-    tp.deep_buffer_usd      = deep_buffer_pct * price
     tp.tp_min_gap_usd       = tp_min_gap_pct * price
     tp.tp_min_move          = tp_min_move_pct * price
     tp.tp_market_gap        = tp_market_gap_pct * price
@@ -48,7 +47,7 @@ def scale_config(cfg: Any, price: float, atr: float | None) -> Any:
         dca["trigger_dist"] = round(sc.trigger_dist_atr * atr, 6)
     elif sc.trigger_dist_pct is not None:
         dca["trigger_dist"] = round(sc.trigger_dist_pct * price, 6)
-    for key, pct in (("deep_buffer_usd", sc.deep_buffer_pct), ("tp_min_gap_usd", sc.tp_min_gap_pct),
+    for key, pct in (("tp_min_gap_usd", sc.tp_min_gap_pct),
                      ("tp_min_move", sc.tp_min_move_pct), ("tp_market_gap", sc.tp_market_gap_pct)):
         if pct is not None:
             tp[key] = round(pct * price, 6)
@@ -61,7 +60,7 @@ def scale_config(cfg: Any, price: float, atr: float | None) -> Any:
 
 
 def scaled_summary(cfg: Any) -> str:
-    return (f"trigger_dist {cfg.dca.trigger_dist:.4f}, deep_buffer {cfg.tp.deep_buffer_usd:.4f}, tp_min_gap "
+    return (f"trigger_dist {cfg.dca.trigger_dist:.4f}, tp_min_gap "
             f"{cfg.tp.tp_min_gap_usd:.4f}, tp_min_move {cfg.tp.tp_min_move:.4f}, tp_market_gap {cfg.tp.tp_market_gap:.4f}, "
             f"TP ladder {cfg.tp.mode} " + ", ".join(f"{lv.dist:g}->{lv.close_pct:.0%}" for lv in cfg.tp.ladder))
 

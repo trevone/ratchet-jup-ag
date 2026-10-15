@@ -26,10 +26,6 @@ class Levels:
     supports: tuple[float, ...]       # any order
     resistances: tuple[float, ...]
     atr: float                        # 1h ATR, USD
-    # analyst touch counts aligned with supports / resistances (None = unknown -> treated as strong); () = all unknown.
-    # Counts already include touches of the same level on the other TF (analyst merge rule: within 0.25 x 1h ATR).
-    sup_touches: tuple[int | None, ...] = ()
-    res_touches: tuple[int | None, ...] = ()
     # analyst levels.fine (15m/1h intraday S/R, 2026-10-08): used by the per-add trim trigger only, never by the ladder
     fine_supports: tuple[float, ...] = ()
     fine_resistances: tuple[float, ...] = ()
@@ -43,7 +39,7 @@ class AddPlan:
     new_avg: float
     liq: float
     next_level: float                 # the level after this add (liq must stay beyond it)
-    target_level: float               # opposing level used for sizing / above-water TP2
+    target_level: float               # opposing level used for sizing
     source: str                       # "levels" or "fixed"
 
 
@@ -89,8 +85,7 @@ def load_analyst_levels(path: str | Path, max_age_min: float, now: pd.Timestamp 
                 except (TypeError, ValueError):
                     pass
             return tuple(out)
-        return Levels(sup, res, atr, sup_touches=_touches(lv, "support", atr), res_touches=_touches(lv, "resistance", atr),
-                      fine_supports=_px(fine.get("supports")), fine_resistances=_px(fine.get("resistances")))
+        return Levels(sup, res, atr, fine_supports=_px(fine.get("supports")), fine_resistances=_px(fine.get("resistances")))
     except (OSError, KeyError, ValueError, TypeError, AttributeError):
         return None
 
@@ -102,29 +97,6 @@ def _warn_once(key: str, msg: str) -> None:
     if _LEVEL_WARNED.get(key) != msg:
         _LEVEL_WARNED[key] = msg
         logging.getLogger("bot").warning("%s: %s", key, msg)
-
-
-def _touches(lv: dict, kind: str, atr: float, merge_atr: float = 0.25) -> tuple[int | None, ...]:
-    """Touch count per level in h1+h4 order (same order as Levels.supports / resistances). A level's count adds the
-    touches of other-TF levels within ``merge_atr`` x ATR (the analyst's h1/h4 merge rule). Missing / mismatched
-    ``<kind>_touches`` lists -> None (unknown = strong)."""
-    raw: list[tuple[float, str, int | None]] = []
-    for tf in ("h1", "h4"):
-        d = lv.get(tf) if isinstance(lv.get(tf), dict) else {}
-        px = [x for x in (d.get(kind) or []) if x is not None]
-        t = d.get(f"{kind}_touches")
-        ok = isinstance(t, list) and len(t) == len(px)
-        for i, x in enumerate(px):
-            n = t[i] if ok else None
-            raw.append((float(x), tf, int(n) if isinstance(n, (int, float)) else None))
-    out: list[int | None] = []
-    for x, tf, n in raw:
-        if n is None:
-            out.append(None)
-            continue
-        extra = [m for y, tf2, m in raw if tf2 != tf and abs(y - x) <= merge_atr * atr]
-        out.append(None if any(m is None for m in extra) else n + sum(extra))
-    return tuple(out)
 
 
 def liq_price(side: int, size: float, qty: float, margin: float, borrow: float, maint: float) -> float:
@@ -385,47 +357,18 @@ def project_ladder(pos: PosLike, lv: Levels | None, *, available_usd: float, max
     return out
 
 
-def above_water_tps(side: int, avg: float, price: float, atr: float, target_level: float,
-                    normal_tp2: float, fee_frac: float, buffer: float) -> tuple[float, float] | None:
-    """After a deep add (in loss by > 1 ATR): TP1 = avg + fees + buffer, TP2 = min(normal TP2, just under target)."""
-    if side * (avg - price) <= atr:
-        return None
-    tp1 = avg + side * (avg * fee_frac + buffer)
-    tp2 = normal_tp2 if side * (normal_tp2 - (target_level - side * 0.05)) < 0 else target_level - side * 0.05
-    if side * (tp2 - tp1) <= 0:
-        tp2 = tp1 + side * buffer
-    return tp1, tp2
-
-
 # ---------------------------------------------------------------------------------------------------- smart TPs
-# Trevor 2026-10-07 20:14 MT. TP2 = min(avg + tp2_dist, nearest resistance above avg - buffer) (mirror for shorts),
-# floored so its closing chunk nets >= min_net_usd after open+close fees; TP1 kept inside TP2 and above its own fee
-# floor; momentum fade pulls TP2 in to max(fee floor, best price - small buffer). Pure functions, no I/O.
+# Trevor 2026-10-07 20:14 MT. Fee floors (each TP's closing chunk nets >= min_net_usd after open+close fees), TP1 kept
+# min_gap_usd inside TP2, never a trigger at/through market. Where the prices come from (tp1_pct / tp2_pct from avg, or
+# the plain ladder) is DcaStrategy.tp_targets. Pure functions, no I/O.
 
 @dataclass(frozen=True)
 class SmartTpParams:
-    res_buffer_atr: float = 0.1
     min_net_usd: float = 0.05
     min_gap_usd: float = 0.05
     market_gap: float = 0.02
-    near_miss_frac: float = 0.85
-    fade_atr: float = 0.3
-    fade_rsi_drop: float | None = 8.0
-    swing_buffer_atr: float = 0.05
-    res_min_touches: int = 0          # >= 2: TP2 cap ignores levels with fewer analyst touches (unknown = strong)
-    res_min_dist_frac: float = 0.0    # > 0: TP2 cap ignores levels closer to avg than this x the plain TP2 distance
     open_fee: float = 0.0006
     close_fee: float = 0.0006
-
-
-@dataclass(frozen=True)
-class TpFade:
-    """Momentum-fade inputs since the TPs were placed: best price (high for longs / low for shorts), current price,
-    15m RSI extreme in the favourable direction (max for longs / min for shorts) and the latest 15m RSI."""
-    peak: float
-    price: float
-    rsi_ext: float | None = None
-    rsi_now: float | None = None
 
 
 @dataclass(frozen=True)
@@ -433,7 +376,6 @@ class SmartTpResult:
     prices: tuple[float, ...]            # whole ladder (filled levels keep their base price, unused)
     floors: tuple[float | None, ...]     # fee floor per level (None = already filled)
     reasons: tuple[str, ...]
-    faded: bool
     past_market: tuple[bool, ...]        # pending level would sit at/through market (+ market_gap)
     unclamped: tuple[float, ...] = ()    # prices before the market clamp
 
@@ -447,35 +389,14 @@ def tp_fee_floor(side: int, avg: float, chunk_usd: float, min_net: float, open_f
     return (chunk_usd * (1 - open_fee) - min_net) / (q * (1 + close_fee))
 
 
-def nearest_opposing_tp_level(side: int, avg: float, lv: Levels | None, min_touches: int = 0,
-                              min_dist: float = 0.0) -> float | None:
-    """Nearest analyst resistance above ``avg`` (longs) / support below it (shorts). ``min_touches`` > 1 skips levels
-    known to have fewer touches (unknown touch count = strong, kept); ``min_dist`` > 0 skips levels closer to avg."""
-    if lv is None:
-        return None
-    pool = lv.resistances if side == LONG else lv.supports
-    tch = lv.res_touches if side == LONG else lv.sup_touches
-    strong = lambda i: (min_touches <= 1 or len(tch) != len(pool) or tch[i] is None   # noqa: E731
-                        or tch[i] >= min_touches)
-    c = [x for i, x in enumerate(pool) if side * (x - avg) > max(0.0, min_dist) and strong(i)]
-    return (min(c) if side == LONG else max(c)) if c else None
-
-
 def smart_tps(side: int, avg: float, size: float, base: list[float] | tuple[float, ...],
-              close_pcts: list[float] | tuple[float, ...], tp_hits: int, lv: Levels | None, p: SmartTpParams, *,
-              atr: float | None = None, market: float | None = None, fade: TpFade | None = None,
-              prev_faded: bool = False, tp1_ratio: float | None = None,
-              fade_floor_tp1: bool = False, tp1_level: bool = False,
-              tp2_from_tp1_ratio: float = 0.6) -> SmartTpResult:
-    """Smart ladder on the current position. ``size`` = current notional (after any filled TPs); ``base`` = the plain
-    ladder prices; ``lv`` = fresh analyst levels (None -> no resistance clamp); ``atr`` = ATR for fade/buffers
-    (defaults to lv.atr); ``market`` given -> pending triggers are clamped to >= market + market_gap (longs).
-    ``tp1_ratio`` (Trevor 2026-10-08, 60% rule): TP1 = avg + ratio x (TP2 after the resistance cap, before any fade
-    - avg). ``fade_floor_tp1``: a faded TP2 never goes inside that pre-fade TP1 + min_gap_usd."""
+              close_pcts: list[float] | tuple[float, ...], tp_hits: int, p: SmartTpParams, *,
+              market: float | None = None) -> SmartTpResult:
+    """Fee floors / ordering / market clamp on the current position. ``size`` = current notional (after any filled TPs);
+    ``base`` = the ladder prices; ``market`` given -> pending triggers are clamped to >= market + market_gap (longs)."""
     s, n = side, len(base)
     prices = [float(x) for x in base]
     reasons: list[str] = []
-    atr = atr if atr is not None else (lv.atr if lv is not None else None)
     last = n - 1
     lvl = lambda i: f"TP{i + 1}"   # noqa: E731
     beyond = lambda a, b: s * (a - b) > 0   # a further from avg (in profit direction) than b   # noqa: E731
@@ -490,81 +411,8 @@ def smart_tps(side: int, avg: float, size: float, base: list[float] | tuple[floa
         chunk = size * (close_pcts[i] - prev) / (1.0 - done) if done < 1.0 else size
         floors.append(tp_fee_floor(s, avg, chunk, p.min_net_usd, p.open_fee, p.close_fee))
     if tp_hits > last:
-        return SmartTpResult(tuple(prices), tuple(floors), (), prev_faded, tuple(False for _ in prices), tuple(prices))
-    name_lv = "resistance" if s == LONG else "support"
-    if tp1_level and last >= 1:
-        # TP rule (Trevor 2026-10-11 06:08 MT): TP1 just before the nearest analyst level (main or fine) beyond avg
-        # that clears TP1 fee floor and the market gap; TP2 = avg + (TP1 - avg) / tp2_from_tp1_ratio. No fade.
-        buf = p.res_buffer_atr * (lv.atr if lv is not None else (atr or 0.0))
-        pool: list[float] = []
-        if lv is not None:
-            pool = list(lv.resistances if s == LONG else lv.supports) + list(
-                lv.fine_resistances if s == LONG else lv.fine_supports)
-        f1 = floors[0] if floors[0] is not None else avg
-        mlim = market + s * p.market_gap if market is not None else None
-        tp1 = None
-        for x in sorted({float(v) for v in pool if beyond(v, avg)}, key=lambda v: s * (v - avg)):
-            c = x - s * buf
-            if beyond(f1, c) or (mlim is not None and not beyond(c, mlim) and tp_hits == 0):
-                continue
-            tp1 = c
-            reasons.append(f"TP1 {prices[0]:.3f}->{c:.3f}: front-run nearest {name_lv} {x:.2f} - {p.res_buffer_atr:g} ATR")
-            break
-        if tp1 is None:
-            tp1 = prices[0] if not beyond(f1, prices[0]) else f1
-            reasons.append(f"TP1 {tp1:.3f}: no qualifying {name_lv} level (ladder/fee floor fallback)")
-        tp2 = avg + (tp1 - avg) / tp2_from_tp1_ratio
-        reasons.append(f"TP2 {prices[last]:.3f}->{tp2:.3f}: TP1 at {tp2_from_tp1_ratio:g} of TP2 distance")
-        prices[0], prices[last] = tp1, tp2
-        fade = None
-    # 1) TP2 just under the nearest resistance above avg
-    r = None if tp1_level else nearest_opposing_tp_level(s, avg, lv, p.res_min_touches, p.res_min_dist_frac * abs(prices[last] - avg))
-    if r is not None and lv is not None:
-        cap = r - s * p.res_buffer_atr * lv.atr
-        if beyond(prices[last], cap):
-            reasons.append(f"{lvl(last)} {prices[last]:.3f}->{cap:.3f}: under {name_lv} {r:.2f} - "
-                           f"{p.res_buffer_atr:g} ATR ({p.res_buffer_atr * lv.atr:.3f})"
-                           + (f" [levels with < {p.res_min_touches} touches ignored]" if p.res_min_touches > 1 else ""))
-            prices[last] = cap
-    # 1b) TP1 by the ratio rule on the actual (capped, unfaded) TP2
-    if tp1_level:
-        tp1_ref = prices[0]
-    elif tp1_ratio is not None and last >= 1:
-        want = avg + tp1_ratio * (prices[last] - avg)
-        if tp_hits == 0 and abs(want - prices[0]) > 1e-9:
-            reasons.append(f"TP1 {prices[0]:.3f}->{want:.3f}: {tp1_ratio:g} x TP2 distance ({prices[last]:.3f})")
-            prices[0] = want
-        tp1_ref = want
-    else:
-        tp1_ref = prices[last - 1] if last >= 1 else None
-    # 2) momentum fade (near miss of TP2, then pullback > fade_atr ATR or RSI rollover) -> pull TP2 in
-    faded = prev_faded
-    if fade is not None and atr:
-        dist = s * (prices[last] - avg)
-        reach = s * (fade.peak - avg)
-        if not faded and dist > 0 and reach >= p.near_miss_frac * dist:
-            back = s * (fade.peak - fade.price)
-            if back > p.fade_atr * atr:
-                faded = True
-                reasons.append(f"momentum fade: best {fade.peak:.3f} reached {reach / dist:.0%} of {lvl(last)} distance, "
-                               f"pulled back {back:.3f} > {p.fade_atr:g} ATR ({p.fade_atr * atr:.3f})")
-            elif (p.fade_rsi_drop is not None and fade.rsi_ext is not None and fade.rsi_now is not None
-                  and s * (fade.rsi_ext - fade.rsi_now) >= p.fade_rsi_drop):
-                faded = True
-                reasons.append(f"momentum fade: best {fade.peak:.3f} reached {reach / dist:.0%} of {lvl(last)} distance, "
-                               f"15m RSI rolled over {fade.rsi_ext:.1f}->{fade.rsi_now:.1f} (>= {p.fade_rsi_drop:g} pts)")
-        if faded:
-            tgt = fade.peak - s * p.swing_buffer_atr * atr
-            if fade_floor_tp1 and tp1_ref is not None and beyond(tp1_ref + s * p.min_gap_usd, tgt):
-                floor_px = tp1_ref + s * p.min_gap_usd
-                reasons.append(f"faded {lvl(last)} floor {floor_px:.3f}: TP1 {tp1_ref:.3f} + {p.min_gap_usd:.2f} "
-                               f"(swing target {tgt:.3f} would squeeze the runner)")
-                tgt = floor_px
-            if beyond(prices[last], tgt):
-                reasons.append(f"{lvl(last)} {prices[last]:.3f}->{tgt:.3f}: faded, best {fade.peak:.3f} - "
-                               f"{p.swing_buffer_atr:g} ATR")
-                prices[last] = tgt
-    # 3) fee floors + ordering (each pending level inside the next by min_gap_usd)
+        return SmartTpResult(tuple(prices), tuple(floors), (), tuple(False for _ in prices), tuple(prices))
+    # fee floors + ordering (each pending level inside the next by min_gap_usd)
     def floor_and_order() -> None:
         f_last = floors[last]
         if f_last is not None and beyond(f_last, prices[last]):
@@ -585,7 +433,7 @@ def smart_tps(side: int, avg: float, size: float, base: list[float] | tuple[floa
                 reasons.append(f"{lvl(i + 1)} {prices[i + 1]:.3f}->{lim:.3f}: kept {p.min_gap_usd:.2f} beyond {lvl(i)}")
                 prices[i + 1] = lim
     floor_and_order()
-    # 4) never a trigger at/through market
+    # never a trigger at/through market
     raw = tuple(prices)                  # before the market clamp
     past = [False] * n
     if market is not None:
@@ -600,4 +448,4 @@ def smart_tps(side: int, avg: float, size: float, base: list[float] | tuple[floa
             lo = prices[i] + s * p.min_gap_usd
             if beyond(lo, prices[i + 1]):
                 prices[i + 1] = lo
-    return SmartTpResult(tuple(prices), tuple(floors), tuple(reasons), faded, tuple(past), raw)
+    return SmartTpResult(tuple(prices), tuple(floors), tuple(reasons), tuple(past), raw)

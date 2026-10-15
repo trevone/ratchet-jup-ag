@@ -72,13 +72,8 @@ class Local:
     day_start_equity: float = 0.0
     # idle loosening: when the bot went flat (UTC ISO); None while a position is open
     flat_since: str | None = None
-    # smart TPs: trigger prices this bot placed per ladder level (0 = none), best price / 15m RSI extreme since placement
+    # smart TPs: trigger prices this bot placed per ladder level (0 = none)
     tp_px: list[float] = field(default_factory=list)
-    tp_since: str | None = None
-    tp_peak: float = 0.0
-    tp_rsi_ext: float | None = None
-    tp_rsi_now: float | None = None
-    tp_faded: bool = False
     # per-add trim (2026-10-08, [trim]): every entry / add as its own lot (live/trim.py), the trims of this trade,
     # the total size ever opened in it, the last time it was seen net positive and the per-day trim counter
     lots: list[dict] = field(default_factory=list)
@@ -713,7 +708,7 @@ class Bot:
 
     def _sync_tp_ladder(self, pos: ChainPosition) -> None:
         """Cancel existing TP triggers and place the full ladder on the whole position (strategy.tp_targets:
-        normal ladder on the average, above-water TPs after a deep levels-mode add, smart TP2 / fee floors / never
+        tp1_pct / tp2_pct from the average (else the levels' distances), fee floors / never
         past market when tp.smart_tp2). Resets the momentum-fade tracking. Targets are computed BEFORE the old TPs
         are cancelled, so an exception there leaves the existing TPs in place."""
         st = self.chain()
@@ -733,8 +728,7 @@ class Bot:
             self.cancel_failed(self.ladder_requests(st), "sync", "TP cancel")
             return
         side = "long" if pos.side == LONG else "short"
-        L.tp_px, L.tp_since, L.tp_peak, L.tp_faded = [0.0] * n, str(pd.Timestamp.now(tz="UTC")), price, False
-        L.tp_rsi_ext = L.tp_rsi_now
+        L.tp_px = [0.0] * n
         if L.tp2_override and len(targets) > 1 and not at_guard:   # TP2_SET override survives re-places until the next add
             from strategy import TpTarget
             targets = tuple(list(targets[:1]) + [TpTarget(self.tp2_clamp(pos, st, L.tp2_override, targets[0].price),
@@ -1045,7 +1039,7 @@ class Bot:
         from strategy import TpTarget
         pend, chunks = self._tp_chunks(pos)
         g = trimmod.tp_guard(pos.side, pos.avg_entry, chunks, [targets[i].price for i in pend], self._trim_fixed_usd(pos),
-                             self.cfg.trim.trim_min_net_usd, self.strategy.tp1_ratio_for(pos), self.cfg.tp.tp_min_gap_usd)
+                             self.cfg.trim.trim_min_net_usd, self.cfg.tp.tp_min_gap_usd)
         if not g.raised:
             return self.pg_tp_guard(pos, targets, ctx)
         log.warning("TP adjust (%s): %s", ctx, g.reason)
@@ -2767,16 +2761,6 @@ class Bot:
             log.info(self.bank_status(st, pos, price))
         elif pos is not None and self.cfg.profit_guard.enabled:
             log.info(self.pg_status(pos, price))
-        if pos is not None and self.cfg.tp.smart_tp2:   # momentum tracking for the TP2 fade (bars after placement)
-            L.tp_rsi_now = float(bar.rsi)
-            L.tp_rsi_ext = bar.rsi if L.tp_rsi_ext is None else (max(L.tp_rsi_ext, bar.rsi) if pos.side == LONG
-                                                                 else min(L.tp_rsi_ext, bar.rsi))
-            if L.tp_since and bar.time >= pd.Timestamp(L.tp_since):   # bars opened after placement only
-                hi = bar.high if pos.side == LONG else bar.low
-                L.tp_peak = hi if not L.tp_peak else (max(L.tp_peak, hi) if pos.side == LONG else min(L.tp_peak, hi))
-            log.info("TP state: placed %s, best %.3f, rsi now %.1f ext %.1f, faded %s", L.tp_px, L.tp_peak,
-                     L.tp_rsi_now, L.tp_rsi_ext, L.tp_faded)
-            self.save()
         for it in self.strategy.exit_intents(bar, account):
             if pos is not None:
                 self.close(pos, price, it.reason.value if it.reason else "exit")

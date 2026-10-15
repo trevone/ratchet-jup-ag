@@ -50,8 +50,7 @@ for d, a in ASSETS.items():
     s = s.replace("[market]\n", f'[market]\nsymbol = "{a["symbol"]}"          # Binance klines (same source as SOL): 15m signals, 4h EMA200\n', 1)
     s = sub(s, r"start_equity = ", f"start_equity = {a['start_equity']}", "account")
     s = sub(s, r"levels = ", "mode = \"price_pct\"            # TP distances as a fraction of the average entry (SOL: +$0.50/+$0.75 at ~$116)\n"
-                             "levels = [{ dist = 0.0045, close_pct = 0.5 }, { dist = 0.0075, close_pct = 1.0 }]   # TP1 = 60% of TP2 (ratio mode sets TP1 live)\n"
-                             "tp_res_min_touches = 2         # TP2 cap only at analyst levels with >= 2 touches (h1+h4 merged); unknown = strong", "tp")
+                             "levels = [{ dist = 0.0045, close_pct = 0.5 }, { dist = 0.0075, close_pct = 1.0 }]", "tp")
     s = sub(s, r"dry_run = ", f"dry_run = {'false' if LIVE else 'true'}", "live")
     s = sub(s, r'kill_switch_path = ', f'kill_switch_path = "live/{d}/KILL"', "live")
     s = sub(s, r'levels_path = ', f'levels_path = "/workspace/market-analysis/{d}/latest.json"   # analyst per asset; stale/missing -> own-ATR fallback', "dca")
@@ -72,7 +71,6 @@ atr_tf = "1h"
 atr_len = 14
 trigger_dist_atr = 1.15        # fixed rung spacing = 1.15 x own 1h ATR   [0.85]
 trigger_dist_pct = 0.0073      # ... only until the first klines give an ATR [0.85 / 116]
-deep_buffer_pct = 0.0013       # above-water TP1 buffer after deep adds  [$0.15]
 tp_min_gap_pct = 0.00043       # TP1 at least this inside TP2            [$0.05]
 tp_min_move_pct = 0.00043      # periodic TP re-place threshold          [$0.05]
 tp_market_gap_pct = 0.00017    # trigger at least this beyond market     [$0.02]

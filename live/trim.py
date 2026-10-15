@@ -100,10 +100,10 @@ def overall_net(side: int, avg: float, chunks: Sequence[float], prices: Sequence
 
 
 def tp_guard(side: int, avg: float, chunks: Sequence[float], prices: Sequence[float], fixed_usd: float, min_net: float,
-             ratio: float | None, min_gap: float = 0.05) -> Guard:
+             min_gap: float = 0.05) -> Guard:
     """Raise the pending TPs so the whole trade (``fixed_usd`` = realized trims - all fees, plus the pending TP chunks
-    at their prices) nets >= ``min_net``. TP2 (last) moves out; TP1 follows ``ratio`` x the TP2 distance (else keeps
-    its current fraction). Prices never move inward."""
+    at their prices) nets >= ``min_net``. TP2 (last) moves out; TP1 keeps its current fraction of the TP2
+    distance. Prices never move inward."""
     prices = list(prices)
     before = overall_net(side, avg, chunks, prices, fixed_usd)
     if before >= min_net - 1e-9 or not prices:
@@ -112,7 +112,7 @@ def tp_guard(side: int, avg: float, chunks: Sequence[float], prices: Sequence[fl
     if len(prices) == 1:
         fr = [1.0]
     else:
-        r = ratio if ratio is not None else (side * (prices[0] - avg) / d_last if d_last > 0 else 0.6)
+        r = side * (prices[0] - avg) / d_last if d_last > 0 else 0.6
         fr = [r] * (len(prices) - 1) + [1.0]
     coef = sum(c * f for c, f in zip(chunks, fr)) / avg
     d_need = (min_net - fixed_usd) / coef if coef > 0 else float("inf")
@@ -176,10 +176,10 @@ def trade_sol(side: int, avg: float, margin: float, borrow: float, chunks: Seque
 
 
 def sol_guard(side: int, avg: float, margin: float, borrow: float, chunks: Sequence[float], prices: Sequence[float],
-              close_fee: float, sunk_sol: float, min_sol: float, ratio: float | None, min_gap: float = 0.05,
+              close_fee: float, sunk_sol: float, min_sol: float, min_gap: float = 0.05,
               conv: float | None = None) -> Guard:
     """Raise the pending TPs (never inward) until the projected trade result >= ``min_sol`` SOL. TP2 (last) moves out,
-    TP1 keeps ``ratio`` x the TP2 distance (else its current fraction); smallest distance found by bisection."""
+    TP1 keeps its current fraction of the TP2 distance; smallest distance found by bisection."""
     prices = list(prices)
     f = lambda px: trade_sol(side, avg, margin, borrow, chunks, px, close_fee, sunk_sol, conv)  # noqa: E731
     before = f(prices)
@@ -189,7 +189,7 @@ def sol_guard(side: int, avg: float, margin: float, borrow: float, chunks: Seque
     if len(prices) == 1:
         fr = [1.0]
     else:
-        r = ratio if ratio is not None else (side * (prices[0] - avg) / d_last if d_last > 0 else 0.6)
+        r = side * (prices[0] - avg) / d_last if d_last > 0 else 0.6
         fr = [r] * (len(prices) - 1) + [1.0]
 
     def at(d: float) -> list[float]:

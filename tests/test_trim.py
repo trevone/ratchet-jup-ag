@@ -71,11 +71,11 @@ def test_select_multi_lot_and_first_lot_protection():
 def test_tp_guard_raises_tps_to_keep_whole_trade_positive():
     avg, chunks = 109.882318, [213.23, 213.23]
     fixed = -1.80 - 0.0012 * 581 - 0.05                                    # trim realized loss + all fees
-    g = T.tp_guard(LONG, avg, chunks, [110.33, 110.63], fixed, 0.25, 0.6)
+    g = T.tp_guard(LONG, avg, chunks, [110.33, 110.63], fixed, 0.25)
     assert g.raised and g.prices[1] > 110.63 and g.prices[0] > 110.33
     assert T.overall_net(LONG, avg, chunks, g.prices, fixed) >= 0.25 - 1e-6
     assert g.prices[0] == pytest.approx(avg + 0.6 * (g.prices[1] - avg), abs=0.02)
-    ok = T.tp_guard(LONG, avg, chunks, [110.33, 110.63], 0.0, 0.25, 0.6)    # no trims: nothing to make up
+    ok = T.tp_guard(LONG, avg, chunks, [110.33, 110.63], 0.0, 0.25)    # no trims: nothing to make up
     assert not ok.raised and ok.prices == [110.33, 110.63]
 
 
@@ -352,11 +352,11 @@ def test_trade_sol_and_sol_guard():
     dep, m, ch = 10.5 / 110, 10.45, [26.25, 26.25]
     r = T.trade_sol(LONG, 110.0, m, 0.0, ch, [110.45, 110.75], OF, -dep)
     assert 0.001 < r < 0.003
-    ok = T.sol_guard(LONG, 110.0, m, 0.0, ch, [110.45, 110.75], OF, -dep, 0.001, 0.6)
+    ok = T.sol_guard(LONG, 110.0, m, 0.0, ch, [110.45, 110.75], OF, -dep, 0.001)
     assert not ok.raised and ok.prices == [110.45, 110.75]
-    g = T.sol_guard(LONG, 110.0, m, 0.0, ch, [110.45, 110.75], OF, -dep - 0.004, 0.001, 0.6)   # e.g. a costly trim earlier
+    g = T.sol_guard(LONG, 110.0, m, 0.0, ch, [110.45, 110.75], OF, -dep - 0.004, 0.001)   # e.g. a costly trim earlier
     assert g.raised and g.prices[1] > 110.75 and g.net_after >= 0.001 and g.net_before < 0.001
-    assert T.sol_guard(-1, 110.0, m, 0.0, ch, [109.55, 109.25], OF, -dep - 0.004, 0.001, 0.6).prices[1] < 109.25
+    assert T.sol_guard(-1, 110.0, m, 0.0, ch, [109.55, 109.25], OF, -dep - 0.004, 0.001).prices[1] < 109.25
     # ETH / BTC: USD converted at the SOL price
     assert T.trade_sol(LONG, 2500.0, m, 0.0, ch, [2510.0, 2520.0], OF, -0.1, conv=105.0) == pytest.approx(
         -0.1 + (m + 26.25 * 0.004 + 26.25 * 0.008 - 2 * OF * 26.25) / 105.0)
