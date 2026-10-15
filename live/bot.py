@@ -355,6 +355,21 @@ class Bot:
                              last_entry=L.last_entry or p["price"], tp_hits=L.tp_hits,
                              first_tp_time=pd.Timestamp(L.first_tp_time) if L.first_tp_time else None)
 
+    def _position_flows(self, rec: dict[str, Any]) -> tuple[float | None, float | None, float | None]:
+        """(net SOL, rent, event gross) of this position's own txs since its open tx (shared wallet: other bots / deposits /
+        stakes excluded); Nones when unavailable (wallet-delta fallback)."""
+        flows, rent, gross = None, None, None
+        try:   # this position's own txs since its open tx (shared wallet: other bots / deposits / stakes excluded)
+            o = json.loads(ledger.OPEN.read_text()) if ledger.OPEN.exists() else {}
+            flows, fres = position_net_sol(o.get("position") or rec.get("pubkey"), o.get("open_sig"))
+            if flows is not None:
+                rent, gross = flow_extras(fres)   # token-account rent (capital, excluded) + event gross P&L
+                log.info("LEDGER position flows: %d txs, net %+.9f SOL (token-account rent %s SOL excluded; legacy %s), "
+                         "event gross %s USD", fres.get("nTx", 0), flows, rent, fres.get("legacyNetLamports"), gross)
+        except Exception as e:  # noqa: BLE001 - fall back to the wallet delta
+            log.warning("position flows failed: %s", e)
+        return flows, rent, gross
+
     def book_flat(self, st: dict[str, Any], side: int) -> float | None:
         """Write the finished trade to live/trades.csv (net SOL = wallet after flat - before open)."""
         rec = st["positions"]["long" if side == LONG else "short"]
@@ -366,25 +381,16 @@ class Bot:
             hourly = (mn + (tg - mn) * min(u / tu, 1.0)) / 8760
         except (KeyError, TypeError, ValueError, ZeroDivisionError):
             hourly = self.cfg.costs.borrow_per_hour
-        flows, rent, gross = None, None, None
-        try:   # this position's own txs since its open tx (shared wallet: other bots / deposits / stakes excluded)
-            o = json.loads(ledger.OPEN.read_text()) if ledger.OPEN.exists() else {}
-            flows, fres = position_net_sol(o.get("position") or rec.get("pubkey"), o.get("open_sig"))
-            if flows is not None:
-                rent, gross = flow_extras(fres)   # token-account rent (capital, excluded) + event gross P&L
-                log.info("LEDGER position flows: %d txs, net %+.9f SOL (token-account rent %s SOL excluded; legacy %s), "
-                         "event gross %s USD", fres.get("nTx", 0), flows, rent, fres.get("legacyNetLamports"), gross)
-        except Exception as e:  # noqa: BLE001 - fall back to the wallet delta
-            log.warning("position flows failed: %s", e)
+        flows, rent, gross = self._position_flows(rec)
         args = {"time": str(pd.Timestamp.now(tz="UTC")), "wallet_sol": st["wallet"]["sol"], "sol_px": self.sol_price(st),
                 "realised": rec.get("realisedPnlUsd"), "hourly": hourly, "flows": flows, "rent": rent, "gross": gross}
-        if self.bank_on and self.asset != "SOL" and not self.live.dry_run and ledger.OPEN.exists():
-            # own-coin ledger (2026-10-09): the ETH / BTC bot's result is its own-coin balance change, and the last payout
-            # lands in the wallet a tick later -> book once the payout window is over (bank_book_pending)
+        if self.bank_on and not self.live.dry_run and ledger.OPEN.exists():
+            # the last payout (ETH / BTC own-coin result, 2026-10-09) and the cancelled resting add's collateral refund
+            # (all bots, 2026-10-14) land a tick or more after flat -> book once the payout window is over and this
+            # market has nothing in flight (bank_book_pending; SOL re-reads its position flows then)
             self.local.bank["book_pend"] = args
-            log.info("LEDGER %s trade flat: booking in own coin (%s) once the payout settles (window %d ticks); position "
-                     "SOL flows %s (fees only, not the result)", self.asset, self.local.bank["coin"],
-                     self.cfg.ledger.window_ticks, flows)
+            log.info("LEDGER %s trade flat: booking once the payout / refund settles (window %d ticks); position SOL flows "
+                     "now %s", self.asset, self.cfg.ledger.window_ticks, flows)
             self.save()
             return flows
         self._book_row(args)
@@ -419,8 +425,14 @@ class Bot:
             log.warning("LEDGER deferred %s booking: no open record left; nothing booked", self.asset)
         else:
             a = {**a, "sol_px": sol_px or a["sol_px"]}
-            self._book_row(a, native={"coin": b["coin"], "deposited": b.get("trade_dep", 0.0),
-                                      "received": b.get("trade_recv", 0.0), "coin_px": cpx})
+            if self.asset == "SOL":   # re-read: a late resting-add refund is one of the position's txs
+                f = self._position_flows({})
+                if f[0] is not None:
+                    a.update(flows=f[0], rent=f[1], gross=f[2])
+                self._book_row(a)
+            else:
+                self._book_row(a, native={"coin": b["coin"], "deposited": b.get("trade_dep", 0.0),
+                                          "received": b.get("trade_recv", 0.0), "coin_px": cpx})
         log.info("BANK trade done: deposited %.9f, received %.9f %s (net %+.9f)", b.get("trade_dep", 0.0),
                  b.get("trade_recv", 0.0), b["coin"], b.get("trade_recv", 0.0) - b.get("trade_dep", 0.0))
         b["trade_dep"], b["trade_recv"] = 0.0, 0.0
@@ -1916,7 +1928,7 @@ class Bot:
         if b.get("window", 0) > 0:
             b["window"] -= 1
         flat = pos is None and b.get("window", 0) == 0 and not self._busy(st, self.asset == "SOL")
-        if flat and b.get("book_pend") and not b.get("pend"):
+        if pos is None and b.get("window", 0) == 0 and not self._busy(st, False) and b.get("book_pend") and not b.get("pend"):
             self.bank_book_pending(sol_px, cpx)
         if flat and bankmod.loan_outstanding(b) > 0 and not b.get("pend"):   # JupSOL rescue: repay + restore settings
             try:

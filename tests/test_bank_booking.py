@@ -106,3 +106,25 @@ def test_on_flat_native_row_math():
                        native={"coin": "WBTC", "deposited": 0.00012727, "received": 0.0001294, "coin_px": 82800.0})
     assert r["net_native"] == pytest.approx(0.00000213) and r["net_sol"] == pytest.approx(0.00000213 * 82800 / 110, abs=1e-9)
     assert r["true_result_sol"] == r["net_sol"] and "net_sol_est" not in r and r["flows_net_sol"] == -0.000018232
+
+
+def test_sol_row_waits_for_the_cancelled_add_refund(bbot, monkeypatch):
+    """2026-10-14: the SOL row was booked at flat (-0.095138230), a minute before the cancelled resting add's refund
+    (+0.095831358) landed -> true net +0.000693128. The row now waits for the window / nothing in flight and re-reads."""
+    import live.bot as B
+    bbot.asset, bbot.local.bank["coin"] = "SOL", "SOL"
+    flows = {"v": -0.095138230}
+    monkeypatch.setattr(B, "position_net_sol", lambda pos, sig: (flows["v"], {"ok": True, "nTx": 5, "rentLamports": 0}))
+    b = bbot.local.bank
+    bbot.bank_flat(bbot.book_flat(_st(0), LONG))
+    assert not ledger.TRADES.exists() and "book_pend" in b
+    st = _st(0)
+    st["openRequests"] = [{"pubkey": "R", "requestType": "market", "requestChange": "increase"}]
+    for _ in range(4):                                        # window over, but the add is still in flight
+        bbot.bank_tick(st, None, BTC_PX)
+    assert not ledger.TRADES.exists()
+    flows["v"] = 0.000693128                                  # the refund lands
+    st["openRequests"] = []
+    bbot.bank_tick(st, None, BTC_PX)
+    r = wd.read_trades(ledger.TRADES)
+    assert len(r) == 1 and float(r[0]["net_sol"]) == pytest.approx(0.000693128) and "book_pend" not in b

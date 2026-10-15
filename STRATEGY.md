@@ -321,3 +321,10 @@ attribution were removed (2026-10-14; on 2026-10-13 04:31 MT it had handed an ET
 - Analyst / strategy TP1 / TP2 beyond P_min are kept; otherwise the TP is placed exactly at P_min. TP2 then stays beyond TP1 by >= tp_min_gap_usd. Re-placement uses the existing cancel/replace path. TP3, guard, entries unchanged; no min-out; no halt from this rule.
 - TP3 (per-add partial, Trevor 2026-10-13 20:38 MT): its portion (covered adds, size s, size-weighted entry e) must net >= tp3_fee_mult (default 2.0, [tp]) x its own fees F3 = (open_fee + close_fee) x s + accrued borrow x s / position size. P3_min = e x (1 +/- (1 + tp3_fee_mult) x F3 / s), rounded outward to the cent. The zone / level / zone-edge / fee-covering target is kept when beyond P3_min, else TP3 is placed exactly at P3_min (mode "...->fee_mult_min"). Zone logic otherwise unchanged.
 
+
+### Trade row waits for the cancelled resting add's refund (2026-10-14, Trevor)
+A closed trade's row (trades.csv / ledger_summary) is no longer written at flat. Every bank bot stores the booking args
+(`bank.book_pend`) and books once the payout window is over and this market has no open request in flight
+(`bank_tick`). The SOL bot then re-reads the position's own flows, so the cancelled resting add's collateral refund
+(landing up to a minute after flat; SOL 0.0958 on 3p82BqdH.., F7RkVw.. earlier) is in the row's net. ETH / BTC already
+booked from the own-coin bank this way. Never halts, no KILL; a new open books the pending row first.
