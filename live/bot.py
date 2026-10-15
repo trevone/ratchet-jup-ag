@@ -509,6 +509,7 @@ class Bot:
         if self.bank_on and not self.live.dry_run and not own_open:   # Trevor 08:52 MT: collateral = trade deposit (no HWM)
             b = L.bank
             nat = round(pos.margin / self.coin_px(st), 9)
+            b["trade_start_equity"] = self.bank_equity_flat(st)
             bankmod.debit(b, nat, "collateral", f"adopted position collateral ${pos.margin:.2f} at {self.coin_px(st):.4f}")
             b["window"] = max(b.get("window", 0), self.cfg.ledger.window_ticks)
         lev = round(pos.size / pos.margin, 2) if pos.margin > 0 else L.last_leverage
@@ -1061,12 +1062,6 @@ class Bot:
             return False
         return g.close_requires == "any" or L.n_entries > 1 or len(L.lots) > 1 or bool(L.trims)
 
-    def guard_allowed(self, pos: ChainPosition, price: float) -> bool:
-        """[ledger] guard_only_underwater: the profit-guard market close may only fire on the losing side of avg."""
-        if not getattr(self.cfg.ledger, "guard_only_underwater", False):
-            return True
-        return pos.side * (price - pos.avg_entry) < 0
-
     def pg_close_ok(self, pos: ChainPosition, price: float) -> tuple[bool, str]:
         """Early close (TP timer) allowed only when closing now ends the trade >= baseline + min profit (SOL)."""
         if not self.pg_active():
@@ -1372,6 +1367,7 @@ class Bot:
                 self.bank_book_pending(self.sol_price(st), self.coin_px(st), "new trade opened")
             if pos is None:
                 b["trade_dep"], b["trade_recv"] = 0.0, 0.0
+                b["trade_start_equity"] = self.bank_equity_flat(st)   # per-trade guard baseline, before the opening debit
             bankmod.debit(b, nat, "collateral", f"{it.action.value} {side} ${it.margin:.2f} x{it.leverage:g} sig {res.get('sig')}")
             b["window"] = max(b.get("window", 0), self.cfg.ledger.window_ticks)   # a rejected request refunds the coin
             self.save()
@@ -2304,13 +2300,25 @@ class Bot:
         rest = float(ra.get("nat") or 0.0) if ra and ra.get("debited") else 0.0
         return bankmod.equity(b, cv, bankmod.fee_debt_native(b, sol_px, cpx)) + rest
 
-    def guard_min_native(self) -> float:
-        """Profit-guard margin above HWM (native). pct mode (2026-10-12): hwm x (pct + per_partial x partials this trade)."""
-        g = self.cfg.ledger
-        if g.min_profit_pct_hwm > 0:
-            n = len(self.local.trims) + len(self.local.partials_done)
-            return self.local.bank["hwm"] * (g.min_profit_pct_hwm + g.min_profit_pct_per_partial * n)
-        return g.min_profit_native
+    def bank_equity_flat(self, st: dict[str, Any]) -> float:
+        """Own-coin equity with nothing in a position (= the hwm_equity formula without the close value)."""
+        b = self.local.bank
+        return round(bankmod.equity(b, 0.0, bankmod.fee_debt_native(b, self.sol_price(st), self.coin_px(st))), 9)
+
+    def guard_target(self, st: dict[str, Any]) -> float:
+        """Per-trade profit guard (Trevor 2026-10-14): target = trade_start_equity x (1 + min_profit_pct_trade). The baseline
+        is saved when the trade opens (before the opening debit). A position already open without one (deploy / adopt) gets
+        the bank HWM, which equals the flat equity at its open (HWM only rises while flat): one-off, logged, never HWM-written."""
+        b = self.local.bank
+        if b.get("trade_start_equity") is None:
+            b["trade_start_equity"] = b["hwm"]
+            log.warning("MIGRATION: trade_start_equity unset on an open position -> %.9f (= hwm, the flat equity at its open); hwm/wd_mark untouched", b["hwm"])
+            self.save()
+        return b["trade_start_equity"] * (1 + self.cfg.profit_guard.min_profit_pct_trade)
+
+    def guard_check(self, pos: ChainPosition, st: dict[str, Any], price: float) -> tuple[bool, str]:
+        eq, tgt = self.hwm_equity(pos, st, price), self.guard_target(st)
+        return eq >= tgt - 1e-12, f"trade guard: equity if closed now {eq:.9f} vs start {self.local.bank['trade_start_equity']:.9f} x (1+{self.cfg.profit_guard.min_profit_pct_trade:g}) = {tgt:.9f}"
 
     def hwm_check(self, pos: ChainPosition, st: dict[str, Any], price: float, min_native: float) -> tuple[bool, str]:
         """Equity if closed now (own coin) >= hwm + min_native? (guard: min_profit_native; TP timer: 0 = not below HWM)."""
@@ -2322,7 +2330,7 @@ class Bot:
     def bank_status(self, st: dict[str, Any], pos: ChainPosition | None, price: float) -> str:
         b = self.local.bank
         eq = self.hwm_equity(pos, st, price)
-        tgt = b["hwm"] + self.guard_min_native() if pos is not None else None
+        tgt = self.guard_target(st) if pos is not None else None
         arm = (" | guard " + ("ARMED (adds/trims)" if self.hwm_close_armed() else "not armed (first entry: TPs only)")) if pos else ""
         return bankmod.status_line(b, self.coin_px(st), self.sol_price(st), eq, tgt) + arm
 
@@ -2473,14 +2481,9 @@ class Bot:
             if lev.stop is not None and pos.side * (price - lev.stop.price) <= 0:
                 self.close(pos, price, f"stop {lev.stop.reason.value} @ {lev.stop.price:.3f}")
                 return
-            # Trevor 2026-10-11 06:31 MT: the guard only fires while underwater (long price < avg, short price > avg);
-            # at/through avg on the profit side TP1/TP2 (and Grok Bot's TP2 moves) decide the exit.
-            guard_ok = self.guard_allowed(pos, price)
-            if not guard_ok:
-                pass
-            elif self.bank_on:   # HWM profit guard (2026-10-08 21:37 MT): close all once equity >= hwm + min (never moves TPs)
+            if self.bank_on:   # per-trade profit guard (Trevor 2026-10-14): close all once equity >= trade_start_equity x 1.002 (never moves TPs)
                 if self.hwm_close_armed():
-                    ok, note = self.hwm_check(pos, st, price, self.guard_min_native())
+                    ok, note = self.guard_check(pos, st, price)
                     if ok:
                         self.close(pos, price, f"profit_guard ({note})")
                         return

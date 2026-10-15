@@ -300,3 +300,53 @@ def test_bank_tick_sol_external_split(monkeypatch, tmp_path):
     assert K.pending_others(K.load_journal()) == pytest.approx(0.5)
     b.bank_tick(st, None, 110.0)                           # no double count
     assert bk["bal"] == pytest.approx(1.18)
+
+
+# ------------------------------------------------------------------ per-trade profit guard (Trevor 2026-10-14)
+def _arm(ebot, side=LONG):
+    ebot.local.side, ebot.local.n_entries, ebot.local.lots = side, 2, [{"size": 52.5, "price": 2450.0}, {"size": 18.0, "price": 2440.0}]
+
+
+def test_trade_guard_fires_on_equity_vs_baseline_not_price_vs_avg(ebot):
+    b = ebot.local.bank
+    _arm(ebot)
+    b["bal"], b["hwm"], b["trade_start_equity"] = 0.0100, 0.0155, 0.0150     # hwm must not matter
+    assert ebot.guard_target(_st()) == pytest.approx(0.0150 * 1.002)
+    lo = _st(side="long", price=2400.0)
+    assert not ebot.guard_check(ebot.chain_position(lo), lo, 2400.0)[0]
+    hi = _st(side="long", price=2600.0)                                          # far above avg: still fires
+    pos = hi_pos = ebot.chain_position(hi)
+    assert pos.side * (2600.0 - pos.avg_entry) > 0 and ebot.guard_check(hi_pos, hi, 2600.0)[0]
+    b["trade_start_equity"] = 1.0                                                # hwm 0.0155 is ignored; baseline decides
+    assert not ebot.guard_check(hi_pos, hi, 2600.0)[0]
+
+
+def test_trade_guard_target_boundary(ebot):
+    b = ebot.local.bank
+    _arm(ebot)
+    st = _st(side="long", price=2500.0)
+    pos = ebot.chain_position(st)
+    eq = ebot.hwm_equity(pos, st, 2500.0)
+    b["trade_start_equity"] = eq / 1.002 + 1e-9
+    assert not ebot.guard_check(pos, st, 2500.0)[0]
+    b["trade_start_equity"] = eq / 1.002 - 1e-9
+    assert ebot.guard_check(pos, st, 2500.0)[0]
+
+
+def test_baseline_set_on_flat_open_persisted_and_reset_next_trade(ebot):
+    b = ebot.local.bank
+    b["trade_start_equity"] = 123.0                                              # stale from a previous trade
+    b["fee_sol"], b["bal"] = 0.0, 0.015
+    st1 = _st(side="long", size=52.5, coll=10.45, avg=2450.0)
+    ebot.chain = lambda: st1
+    ebot.sync_tp_ladder = lambda pos: None
+    ebot.open_or_add(Intent(Action.OPEN, LONG, 2450.0, margin=10.5, leverage=5), None, _st(size=0), 100.0)
+    assert b["trade_start_equity"] == pytest.approx(0.015)                      # before the opening debit
+    assert b["bal"] < 0.015
+
+
+def test_missing_baseline_migrates_once_to_hwm_without_touching_hwm(ebot):
+    b = ebot.local.bank
+    b.pop("trade_start_equity", None)
+    wd = b["wd_mark"]
+    assert ebot.guard_target(_st()) == pytest.approx(b["hwm"] * 1.002) and b["trade_start_equity"] == b["hwm"] and b["wd_mark"] == wd

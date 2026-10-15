@@ -144,7 +144,7 @@ Jupiter books trims against the average; bot tracks true per-add gain separately
 
 ## 8. Profit guard (HWM)
 
-**Trevor 2026-10-11 06:31 MT - guard only when underwater** (`[ledger] guard_only_underwater = true`, all three bots): the profit-guard market close (HWM guard `hwm + min_profit_native`, or the legacy pg_close) may only fire while the position is on the losing side of its average (long: price < avg; short: price > avg). At/through the average on the profit side the guard does nothing; TP1/TP2 and Grok Bot's TP2 moves decide the exit. The 55-min TP timer (`close_remainder_after_min`) is unchanged: it still requires profit (net > 0 after fees) + the HWM check (per-tick path; see the TP timer note).
+**Trevor 2026-10-14 - per-trade guard (replaces the HWM target and the underwater gate)**: the guard market-closes the whole position (adds/trims trades only, `close_requires`) once `hwm_equity()` (equity if closed now, incl. a resting add's collateral) >= `trade_start_equity` x (1 + `[profit_guard] min_profit_pct_trade`, code default 0.002 = 0.2%, plain, no per-partial uplift). `trade_start_equity` (state/bank) = `bal - fee_debt - loan + ib_adj` immediately before the opening debit of a trade opened from flat (set in `open_or_add`; also on adoption); it persists in state.json and is overwritten by the next trade. HWM/wd_mark play no part in the test, and the guard no longer depends on price vs avg (`guard_only_underwater` is obsolete; the key stays in the tomls only so they load). A position open without a baseline (deploy) gets a one-off logged `MIGRATION` = bank hwm (HWM only rises while flat, so it equals the flat equity at that open; BTC 2026-10-14: 0.000707734 = bal 0.00070939 - fee debt 0.000001656). The 55-min TP timer is unchanged (`hwm_check(..., 0.0)`: close only if equity >= HWM). TP1/TP2 stay as backup, never moved by the guard. The old `guard_min_native`/`min_profit_native`/`min_profit_pct_*` ledger keys are unused by the live guard.
 
 **Trevor 2026-10-11 - HWM reset on nightly withdrawal** (already implemented, all bots via `bank.apply_withdrawal`): when the daily job withdraws X of a bot's coin to JupSOL, bal and hwm both drop by X and wd_mark = the new hwm, so the guard never chases withdrawn money (e.g. SOL 10-11 00:05 MT: hwm 0.7879 -> 0.7832).
 
@@ -252,6 +252,22 @@ price / size / collateral from the event), booking it like a normal add (fresh T
 match nothing changes and trims keep skipping on the mismatch. Resting limit-add fills ([resting], live) are saved
 the moment they are booked and are never rebuilt twice.
 
+
+## Ladder preset C (2026-10-12, LIVE since 00:30 MT)
+`dca.ladder_fixed_usd` (default 0 = off): when > 0 every add rung gets exactly this collateral instead of the weighted
+split. Preset C (configs/preset_ladder_c.txt): $10 open (entry.first_collateral_mode = "fixed", sizing fixed_usd $10),
+$10 per rung (ladder_fixed_usd 10, min_add_usd 10), leverage 5x +2.5x per add capped at 20x, 10 main rungs, no deep
+rung. Rungs the free collateral cannot cover are simply not placed ($10 minimum = Jupiter's limit-order minimum).
+
+
+## TP3 = the only partial mechanism ([resting] partials_enabled, LIVE 2026-10-12 00:30 MT)
+When partials_enabled is on, the single partial TP order per position (TP3) is the only way lots are partially closed.
+The old market trim still arms (0.65% against avg; was 1% 2026-10-12 06:22-20:29 MT) and computes eligible adds - that decides when / for which adds TP3
+is placed - but it never sends a market close. TP3 is cancelled and re-placed when a new add fills. TP1/TP2 unchanged.
+live/manual_trim.sh <bot> --send refuses while a TP3 order is live (dry run works).
+
+## Profit guard target (superseded 2026-10-14)
+Was HWM x (0.2% + 0.05% x partials). Now per trade: see section 8 (trade_start_equity x 1.002).
 
 ## Ladder preset C (2026-10-12, LIVE since 00:30 MT)
 `dca.ladder_fixed_usd` (default 0 = off): when > 0 every add rung gets exactly this collateral instead of the weighted

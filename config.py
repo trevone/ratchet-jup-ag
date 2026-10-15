@@ -407,9 +407,10 @@ class ProfitGuardConfig:
     close_network_sol: float = 0.00002    # est. network fees still to pay (final close + TP cancels)
     close_when_met: bool = True           # market-close the whole position once the close now meets baseline + min
     close_requires: str = "adds_or_trims"  # "adds_or_trims" | "any"
+    min_profit_pct_trade: float = 0.002   # live guard (Trevor 2026-10-14): close once equity >= trade_start_equity x (1 + this)
 
     def __post_init__(self) -> None:
-        if self.min_trade_profit_sol < 0 or self.min_trade_profit_pct < 0 or self.close_network_sol < 0:
+        if self.min_trade_profit_sol < 0 or self.min_trade_profit_pct < 0 or self.close_network_sol < 0 or self.min_profit_pct_trade < 0:
             raise ValueError("profit_guard.* must be >= 0")
         if self.close_requires not in ("adds_or_trims", "any"):
             raise ValueError("profit_guard.close_requires must be 'adds_or_trims' or 'any'")
@@ -422,7 +423,7 @@ class LedgerConfig:
     from it and pay back into it; the profit guard targets hwm + min_profit_native; a daily job moves
     withdraw_fraction x (HWM gain since the last withdrawal) into JupSOL. OFF by default (backtests / old tests)."""
     enabled: bool = False
-    guard_only_underwater: bool = False     # Trevor 2026-10-11: guard close only while price is on the losing side of avg
+    guard_only_underwater: bool = False     # OBSOLETE (2026-10-14: per-trade guard ignores it; key kept so live tomls still load)
     min_profit_native: float = 0.001        # guard target = hwm + this (native units: SOL / ETH / WBTC)
     # Trevor 2026-10-12 00:08/00:13 MT: > 0 replaces min_profit_native: target = hwm x (min_profit_pct_hwm +
     # min_profit_pct_per_partial x partials taken this trade [trims + partial-TP fills])

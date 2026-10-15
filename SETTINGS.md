@@ -41,13 +41,13 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 | [profit_guard] | enabled / close_when_met / close_requires | true / true / adds_or_trims | same | same | Market-close whole position when equity >= HWM + min profit |
 | [profit_guard] | min_trade_profit_sol | 0.001 | 0.001 | 0.001 | **Legacy field, not used by the live guard** (see [ledger] min_profit_native) |
 | [ledger] | enabled | true | true | true | Per-bot own-coin bank + HWM |
-| [ledger] | min_profit_native | 0.0015 SOL | 0.000066 ETH | 0.00000195 WBTC | Live guard threshold above HWM (~$0.17) |
+| [ledger] | min_profit_native | 0.0015 SOL | 0.000066 ETH | 0.00000195 WBTC | Obsolete (guard is per trade: [profit_guard] min_profit_pct_trade 0.002, code default) |
 | [ledger] | ext_min_usd / window_ticks | 1.5 / 3 | same | same | External deposit/withdrawal detection |
 | [ledger] | withdraw_enabled / time / fraction / min_usd | true / 00:05 / 0.5 / 0.50 | same | same | Daily 50% of HWM gain -> JupSOL |
 | [ledger] | fee_settle_min_sol | 0.005 | 0.005 | 0.005 | ETH/BTC settle SOL fee debt above this |
 | [withdraw] | enabled | true | false | false | Legacy SOL daily stake job (SOL bot only) |
 | [bot] | asset / share / state_dir | SOL / 0.5 / live | ETH / 0.25 / live/eth | BTC / 0.25 / live/btc | Market, wallet share, state dir |
-| [ledger] | guard_only_underwater | true | true | true | Trevor 2026-10-11: profit-guard close only while price is on the losing side of avg; TP timer unchanged |
+| [ledger] | guard_only_underwater | true | true | true | Obsolete since 2026-10-14 (ignored; per-trade guard) |
 | [ledger] | withdraw_cost_pct / withdraw_network_sol / withdraw_fee_factor | 0.001 / 0.00005 / 2 | 0.003 / 0.0001 / 2 | 0.003 / 0.0001 / 2 | Trevor 2026-10-11: replaces withdraw_min_usd 0.50; withdraw when amount_usd > factor x est. cost, else carry |
 | rescue_cfg.json | trigger_pct / target_pct | 3 / 10 | 3 / 10 | 3 / 10 | Trevor 2026-10-11: JupSOL rescue when liq within 3%; collateral aims liq 10% away |
 | rescue_cfg.json | collateral_share / keep_jupsol / haircut_pct | 0.6 / 0 / 1 | same | same | Share of loan to collateral (rest = bank credit); JupSOL kept back; swap-cost haircut |

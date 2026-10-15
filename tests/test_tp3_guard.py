@@ -32,30 +32,3 @@ def test_market_trim_unchanged_when_partials_off(monkeypatch, tmp_path):
     calls = trim_ready(off, monkeypatch)
     st = state()
     assert off.maybe_trim(off.chain_position(st), st, 106.6) is True and len(calls) == 1
-
-
-@pytest.mark.parametrize("trims,partials,want", [(0, 0, 0.002), (3, 0, 0.0035), (2, 2, 0.004)])
-def test_guard_target_pct_of_hwm_grows_per_partial(monkeypatch, tmp_path, trims, partials, want):
-    b = mkbot(monkeypatch, tmp_path, ["ledger.min_profit_pct_hwm=0.002", "ledger.min_profit_pct_per_partial=0.0005"])
-    b.local.bank = {"hwm": 2.0, "coin": "SOL"}
-    b.local.trims = [{}] * trims
-    b.local.partials_done = [{}] * partials
-    assert b.guard_min_native() == pytest.approx(2.0 * want)
-
-
-def test_guard_falls_back_to_fixed_native_when_pct_off(monkeypatch, tmp_path):
-    b = mkbot(monkeypatch, tmp_path, ["ledger.min_profit_native=0.0015"])
-    b.local.bank = {"hwm": 2.0, "coin": "SOL"}
-    assert b.guard_min_native() == 0.0015
-
-
-def test_manual_trim_refuses_send_while_tp3_live(tmp_path, monkeypatch):
-    import runpy
-    (tmp_path / "logs").mkdir()
-    (tmp_path / "state.json").write_text(json.dumps({"partials": [{"pubkey": "TP3X"}]}))
-    monkeypatch.setattr(sys, "argv", ["x", "--config", "configs/live_100.toml", "--send", "--set", f"bot.state_dir={tmp_path}",
-                                      "--set", "resting.partials_enabled=true"])
-    monkeypatch.delenv("JUP_LIVE", raising=False)
-    with pytest.raises(SystemExit) as e:
-        runpy.run_module("live.patches.manual_trim_20261008", run_name="__main__")
-    assert "manual trim refused" in str(e.value) and "TP3X" in str(e.value)

@@ -9,7 +9,7 @@ Ratchet runs three Jupiter Perps bots (SOL, ETH, BTC) from one wallet. Full stra
 - **Leverage:** 5x start, +1x per add, cap 20x.
 - **Take profit:** TP1 (50%) and TP2 placed on-chain at open/add; TP1 = 60% of smart TP2 distance; TP2 capped under resistance.
 - **Trim:** arms at 0.65% against avg, then closes profitable adds just before the next S/R level.
-- **Profit guard:** market-closes the whole position when equity-if-closed >= HWM + `[ledger] min_profit_native` (trades with adds or trims).
+- **Profit guard:** market-closes the whole position when equity-if-closed >= the trade's start equity x (1 + `[profit_guard] min_profit_pct_trade`, 0.2%) (trades with adds or trims).
 - **Daily 00:05 MT:** 50% of HWM gain per bot -> JupSOL.
 - No stop-loss; never close to cut a loss.
 
