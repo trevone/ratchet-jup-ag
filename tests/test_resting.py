@@ -372,3 +372,63 @@ def test_sol_cancel_refund_credits_request_rent_too_eth_does_not(bot):
     bot.local.bank = b2
     bot._rest_bank_refund(ra, "x")
     assert b2["bal"] == pytest.approx(1.5)
+
+
+# ------------------------------------------------------------------ 2026-10-15 re-arm: resting add returns to a TP3-closed lot's entry
+def rearm_setup(bot):
+    st = state()
+    bot.resting_tick(bot.chain_position(st), st, 106.6, ACC, 100.0)   # the resting add (LIM1) sits below
+    L = bot.local
+    lot = L.lots[-1]
+    L.partials = [{"pubkey": "PX", "lots": [lot["time"]], "lot_time": lot["time"], "size": lot["size"], "px": 106.8,
+                   "level": 106.8, "n": 1, "rung": 6}]
+    st2 = state(size=round(SIZE - lot["size"], 2), coll=COLL - 0.5, price=106.7,
+                reqs=[req("R1", 110.33), req("LIM1", L.rest_add["trigger"], "increase")])
+    pos, _ = bot.resting_reconcile(st2, bot.chain_position(st2), 106.7)   # TP3 closed the add 0.36 (< 0.5 ATR) above its entry
+    return st2, pos, lot
+
+
+def test_tp3_closing_an_add_moves_the_resting_add_to_the_lots_entry(bot):
+    st2, pos, lot = rearm_setup(bot)
+    L = bot.local
+    assert L.rearm == {"px": lot["price"], "lev": lot["lev"], "margin": round(lot["size"] / lot["lev"], 4)}
+    old = L.rest_add["trigger"]
+    assert old != round(lot["price"], 2)
+    bot.calls.clear()
+    bot.resting_tick(pos, st2, 106.7, ACC, 100.0)
+    names = [n for n, _ in bot.calls]
+    assert names == ["cancel-limit-order", "create-limit-order"] and bot.calls[0][1] == {"request": "LIM1"}
+    args = bot.calls[1][1]
+    assert args["triggerPriceUsd"] == round(lot["price"], 2) and args["sizeUsd"] == pytest.approx(lot["size"], abs=0.01)
+    assert L.rest_add["pubkey"] == "LIM2" and L.rest_add["trigger"] == round(lot["price"], 2) and L.rest_add["lev"] == lot["lev"]
+    bot.calls.clear()   # next tick: already there -> no new calls, still exactly one resting add
+    bot.resting_tick(pos, st2, 106.7, ACC, 100.0)
+    assert not bot.calls
+
+
+def test_rearm_failed_cancel_places_nothing(bot):
+    st2, pos, lot = rearm_setup(bot)
+    bot.chain = lambda: st2   # the old add is still on-chain
+    real = bot.cmd
+    def cmd(n, a):
+        if n == "cancel-limit-order":
+            bot.calls.append((n, a))
+            return {"ok": False, "error": "boom"}
+        return real(n, a)
+    bot.cmd = cmd
+    old = dict(bot.local.rest_add)
+    bot.calls.clear()
+    bot.resting_tick(pos, st2, 106.7, ACC, 100.0)
+    assert [n for n, _ in bot.calls] == ["cancel-limit-order"] and bot.local.rest_add == old
+
+
+def test_rearm_cleared_on_fill_and_market_unfavourable_keeps_plan(bot):
+    st2, pos, lot = rearm_setup(bot)
+    L = bot.local
+    plan, _ = bot.rest_add_plan(pos, ACC.cash, lot["price"] - 0.1)   # market below the entry: normal ladder plan
+    assert plan is not None and getattr(plan, "source", "") != "rearm"
+    ra = dict(L.rest_add)
+    st3 = state(size=pos.size + ra["size_usd"], coll=COLL + ra["margin"], price=ra["trigger"] - 0.05,
+                reqs=[req("R1", 110.33)])
+    bot.resting_reconcile(st3, bot.chain_position(st3), ra["trigger"] - 0.05)
+    assert L.rearm is None and L.rest_add is None

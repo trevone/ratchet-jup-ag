@@ -20,6 +20,7 @@ import math
 import logging
 import os
 import time
+import types
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
@@ -118,6 +119,7 @@ class Local:
     last_partial_px: float | None = None
     rest_last_avg: float = 0.0
     add_pending: dict | None = None   # market add sent, fill not saved yet (cleared once its lot is saved)
+    rearm: dict | None = None   # 2026-10-15: entry / margin / lev of the add lot a TP3 partial closed; the resting add returns to it
     tp2_override: float | None = None   # TP2_SET (Trevor 2026-10-13 20:57 MT): manual TP2 price, kept until the next add
 
 
@@ -1509,6 +1511,7 @@ class Bot:
             L.lots.append(lot)
             L.trade_opened_usd += lot["size"]
             L.tp2_override = None   # a new add re-places TPs normally (TP2_SET dropped)
+            L.rearm = None
         self.local.add_pending = None
         log.info("LOT added #%d: %s fill %.4f size $%.2f coll $%.2f x%g", len(self.local.lots), lot["time"][:19],
                  lot["price"], lot["size"], lot["coll"], lot["lev"])
@@ -1631,6 +1634,7 @@ class Bot:
         newest = all(t > lt for lt in lot_times)
         L.lots.append(lot)
         L.lots.sort(key=lambda x: pd.Timestamp(x["time"]))
+        L.rearm = None
         L.n_entries += 1
         L.trade_opened_usd += lot["size"]
         L.tp2_override = None   # a new add re-places TPs normally (TP2_SET dropped)
@@ -1694,6 +1698,7 @@ class Bot:
                 L.trade_opened_usd += add_size
                 L.tp2_override = None   # a new add re-places TPs normally (TP2_SET dropped)
                 L.rest_add = None
+                L.rearm = None
                 resync = True
                 self.save()   # 2026-10-12: persist the booked fill at once (a restart must not lose the lot)
                 log.warning("RESTING ADD FILLED: %s $%.2f x%g at %.4f (%s), n_entries %d, size now %.2f avg %.4f",
@@ -1717,6 +1722,11 @@ class Bot:
                     L.pg_recv_sol = round(L.pg_recv_sol + max(usd, 0.0) / (self._sol_px or price), 9)
                 self.bank_payout(usd, f"per-add partial ${closed:.2f}")
                 times = {x for p in gone_p for x in (p.get("lots") or [p.get("lot_time")])}
+                shut = [l for l in L.lots if l["time"] in times and not l.get("first")]
+                if shut:   # the resting add goes back to the closed lot's entry (long: highest, short: lowest), same size / lev
+                    top = max(shut, key=lambda l: pos.side * float(l["price"]))
+                    lev = float(top.get("lev") or L.last_leverage)
+                    L.rearm = {"px": float(top["price"]), "lev": lev, "margin": round(float(top["size"]) / lev, 4)}
                 L.lots = [l for l in L.lots if l["time"] not in times]
                 if L.lots:
                     L.n_entries = len(L.lots)
@@ -1745,15 +1755,55 @@ class Bot:
         R = self.cfg.resting
         if R.partials_enabled:
             self.place_missing_partials(pos, st, price)
-        if R.adds_enabled and self.local.rest_add is None:
+        ra = self.local.rest_add
+        if R.adds_enabled and ra is None:
             self.place_rest_add(pos, st, price, account, equity)
+        elif R.adds_enabled and self.local.rearm and not ra.get("unconfirmed") and not self.live.dry_run \
+                and ra["trigger"] != round(self.local.rearm["px"], 2):
+            self.rearm_add(pos, st, price, account, equity, ra)
 
-    def rest_add_plan(self, pos: ChainPosition, cash: float) -> tuple[Any, str]:
+    def rearm_add(self, pos: ChainPosition, st: dict[str, Any], price: float, account: Any, equity: float,
+                  ra: dict[str, Any]) -> None:
+        """2026-10-15: a TP3 partial closed add lot(s) -> the single resting add moves to the closed lot's entry. No in-place
+        edit (keeper co-signed): cancel, and ONLY on a confirmed cancel place the new one (never two resting adds)."""
+        L = self.local
+        acc = types.SimpleNamespace(cash=account.cash + float(ra["margin"]))   # the cancel frees the old add's collateral
+        plan, why = self.rest_add_plan(pos, acc.cash, price)
+        if plan is None or getattr(plan, "source", "") != "rearm":
+            self._rest_note("rearm", f"resting add stays at {ra['trigger']}: {why or 'market not beyond the re-arm price'}")
+            return
+        b = self.local.bank if self.bank_on and ra.get("debited") else None
+        if b:
+            b["bal"] += float(ra.get("nat") or 0.0)   # funds check as if already refunded
+        try:
+            blocked = self.guard(Intent(Action.ADD, pos.side, plan.trigger, plan.margin, plan.leverage), pos, st, equity)
+        finally:
+            if b:
+                b["bal"] -= float(ra.get("nat") or 0.0)
+        if blocked:
+            self._rest_note("rearm", f"resting add stays at {ra['trigger']}: re-arm blocked: {blocked}")
+            return
+        log.warning("RESTING ADD re-arm: cancelling %s at %s to re-place at the closed lot's entry %.2f ($%.2f x%g)",
+                    ra["pubkey"], ra["trigger"], plan.trigger, plan.margin, plan.leverage)
+        if not self.cancel_limit(ra["pubkey"]) or L.rest_add is not None:
+            log.warning("resting add re-arm: cancel not confirmed; nothing re-placed, retry next tick")
+            return
+        left = dict(st, openRequests=[r for r in st["openRequests"] if r.get("pubkey") != ra["pubkey"]])
+        self.place_rest_add(pos, left, price, acc, equity)
+
+    def rest_add_plan(self, pos: ChainPosition, cash: float, price: float | None = None) -> tuple[Any, str]:
         """(AddPlan | None, why-not) for the next resting add: the ladder's next rung, planned from the last fill (rule 3:
         from the more adverse of the last fill and the last partial price) with this bot's free collateral."""
         R, L = self.cfg.resting, self.local
         if self.cfg.dca.mode != "levels":
             return None, "dca.mode is not levels (no ladder)"
+        rr = L.rearm
+        if rr and price is not None and pos.side * (price - rr["px"]) > 0:   # re-arm at the closed add lot's entry (TP3 partial)
+            if not self.strategy._adds_left(pos):
+                return None, "no adds left (max_adds / allow_after_partial)"
+            if rr["margin"] > cash:
+                return None, f"re-arm margin {rr['margin']:.2f} > free collateral {cash:.2f}"
+            return types.SimpleNamespace(trigger=rr["px"], margin=rr["margin"], leverage=rr["lev"], source="rearm"), ""
         p = pos
         if R.last_partial_rule and L.last_partial_px:
             import dataclasses as _dc
@@ -1793,7 +1843,7 @@ class Bot:
             self._rest_note("add", f"an increase request is already on-chain {[r.get('pubkey') for r in untracked]} "
                                    "(not tracked by this bot): no new resting add placed", logging.WARNING)
             return
-        plan, why = self.rest_add_plan(pos, account.cash)
+        plan, why = self.rest_add_plan(pos, account.cash, price)
         if plan is None:
             self._rest_note("add", f"no resting add placed: {why}")
             return
