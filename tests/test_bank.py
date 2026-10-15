@@ -380,3 +380,77 @@ def test_sol_rent_churn_across_bots_does_not_alert_real_outflow_does():
     o["res_last"] = 0.05
     o["res_v"] = 2
     assert K.recon_sol(o, 0.7, 0.0, px, 1.5, False, 0.0112)["action"] == "init" and o["res_v"] == 3
+
+
+# ------------------------------------------------- hwm_equity: coin price follows the evaluated price (Trevor 2026-10-15)
+def _gp_setup(ebot, side):
+    b = ebot.local.bank
+    _arm(ebot, SHORT if side == "short" else LONG)
+    b["bal"], b["fee_sol"], b["hwm"], b["trade_start_equity"] = 0.0100, 0.02, 0.0155, 0.0150
+    ebot.local.rest_add = {"nat": 0.0004, "debited": True}
+    st = _st(side=side, size=70.5, coll=13.43, avg=2472.67, price=2450.0 if side == "short" else 2480.0)
+    return st, ebot.chain_position(st)
+
+
+def _with_oracle(st, px):
+    import copy
+    s2 = copy.deepcopy(st)
+    s2["oracle"]["price"] = px
+    return s2
+
+
+@pytest.mark.parametrize("side", ["long", "short"])
+def test_guard_price_independent_of_oracle(ebot, side):
+    st, pos = _gp_setup(ebot, side)
+    ebot.local.bank["trade_start_equity"] = ebot.hwm_equity(pos, st, st["oracle"]["price"]) * (1.03 if side == "long" else 1.03) / 1.002
+    base = ebot.guard_price(pos, st)
+    assert base is not None
+    for f in (0.98, 0.99, 1.01, 1.02):
+        o = st["oracle"]["price"] * f
+        s2 = _with_oracle(st, o)
+        assert ebot.guard_price(pos, s2) == pytest.approx(base, rel=1e-9) or ebot.guard_price(pos, s2) is None
+
+
+@pytest.mark.parametrize("side", ["long", "short"])
+def test_guard_price_sol_oracle_bounded_sensitivity(ebot, side):
+    st, pos = _gp_setup(ebot, side)
+    ebot.local.bank["trade_start_equity"] = ebot.hwm_equity(pos, st, st["oracle"]["price"]) * 1.03 / 1.002
+    base = ebot.guard_price(pos, st)
+    s2 = dict(st, solOracle={"price": 110.0 * 1.02})
+    g2 = ebot.guard_price(pos, s2)
+    assert abs(g2 / base - 1) < 0.01          # 2% SOL move (only fee debt / rest value scale with it): < 1% on the guard price
+
+
+@pytest.mark.parametrize("side", ["long", "short"])
+def test_hwm_equity_closed_form(ebot, side):
+    st, pos = _gp_setup(ebot, side)
+    b, c, lc = ebot.local.bank, ebot.cfg.costs, ebot.cfg.ledger
+    for p in (2300.0, 2470.0, 2650.0):
+        fill = p * (1 - pos.side * c.slippage)
+        usd = pos.margin + pos.side * pos.size * (fill - pos.avg_entry) / pos.avg_entry - c.close_fee * pos.size
+        swap = lc.swap_cost_pct if pos.side == SHORT else 0.0
+        want = b["bal"] + 0.0004 - b["fee_sol"] * 110.0 / p + max(usd, 0.0) / p * (1 - swap)
+        assert ebot.hwm_equity(pos, st, p) == pytest.approx(want, rel=1e-12)
+
+
+@pytest.mark.parametrize("side", ["long", "short"])
+def test_guard_check_flips_at_guard_price_with_other_oracle(ebot, side):
+    st, pos = _gp_setup(ebot, side)
+    ebot.local.bank["trade_start_equity"] = ebot.hwm_equity(pos, st, st["oracle"]["price"]) * 1.03 / 1.002
+    gp = ebot.guard_price(pos, st)
+    other = _with_oracle(st, st["oracle"]["price"] * 1.015)
+    eps = gp * 1e-6
+    up, dn = (gp + eps, gp - eps)
+    assert ebot.guard_check(pos, other, up)[0] is (side == "long")
+    assert ebot.guard_check(pos, other, dn)[0] is (side == "short")
+
+
+def test_regression_btc_0815_guard_price_no_longer_follows_oracle(ebot):
+    # synthetic BTC-like short (coin price = candidate price): old code held cpx at the oracle -> a different guard price
+    st, pos = _gp_setup(ebot, "short")
+    ebot.local.bank["trade_start_equity"] = ebot.hwm_equity(pos, st, 2450.0) * 1.03 / 1.002
+    gp_a = ebot.guard_price(pos, st)
+    gp_b = ebot.guard_price(pos, _with_oracle(st, 2450.0 * 1.02))
+    assert gp_a == pytest.approx(gp_b, rel=1e-9)
+    flat = ebot.bank_equity_flat(st)
+    assert flat == pytest.approx(0.0100 - 0.02 * 110.0 / 2450.0, abs=1e-9)   # flat equity still at the live oracle

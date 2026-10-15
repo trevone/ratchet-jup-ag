@@ -2428,6 +2428,8 @@ class Bot:
     def hwm_equity(self, pos: ChainPosition | None, st: dict[str, Any], price: float) -> float:
         b, c, lc = self.local.bank, self.cfg.costs, self.cfg.ledger
         sol_px, cpx = self.sol_price(st), self.coin_px(st)
+        if price > 0:
+            cpx = price   # coin price follows the evaluated price (guard_price bisection), not the oracle held fixed; at market identical
         cv = 0.0
         if pos is not None:
             fill = price * (1 - pos.side * c.slippage)

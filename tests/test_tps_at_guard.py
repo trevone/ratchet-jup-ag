@@ -268,8 +268,9 @@ def test_no_defer_without_resting_tps(monkeypatch, tmp_path):
 
 
 def test_implausibly_far_tp_deferred_then_placed_after_cap(monkeypatch, tmp_path):
-    b, st, pos = _setup(monkeypatch, tmp_path, ON + [FLAG])   # fixture guard price ~2x market
+    b, st, pos = _setup(monkeypatch, tmp_path, ON + [FLAG], boost=0.01)
     bk = _btc_bank(b)
+    bk["trade_start_equity"] = b.hwm_equity(pos, st, 106.6) * 1.2 / (1 + b.cfg.profit_guard.min_profit_pct_trade)   # target 20% above equity now: guard price implausibly far (coin px follows the evaluated price)
     _tok(st, bk["bal"])
     b.sync_tp_ladder(pos)
     assert b.calls == [] and bk["tp_defer"] == 1
