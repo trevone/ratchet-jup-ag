@@ -353,27 +353,30 @@ def test_missing_baseline_migrates_once_to_hwm_without_touching_hwm(ebot):
 
 
 def test_sol_rent_churn_across_bots_does_not_alert_real_outflow_does():
-    """Shared wallet: every Perps request (any bot) locks 0.0037236 SOL, a position 0.00174752; refunds return it."""
+    """Shared wallet: each Perps request (any bot) moves 0.0037236 SOL from the wallet into the request account (refunded on
+    execute / cancel); position accounts persist and move nothing. Live evidence 2026-10-15 01:45-01:47 MT: ETH open + TP1 +
+    TP2 + resting add left the wallet -0.0149 / -0.0224 while the old (wrong-sign) netting alerted."""
     px = 106.0
-    def st(nreq, npos):
+    def st(nreq, npos=0):
         return {"allOpenRequests": [{}] * nreq, "allPositions": [{}] * npos}
-    assert K.rent_held(st(3, 1)) == pytest.approx(3 * 0.0037236 + 0.00174752)
+    assert K.rent_held(st(3, 1)) == pytest.approx(3 * 0.0037236)
     s = K.new_bank("SOL", 0.60)
-    base = 0.60 + 0.03                                  # bal + reserve float (+ rent held, added below)
-    rent = K.rent_held(st(2, 1))
-    assert K.recon_sol(s, base + rent, 0.0, px, 1.5, False, rent)["action"] == "init"
-    # ETH/BTC bots add 6 requests + 2 positions (0.0245 SOL leaves the wallet), later refunded in full
-    for nreq, npos in ((8, 3), (8, 3), (8, 3), (1, 1), (1, 1), (0, 0), (2, 1)):
+    free = 0.03                                         # reserve float
+    rent0 = K.rent_held(st(1, 1))
+    assert K.recon_sol(s, 0.60 + free - rent0, 0.0, px, 1.5, False, rent0)["action"] == "init"
+    # requests come and go (wallet = bal + free - rent locked - ~fee noise): never an alert
+    for nreq, npos in ((3, 1), (4, 2), (6, 2), (8, 3), (1, 1), (1, 0), (0, 0), (2, 1)):
         rent = K.rent_held(st(nreq, npos))
-        r = K.recon_sol(s, base + rent - 0.00002, 0.0, px, 1.5, False, rent)   # + ~fee noise
+        r = K.recon_sol(s, 0.60 + free - rent - 0.00002, 0.0, px, 1.5, False, rent)
         assert r["action"] == "float", (nreq, npos, r)
         assert s["pend"] is None
     # a genuine 0.02 SOL transfer out still alerts (2 ticks), rent unchanged
     rent = K.rent_held(st(2, 1))
-    assert K.recon_sol(s, base + rent - 0.02, 0.0, px, 1.5, False, rent)["action"] == "pending"
-    r = K.recon_sol(s, base + rent - 0.02, 0.0, px, 1.5, False, rent)
+    assert K.recon_sol(s, 0.60 + free - rent - 0.02, 0.0, px, 1.5, False, rent)["action"] == "pending"
+    r = K.recon_sol(s, 0.60 + free - rent - 0.02, 0.0, px, 1.5, False, rent)
     assert r["action"] == "external" and r["diff"] == pytest.approx(-0.02, abs=1e-4)
-    # old baseline (no res_v) is re-initialised once instead of mis-reading the rent
+    # old baseline (res_v != 3) is re-initialised once instead of mis-reading it
     o = K.new_bank("SOL", 0.60)
     o["res_last"] = 0.05
-    assert K.recon_sol(o, 0.7, 0.0, px, 1.5, False, 0.0112)["action"] == "init"
+    o["res_v"] = 2
+    assert K.recon_sol(o, 0.7, 0.0, px, 1.5, False, 0.0112)["action"] == "init" and o["res_v"] == 3

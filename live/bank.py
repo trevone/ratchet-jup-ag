@@ -254,22 +254,23 @@ def recon_token(b: dict[str, Any], wallet: float, coin_px: float, ext_min_usd: f
 
 
 REQ_RENT = 0.0037236       # Jupiter Perps request account rent (any bot's TP / resting add / open); refunded on execute / cancel
-POS_RENT = 0.00174752      # position account rent; paid once at creation, refunded on close
+POS_RENT = 0.00174752      # position account rent: paid once when the PDA is first created; the account then persists across
+                           # trades (verified 2026-10-15: an open tx moves only the request rent), so it is NOT part of rent_held
 
 
 def rent_held(st: dict[str, Any]) -> float:
-    """SOL the shared wallet has locked as Perps rent right now (all three bots): open request accounts + open positions,
-    read on-chain by the same state call as the wallet balance (allOpenRequests / allPositions)."""
-    return round(len(st.get("allOpenRequests") or []) * REQ_RENT + len(st.get("allPositions") or []) * POS_RENT, 9)
+    """SOL the shared wallet has locked as Perps request-account rent right now (all three bots), read on-chain by the
+    same state call as the wallet balance (allOpenRequests). Position accounts persist and are not counted."""
+    return round(len(st.get("allOpenRequests") or []) * REQ_RENT, 9)
 
 
 def recon_sol(b: dict[str, Any], wallet_sol: float, pending_others: float, sol_px: float, ext_min_usd: float,
               busy: bool, rent: float = 0.0) -> dict[str, Any]:
     """SOL bot: implied reserve = native SOL - bal - others' unsettled external shares. A jump that persists 2 ticks and
     is >= ext_min_usd = external (caller posts the split); smaller jumps are reserve float (fees, request rents)."""
-    implied = round(wallet_sol - b["bal"] - pending_others - rent, 9)   # rent = locked request/position rent (all bots)
-    if b.get("res_last") is None or (rent and b.get("res_v") != 2):   # baseline predates rent netting (2026-10-15): re-init
-        b["res_v"] = 2
+    implied = round(wallet_sol + rent - b["bal"] - pending_others, 9)   # rent locked in request accounts is still ours: ADD it back
+    if b.get("res_last") is None or b.get("res_v") != 3:   # baseline from an older formula (v3 = +rent, 2026-10-15): re-init once
+        b["res_v"] = 3
         b["res_last"] = implied
         return {"action": "init", "diff": 0.0, "implied": implied}
     d = round(implied - b["res_last"], 9)
