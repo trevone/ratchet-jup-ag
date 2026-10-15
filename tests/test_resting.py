@@ -207,8 +207,8 @@ def test_add_fill_via_order_books_lot_leverage_step_and_partial(bot):
     # 01:36 MT: no level in the zone -> zone edge (105.36 - 0.045 = 105.31), behind the market (105.6) -> not placed
     bot._last_st = {"positions": {"long": {"borrowFeeUsd": 0.0}}}   # no on-chain borrow in this fixture (TP3 fee min)
     plan = bot.partial_plan(pos, [lot], LV)
-    # zone edge sits inside the TP3 fee minimum (2 x its own fees, 2026-10-13) -> pushed out to exactly the minimum
-    assert plan["mode"] == "zone_edge->fee_mult_min" and plan["px"] == plan["fee_min"] and lot["price"] < plan["px"] < pos.avg_entry
+    # 2026-10-15: zone edge is the target (tp3_fee_mult 1.0: edge beyond the fee minimum, kept)
+    assert plan["mode"] == "zone_edge" and plan["px"] >= plan["fee_min"] and lot["price"] < plan["px"] < pos.avg_entry
     # 2026-10-15: no avg cap - with the avg at/below the add entry TP3 is still placed, at the fee minimum
     class _P(type(pos)):
         avg_entry = lot["price"] - 1.0
@@ -223,14 +223,14 @@ def test_add_fill_via_order_books_lot_leverage_step_and_partial(bot):
 
 
 def test_single_partial_covers_eligible_adds_and_is_updated_on_new_add(monkeypatch, tmp_path):
-    bot = mkbot(monkeypatch, tmp_path, [*ON, "dca.ladder_max_rungs=7"])   # rung 6 -> f 0.42: level 108.1 inside the zone
+    bot = mkbot(monkeypatch, tmp_path, [*ON, "dca.ladder_max_rungs=7"])   # rung 6 -> f 0.308: zone edge 107.87
     L = bot.local
     pos = bot.chain_position(state())
     bot.place_missing_partials(pos, state(price=109.5), 109.5)   # 0.35 % under avg: not armed -> nothing
     assert not bot.calls and not L.partials
-    bot.place_missing_partials(pos, state(price=107.9), 107.9)   # armed; adds 107.52 + 106.44 eligible -> ONE order
+    bot.place_missing_partials(pos, state(price=107.7), 107.7)   # armed; adds 107.52 + 106.44 eligible -> ONE order
     dec = [a for n, a in bot.calls if n == "decrease"]
-    assert len(dec) == 1 and dec[0]["sizeUsd"] == round(76.49 + 78.05, 2) and 107.9 < dec[0]["triggerPriceUsd"] < AVG
+    assert len(dec) == 1 and dec[0]["sizeUsd"] == round(76.49 + 78.05, 2) and 107.7 < dec[0]["triggerPriceUsd"] < AVG
     assert len(L.partials) == 1 and len(L.partials[0]["lots"]) == 2
     old = L.partials[0]["pubkey"]
     new = {"time": str(NOW), "price": 105.0, "size": 90.0, "coll": 4.5, "lev": 20.0, "first": False, "rung": 7}

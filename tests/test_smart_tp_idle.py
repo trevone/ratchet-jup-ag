@@ -238,9 +238,9 @@ def test_sync_places_smart_ladder_never_past_market(bot):
     bot.chain = lambda: {"openRequests": [], "oracle": {"price": 115.95}}
     bot.sync_tp_ladder(chain_pos())
     dec = [a for n, a in bot.calls if n == "decrease"]
-    assert [a["triggerPriceUsd"] for a in dec] == [116.40, 116.65]
+    assert [a["triggerPriceUsd"] for a in dec] == [116.46, 116.67]
     assert dec[0]["sizeUsd"] == 36.75 and dec[1]["entire"] is True
-    assert bot.local.tp_px == [116.40, 116.65] and bot.local.tp_peak == 115.95 and not bot.kill.exists()
+    assert bot.local.tp_px == [116.46, 116.67] and bot.local.tp_peak == 115.95 and not bot.kill.exists()
 
 
 # ------------------------------------------------------------------ cancel already gone (3012) / stale oracle (6003)

@@ -800,7 +800,7 @@ class Bot:
         # fee pro-rated = open_fee x size; borrow: on-chain accrual is already on the current size (Jupiter settles
         # borrow into collateral on every increase / decrease), so it is used as is.
         fees = tp_fee_total(pos.size, pos.size, c.open_fee, c.close_fee, self._accrued_borrow_usd(pos, st))
-        mults = [getattr(t, "tp1_fee_mult", 2.0), getattr(t, "tp2_fee_mult", 3.0)]
+        mults = [t.tp1_fee_mult, t.tp2_fee_mult]
         return [tp_fee_min_price(pos.side, pos.avg_entry, pos.size, fees, m) for m in mults], fees
 
     def fee_min_prices(self, pos: ChainPosition, st: dict[str, Any] | None, prices: list[float], ctx: str) -> list[float]:
@@ -1890,7 +1890,8 @@ class Bot:
         entry = size / sum(float(l["size"]) / float(l["price"]) for l in lots)
         # 2026-10-12 00:53 MT: target between the covered entry and the trade avg (zone rule), replaces N levels beyond
         tgt = restmod.partial_target_zone(pos.side, entry, pos.avg_entry, size, lv, rung, self.cfg.dca.ladder_max_rungs,
-                                          R.partial_zone_f_max, tol_atr=t.trim_level_tol_atr,
+                                          R.partial_zone_f_first, R.partial_zone_f_deep,
+                                          snap_levels=R.partial_snap_levels, tol_atr=t.trim_level_tol_atr,
                                           front_atr=t.trim_level_front_run_atr, front_pct=t.trim_level_front_run_pct,
                                           open_fee=c.open_fee, close_fee=c.close_fee, network_usd=t.trim_network_usd)
         if tgt.get("px") is None:
@@ -1913,7 +1914,7 @@ class Bot:
         c = self.cfg.costs
         borrow = self._accrued_borrow_usd(pos, st) * size / pos.size if pos.size > 0 else 0.0
         f3 = tp_fee_total(size, size, c.open_fee, c.close_fee, borrow)
-        mn = tp_fee_min_price(pos.side, entry, size, f3, getattr(self.cfg.tp, "tp3_fee_mult", 2.5))
+        mn = tp_fee_min_price(pos.side, entry, size, f3, self.cfg.tp.tp3_fee_mult)
         return (mn, f3) if fees else mn
 
     def _place_partial(self, pos: ChainPosition, price: float, lots: list[dict[str, Any]], why: str) -> bool:

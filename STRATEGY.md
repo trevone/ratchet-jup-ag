@@ -290,20 +290,16 @@ close of the whole position, still only while underwater.
 ## Ladder preset C + resting orders: LIVE since 2026-10-12 00:30 MT on all three bots.
 
 
-## TP3 may sit at/past the trade average (Trevor 2026-10-15)
-The "never at/beyond avg" limit is removed: partial_target_zone no longer refuses when the add entry is not underwater vs avg or when a level / zone edge / fee minimum lies at or beyond avg (gap is taken as max(gap, 0)). The fee minimum (tp3_fee_mult, now default **2.5**, code default in config.py, not in any toml) is the floor and the fallback always returns a price. The average source is unchanged (Jupiter avg; the lots-based average is deferred). Existing resting TP3s are not touched; the new rule applies when TP3 is next (re-)placed (next add / re-place).
-
-## TP3 target: between the add entry and the average (LIVE 2026-10-12 01:01 MT; avg cap superseded 2026-10-15, see above, replaces "N levels beyond entry")
-TP3 always closes while the covered add(s) are still underwater versus the trade average: target strictly between the
-add entry and avg. Allowed distance = (entry -> avg gap) x f, f rising linearly from 0 at rung 1 to
-[resting] partial_zone_f_max (0.5 = halfway to avg) at the deepest rung (ladder_max_rungs). Rung 1: the first analyst
-level (main + fine) past its entry; deeper rungs: the farthest analyst level inside the allowed zone. Fired 0.05 ATR
-before the level; must cover fees. No level in the zone: the fee-covering minimum just past the entry. Several adds in
-one TP3: size-weighted entry and highest rung.
-
-TP3 zone edge (LIVE 2026-10-12 01:45 MT): when no analyst level lies inside the allowed zone (rungs >= 2), TP3 targets the
-zone edge (entry + gap x f) less the 0.05 ATR front-run, if that covers fees; otherwise the fee-covering minimum just past
-the entry; if even that is at/beyond the average, no TP3 (logged). Rung 1: first analyst level past its entry, as before.
+## TP3 target: zone edge between the add entry and the average (Trevor 2026-10-15 10:58 MT; replaces the 2026-10-12 level/zone rules and the avg cap)
+TP3 (the per-add partial) targets the **zone edge** `entry + side x gap x f` (gap = max(side x (avg - entry), 0), entry = size-weighted
+entry of the covered adds), rounded to the cent; no rung-1 special case, no ATR tolerance. f tapers linearly with the highest covered rung:
+`f = f_first - (f_first - f_deep) x min(1, (rung-1)/(ladder_max_rungs-1))`, `[resting] partial_zone_f_first` (default **0.50**, rung 1) and
+`partial_zone_f_deep` (default **0.27**, rung >= ladder_max_rungs). `partial_zone_f_max` is removed (no config referenced it).
+Optional `[resting] partial_snap_levels` (default **false**): snap to the farthest analyst level (main + fine) inside the zone, fired 0.05 ATR
+(trim_level_tol_atr) before it; no level inside = the plain edge. If the edge does not cover fees: the fee-covering minimum just past the entry
+(always a price; entry at/past avg = zone width 0 -> fee minimum). bot.py partial_plan then clamps to the TP3 fee minimum (`tp3_fee_mult`,
+default **1.0**, was 2.5) when the target lies inside it (mode "...->fee_mult_min"). Existing resting TP3s are not touched; the rule applies on
+the next (re-)place (next add, RETP_NOW). Several adds in one TP3: size-weighted entry and highest rung.
 
 ### TP1/TP2 re-size after a TP3 fill (Trevor 2026-10-12 06:07 MT)
 When a TP3 (per-add partial TP order) fills, the pending TP1/TP2 trigger orders are re-placed at the same prices, sized on the remaining position with the original % split (e.g. TP1 = 50% of remaining). Nothing else changes.
@@ -339,9 +335,9 @@ attribution were removed (2026-10-14; on 2026-10-13 04:31 MT it had handed an ET
 
 ## Fee-based minimum TP1 / TP2 distance (Trevor 2026-10-13)
 - At open, after every add, and whenever TP1/TP2 are re-placed or re-sized (and once per bot start on the open position), the fees of the CURRENTLY OPEN size are computed (TP3 partials covered their own; Trevor 2026-10-13 20:37 MT): F = open_fee (0.06%) x current size + close_fee (0.06%) x current size + accrued borrow fee of the open position (on-chain: (collateral-custody cumulativeInterestRate - position snapshot) x current size / 1e9; Jupiter settles borrow on every increase/decrease, so this is already the current size share; fallback est. hourly rate x size x hours).
-- A TP portion of c USD carries fees F x c / size and must net >= mult x that after fees: c x |P - avg| / avg - F c/size >= mult F c/size, i.e. minimum price P_min = avg x (1 +/- (1 + mult) x F / size) (+ long, - short), rounded outward to the cent. mult = tp1_fee_mult (default 2.0) for TP1, tp2_fee_mult (default 3.0) for TP2, per bot in [tp].
+- A TP portion of c USD carries fees F x c / size and must net >= mult x that after fees: c x |P - avg| / avg - F c/size >= mult F c/size, i.e. minimum price P_min = avg x (1 +/- (1 + mult) x F / size) (+ long, - short), rounded outward to the cent. mult = tp1_fee_mult (default **3.0**, was 2.0) for TP1, tp2_fee_mult (default **4.5**, was 3.0) for TP2 (Trevor 2026-10-15 10:58 MT; same 1.5x ratio), per bot in [tp]; code defaults in config.py, not in any toml.
 - Analyst / strategy TP1 / TP2 beyond P_min are kept; otherwise the TP is placed exactly at P_min. TP2 then stays beyond TP1 by >= tp_min_gap_usd. Re-placement uses the existing cancel/replace path. TP3, guard, entries unchanged; no min-out; no halt from this rule.
-- TP3 (per-add partial, Trevor 2026-10-13 20:38 MT): its portion (covered adds, size s, size-weighted entry e) must net >= tp3_fee_mult (default 2.5 since 2026-10-15, [tp]) x its own fees F3 = (open_fee + close_fee) x s + accrued borrow x s / position size. P3_min = e x (1 +/- (1 + tp3_fee_mult) x F3 / s), rounded outward to the cent. The zone / level / zone-edge / fee-covering target is kept when beyond P3_min, else TP3 is placed exactly at P3_min (mode "...->fee_mult_min"). Zone logic otherwise unchanged.
+- TP3 (per-add partial, Trevor 2026-10-13 20:38 MT): its portion (covered adds, size s, size-weighted entry e) must net >= tp3_fee_mult (default 1.0 since 2026-10-15 10:58 MT, [tp]) x its own fees F3 = (open_fee + close_fee) x s + accrued borrow x s / position size. P3_min = e x (1 +/- (1 + tp3_fee_mult) x F3 / s), rounded outward to the cent. The zone-edge (or snapped level) / fee-covering target is kept when beyond P3_min, else TP3 is placed exactly at P3_min (mode "...->fee_mult_min"). Zone logic otherwise unchanged.
 
 
 ### Cancelled resting add refunds its request rent too (2026-10-15, Trevor)
@@ -395,6 +391,6 @@ Standing rules: never close positions, never cancel adds; HWM / wd_mark (marks) 
 
 **Trevor 2026-10-15 - resting add re-arms at a TP3-closed lot (all bots, resting adds on)**: when a per-add partial (TP3) closes add lot(s), `resting_reconcile` records `L.rearm` = entry (long: highest closed lot entry, short: lowest), lev, margin (= lot size / lev) of that lot. While the market is on the favourable side of it (long: above), `rest_add_plan` plans the resting add at exactly that price / size / lev (skips next_add_level, min/max gap and the last-partial shift; `_adds_left` and free-collateral still apply, `guard` as always). If the single resting add sits elsewhere, `rearm_add` (from `resting_tick`) cancels it (`cancel_limit`, refund incl. rent) and ONLY on a confirmed cancel places the new one (never two; failed cancel = nothing placed, retried). Otherwise (market beyond the price) the normal ladder plan applies. `rearm` is cleared when that add fills, on a market add / lot recovery, and on trade close (state reset). TPs are untouched (independent of guard_defer / tps_at_guard). HWM / wd_mark untouched.
 
-**Trevor 2026-10-15 - tps_at_guard: TP1 and TP2 at exactly the SAME price (BTC)**: in guard mode `fee_min_prices` passes gap 0 to `apply_tp_fee_min` instead of `tp_min_gap_usd`, so TP1 == TP2 == guard price (rounded 2 dp) and both trigger together; the per-TP fee-minimum floors still clamp each (TP1 2x, TP2 3x fees), so when the guard is met at market / the guard price sits under the TP2 floor they go to their (different) floors exactly as before (existing behaviour kept). Same code path for placement, resize and `fee_min_recheck`, so equal prices are never a mismatch (no re-place churn). Flag off = unchanged (gap kept). Two decrease triggers at one price are independent requests (sized by ladder split / entire) and place_tp matches nothing by price in guard mode (TP2_SET ignored). Test: tests/test_tps_at_guard.py.
+**Trevor 2026-10-15 - tps_at_guard: TP1 and TP2 at exactly the SAME price (BTC)**: in guard mode `fee_min_prices` passes gap 0 to `apply_tp_fee_min` instead of `tp_min_gap_usd`, so TP1 == TP2 == guard price (rounded 2 dp) and both trigger together; the per-TP fee-minimum floors still clamp each (TP1 3x, TP2 4.5x fees (2026-10-15 10:58 MT)), so when the guard is met at market / the guard price sits under the TP2 floor they go to their (different) floors exactly as before (existing behaviour kept). Same code path for placement, resize and `fee_min_recheck`, so equal prices are never a mismatch (no re-place churn). Flag off = unchanged (gap kept). Two decrease triggers at one price are independent requests (sized by ladder split / entire) and place_tp matches nothing by price in guard mode (TP2_SET ignored). Test: tests/test_tps_at_guard.py.
 
 **Trevor 2026-10-15 - hwm_equity: coin price follows the evaluated price (fix, all bots)**: in `hwm_equity(pos, st, price)` the coin price `cpx` (close value USD->coin and fee debt SOL->coin) was held at the current oracle while `guard_price` bisected `price`, so the BTC/ETH guard price depended on the oracle (BTC 08:15: 81760.95 vs 81823.41 without it). Now `cpx = price` when price > 0; `sol_px` stays `sol_price(st)`. `guard_check`/`hwm_check`/`bank_status` pass the live oracle, so at market the result is identical. SOL bot: coin price is the SOL price, so cpx = evaluated price is the same correct rule. `bank_equity_flat` untouched. Existing TPs stay until the next re-place. HWM / wd_mark untouched. Tests in tests/test_bank.py.

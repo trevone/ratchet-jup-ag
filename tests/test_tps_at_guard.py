@@ -88,7 +88,7 @@ def test_flag_off_unchanged(monkeypatch, tmp_path):
     b.local.tp_px = [110.33, 110.63]
     b.resize_tps(pos)
     assert b.calls[0] == ("cancel", ["R110.33", "R110.63"])
-    assert _placed(b) == [110.33, 110.63]
+    assert _placed(b) == [110.41, 110.63]
     assert b.guard_sole_note(pos, st, 106.6, 1.0, 1.1) == ""
 
 
@@ -196,7 +196,7 @@ def test_flag_off_unchanged(monkeypatch, tmp_path):
     b.local.tp_px = [110.33, 110.63]
     b.resize_tps(pos)
     assert b.calls[0] == ("cancel", ["R110.33", "R110.63"])
-    assert _placed(b) == [110.33, 110.63]
+    assert _placed(b) == [110.41, 110.63]
     assert b.guard_sole_note(pos, st, 106.6, 1.0, 1.1) == ""
 
 

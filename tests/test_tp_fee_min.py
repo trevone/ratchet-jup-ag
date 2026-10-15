@@ -38,7 +38,7 @@ def test_level_kept_beyond_min_else_at_min_and_tp2_beyond_tp1():
 def test_config_defaults():
     from config import TakeProfitConfig
     t = TakeProfitConfig()
-    assert t.tp1_fee_mult == 2.0 and t.tp2_fee_mult == 3.0
+    assert t.tp1_fee_mult == 3.0 and t.tp2_fee_mult == 4.5
 
 
 def test_bot_fee_mins_use_all_opens_close_and_borrow(monkeypatch, tmp_path):
@@ -81,7 +81,7 @@ def test_fees_only_on_open_size_after_tp3(monkeypatch, tmp_path):
     assert b.local.trade_opened_usd > 500   # most of the trade already closed by TP3 partials
     mins, fees = b.tp_fee_mins(pos, st)
     assert fees == pytest.approx(0.0012 * 115.50 + 0.01)
-    assert mins[0] == tp_fee_min_price(1, pos.avg_entry, 115.50, fees, 2.0)
+    assert mins[0] == tp_fee_min_price(1, pos.avg_entry, 115.50, fees, b.cfg.tp.tp1_fee_mult)
 
 
 def test_tp3_fee_min_pushes_inside_levels_and_keeps_beyond(monkeypatch, tmp_path):
@@ -108,4 +108,4 @@ def test_tp3_fee_min_pushes_inside_levels_and_keeps_beyond(monkeypatch, tmp_path
 
 def test_tp3_config_default():
     from config import TakeProfitConfig
-    assert TakeProfitConfig().tp3_fee_mult == 2.5
+    assert TakeProfitConfig().tp3_fee_mult == 1.0

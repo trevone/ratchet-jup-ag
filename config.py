@@ -164,9 +164,9 @@ class TakeProfitConfig:
     tp_res_buffer_atr: float = 0.1       # TP2 <= nearest resistance above avg - this many 1h ATR (longs; support for shorts)
     tp_min_net_usd: float = 0.05         # each TP's closing chunk must net >= this after 6+6 bps open/close fees
     tp_min_gap_usd: float = 0.05         # TP1 sits at least this far inside TP2
-    tp1_fee_mult: float = 2.0            # Trevor 2026-10-13: TP1 portion must net >= this x its share of the trade's total fees
-    tp2_fee_mult: float = 3.0            # ... TP2 likewise (fees = all opening fees + est. close fee + accrued borrow)
-    tp3_fee_mult: float = 2.5            # TP3 (per-add partial) nets >= this x its own fees (open+close on its size + pro-rated borrow)
+    tp1_fee_mult: float = 3.0            # Trevor 2026-10-13: TP1 portion must net >= this x its share of the trade's total fees
+    tp2_fee_mult: float = 4.5            # ... TP2 likewise (fees = all opening fees + est. close fee + accrued borrow)
+    tp3_fee_mult: float = 1.0            # TP3 (per-add partial) nets >= this x its own fees (open+close on its size + pro-rated borrow)
     tp_min_move: float = 0.05            # periodic check re-places a TP only when it moves >= this (USD)
     tp_market_gap: float = 0.02          # a trigger must sit at least this far beyond market (Jupiter rejects otherwise)
     tp_near_miss_frac: float = 0.85      # momentum fade armed once the best price reached this fraction of TP2's distance
@@ -480,7 +480,9 @@ class RestingConfig:
     last_partial_rule: bool = False
     partial_levels_min: int = 1
     partial_levels_max: int = 4
-    partial_zone_f_max: float = 0.5   # 2026-10-12 00:53 MT: TP3 zone = entry .. entry + (entry->avg gap) x f, f 0 -> this
+    partial_zone_f_first: float = 0.50   # 2026-10-15: TP3 zone = entry .. entry + (entry->avg gap) x f; f at rung 1
+    partial_zone_f_deep: float = 0.27    # ... tapering linearly to this at rung >= ladder_max_rungs
+    partial_snap_levels: bool = False    # snap TP3 to the farthest analyst level inside the zone (0.05 ATR tol); default: zone edge
 
     def __post_init__(self) -> None:
         if not 1 <= self.partial_levels_min <= self.partial_levels_max:

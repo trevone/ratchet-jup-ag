@@ -55,42 +55,36 @@ def partial_target(side: int, entry: float, size: float, lv: Any, n: int, *, tol
     return None
 
 
-def zone_f(rung: int, max_rungs: int, f_max: float) -> float:
-    """TP3 zone fraction (Trevor 2026-10-12 00:53 MT): linear from 0 at rung 1 to f_max at rung max_rungs (capped)."""
+def zone_f(rung: int, max_rungs: int, f_first: float, f_deep: float) -> float:
+    """TP3 zone fraction (Trevor 2026-10-15): linear taper f_first at rung 1 -> f_deep at rung >= max_rungs."""
     if max_rungs <= 1:
-        return f_max
-    return f_max * min(1.0, max(0.0, (rung - 1) / (max_rungs - 1)))
+        return f_deep
+    return f_first - (f_first - f_deep) * min(1.0, max(0.0, (rung - 1) / (max_rungs - 1)))
 
 
-def partial_target_zone(side: int, entry: float, avg: float, size: float, lv: Any, rung: int, max_rungs: int, f_max: float,
-                        *, tol_atr: float, front_atr: float, front_pct: float, open_fee: float, close_fee: float,
-                        network_usd: float) -> dict[str, Any]:
-    """TP3 target from the covered entry (Trevor 2026-10-12 00:53 MT; 2026-10-15: may be at/past the trade avg, fee minimum is the floor).
-    Rung 1: first analyst level (main + fine) past the entry. Deeper: the farthest level inside entry .. entry + gap x f
-    (gap = entry -> avg, f = zone_f). Fired tol (+ front-run) before the level; must cover fees. No usable level ->
-    zone edge (entry + gap x f, fired tol before it) if it covers fees, else the fee-covering minimum just past the entry. Always returns a price."""
-    gap = max(side * (avg - entry), 0.0)   # 2026-10-15: entry at/past avg -> zone width 0, TP3 falls to level/fee-min (no avg cap)
-    f = zone_f(rung, max_rungs, f_max)
+def partial_target_zone(side: int, entry: float, avg: float, size: float, lv: Any, rung: int, max_rungs: int,
+                        f_first: float, f_deep: float, *, snap_levels: bool = False, tol_atr: float, front_atr: float,
+                        front_pct: float, open_fee: float, close_fee: float, network_usd: float) -> dict[str, Any]:
+    """TP3 target from the covered entry (Trevor 2026-10-15). Primary: the zone edge entry + side x gap x f (gap = entry -> avg,
+    f = zone_f), if it covers fees. Optional snap_levels: instead the farthest analyst level (main + fine) inside the zone, fired
+    tol (+ front-run) before it; none usable -> the edge. Edge not covering fees -> the fee-covering minimum just past the entry.
+    Always returns a price."""
+    gap = max(side * (avg - entry), 0.0)   # entry at/past avg -> zone width 0, TP3 falls to the fee minimum (no avg cap)
+    f = zone_f(rung, max_rungs, f_first, f_deep)
     zone_end = entry + side * gap * f
-    beyond = sorted((x for x in (trim_levels(side, lv) if lv is not None else []) if side * (x - entry) > 0),
-                    key=lambda x: side * x)
-    if rung <= 1:
-        cands = beyond[:1]
-    else:
-        cands = [x for x in beyond if side * (zone_end - x) >= 0][::-1]   # farthest first
     out = {"rung": rung, "f": round(f, 4), "zone_end": round(zone_end, 6), "avg": round(avg, 6), "gap": round(gap, 6)}
-    for k, level in enumerate(cands):
-        fire = trimmod.trigger_price(side, level, lv.atr, tol_atr, front_atr, front_pct)
-        net = lot_net_at(side, entry, size, fire, open_fee, close_fee, network_usd)
-        if side * (fire - entry) > 0 and net > 0:
-            return {**out, "mode": "level", "level": round(level, 6), "px": round(fire, 2), "net_usd": round(net, 4),
-                    "level_index": beyond.index(level) + 1}
-    if rung > 1 and f > 0 and lv is not None:   # 2026-10-12 01:36 MT: no level in the zone -> the zone edge (front-run)
-        fire = round(trimmod.trigger_price(side, zone_end, lv.atr, tol_atr, front_atr, front_pct), 2)
-        net = lot_net_at(side, entry, size, fire, open_fee, close_fee, network_usd)
-        if side * (fire - entry) > 0 and net > 0:
-            return {**out, "mode": "zone_edge", "level": round(zone_end, 6), "px": fire, "net_usd": round(net, 4),
-                    "level_index": 0}
+    if snap_levels and lv is not None:
+        beyond = sorted((x for x in trim_levels(side, lv) if side * (x - entry) > 0), key=lambda x: side * x)
+        for level in [x for x in beyond if side * (zone_end - x) >= 0][::-1]:   # farthest first
+            fire = trimmod.trigger_price(side, level, lv.atr, tol_atr, front_atr, front_pct)
+            net = lot_net_at(side, entry, size, fire, open_fee, close_fee, network_usd)
+            if side * (fire - entry) > 0 and net > 0:
+                return {**out, "mode": "level", "level": round(level, 6), "px": round(fire, 2), "net_usd": round(net, 4),
+                        "level_index": beyond.index(level) + 1}
+    fire = round(zone_end, 2)
+    net = lot_net_at(side, entry, size, fire, open_fee, close_fee, network_usd)
+    if side * (fire - entry) > 0 and net > 0:
+        return {**out, "mode": "zone_edge", "level": round(zone_end, 6), "px": fire, "net_usd": round(net, 4), "level_index": 0}
     need = (open_fee + close_fee) + network_usd / size if size > 0 else 0.0
     px = entry * (1 + side * need)
     px = round(px, 2)
