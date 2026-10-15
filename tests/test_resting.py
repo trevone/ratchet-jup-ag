@@ -199,49 +199,63 @@ def test_add_fill_via_order_books_lot_leverage_step_and_partial(bot):
     lot = L.lots[-1]
     assert lot["size"] == ra["size_usd"] and lot["via"] == "limit" and lot["partial_due"] and lot["rung"] == 7
     assert lot["price"] == pytest.approx(ra["trigger"], abs=1e-6) and L.last_size == pytest.approx(st2["positions"]["long"]["sizeUsd"])
-    # the single partial TP: not at the fill (add not in profit -> not eligible); placed once armed + eligible
+    # TP3: the target is between the avg and the furthest add; only adds netting > 0 after fees at it are covered
     bot.calls.clear()
-    bot.place_missing_partials(pos, st2, st2["oracle"]["price"])
-    assert not bot.calls
-    # 2026-10-12 00:53 MT zone rule: TP3 between the add entry and avg; here no level in the zone -> fee-covering
-    # 01:36 MT: no level in the zone -> zone edge (105.36 - 0.045 = 105.31), behind the market (105.6) -> not placed
-    bot._last_st = {"positions": {"long": {"borrowFeeUsd": 0.0}}}   # no on-chain borrow in this fixture (TP3 fee min)
-    plan = bot.partial_plan(pos, [lot], LV)
-    # 2026-10-15: zone edge is the target (tp3_fee_mult 1.0: edge beyond the fee minimum, kept)
-    assert plan["mode"] == "zone_edge" and plan["px"] >= plan["fee_min"] and lot["price"] < plan["px"] < pos.avg_entry
-    # 2026-10-15: no avg cap - with the avg at/below the add entry TP3 is still placed, at the fee minimum
-    class _P(type(pos)):
-        avg_entry = lot["price"] - 1.0
-    import copy
-    pos2 = copy.copy(pos)
-    pos2.__class__ = _P
-    plan2 = bot.partial_plan(pos2, [lot], LV)
-    assert plan2 is not None and plan2["px"] > pos2.avg_entry and plan2["px"] >= plan2["fee_min"] - 1e-9
-    assert plan2["px"] > lot["price"]
-    bot.place_missing_partials(pos, st2, 105.6)
-    assert not [a for n, a in bot.calls if n == "decrease"] and not L.partials
+    plan = bot.partial_plan(pos)
+    far = min(l["price"] for l in L.lots if not l.get("first"))
+    f = R.zone_f(len(L.lots) - 1, bot.cfg.dca.ladder_max_rungs, bot.cfg.resting.partial_zone_f_first, bot.cfg.resting.partial_zone_f_deep)
+    assert plan["rung"] == len(L.lots) - 1 and plan["far"] == far and plan["px"] == round(pos.avg_entry + (far - pos.avg_entry) * f, 2)
+    assert far < plan["px"] < pos.avg_entry and plan["lots"] and plan["size"] <= sum(l["size"] for l in L.lots)
+    bot.partial_sync(pos, 105.6)   # target beyond market 105.6 (price below target for a long): placed, one order
+    dec = [a for n, a in bot.calls if n == "decrease"]
+    assert len(dec) == 1 and dec[0]["sizeUsd"] == plan["size"] and dec[0]["triggerPriceUsd"] == plan["px"]
+    assert len(L.partials) == 1 and L.partials[0]["lots"] == plan["lots"]
 
 
-def test_single_partial_covers_eligible_adds_and_is_updated_on_new_add(monkeypatch, tmp_path):
-    bot = mkbot(monkeypatch, tmp_path, [*ON, "dca.ladder_max_rungs=7"])   # rung 6 -> f 0.308: zone edge 107.87
+def test_tp3_covers_only_net_positive_adds_and_resizes_on_new_add_and_shrink(monkeypatch, tmp_path):
+    bot = mkbot(monkeypatch, tmp_path, [*ON, "dca.ladder_max_rungs=7"])
     L = bot.local
     pos = bot.chain_position(state())
-    bot.place_missing_partials(pos, state(price=109.5), 109.5)   # 0.35 % under avg: not armed -> nothing
-    assert not bot.calls and not L.partials
-    bot.place_missing_partials(pos, state(price=107.7), 107.7)   # armed; adds 107.52 + 106.44 eligible -> ONE order
+    plan = bot.partial_plan(pos)
+    adds = [l for l in L.lots if not l.get("first")]
+    c, t = bot.cfg.costs, bot.cfg.trim
+    ok = [l for l in adds if R.lot_net_at(LONG, l["price"], l["size"], plan["px"], c.open_fee, c.close_fee, t.trim_network_usd) > 0]
+    assert plan["lots"] == [l["time"] for l in ok] and 0 < len(ok) < len(adds)   # shallow adds do not net at the target
+    assert plan["size"] == round(sum(l["size"] for l in ok), 2)
+    bot.partial_sync(pos, 105.5)
     dec = [a for n, a in bot.calls if n == "decrease"]
-    assert len(dec) == 1 and dec[0]["sizeUsd"] == round(76.49 + 78.05, 2) and 107.7 < dec[0]["triggerPriceUsd"] < AVG
-    assert len(L.partials) == 1 and len(L.partials[0]["lots"]) == 2
+    assert len(dec) == 1 and dec[0]["sizeUsd"] == plan["size"] and len(L.partials) == 1
     old = L.partials[0]["pubkey"]
-    new = {"time": str(NOW), "price": 105.0, "size": 90.0, "coll": 4.5, "lev": 20.0, "first": False, "rung": 7}
-    L.lots.append(new)
     bot.calls.clear()
+    bot.partial_sync(pos, 105.5)   # unchanged plan: nothing cancelled / placed
+    assert not bot.calls
+    new = {"time": str(NOW), "price": 105.0, "size": 90.0, "coll": 4.5, "lev": 20.0, "first": False, "rung": 7}
+    L.lots.append(new)   # new deeper add: avg, furthest add, rung change -> cancel + one new decrease
     bot.chain = lambda: state()
-    bot.partial_on_add(bot.chain_position(state(size=SIZE + 90)), 105.2, new)
+    pos2 = bot.chain_position(state(size=SIZE + 90, avg=AVG - 0.2))
+    bot.partial_sync(pos2, 105.2)
     assert [a["request"] for n, a in bot.calls if n == "cancel"] == [old]
     dec = [a for n, a in bot.calls if n == "decrease"]
-    assert len(dec) == 1 and dec[0]["sizeUsd"] == round(76.49 + 78.05 + 90.0, 2)
-    assert len(L.partials) == 1 and new["time"] in L.partials[0]["lots"]
+    p2 = bot.partial_plan(pos2)
+    assert len(dec) == 1 and dec[0]["sizeUsd"] == p2["size"] and p2["rung"] == len(adds) + 1 and p2["far"] == 105.0
+    # position shrank below the TP3 size: resized to the position
+    bot.calls.clear()
+    small = bot.chain_position(state(size=p2["size"] - 20.0, avg=AVG - 0.2))
+    bot.partial_sync(small, 105.2)
+    assert [a["sizeUsd"] for n, a in bot.calls if n == "decrease"] == [round(p2["size"] - 20.0, 2)]
+
+
+def test_no_qualifying_add_no_tp3_and_old_one_cancelled(bot):
+    L = bot.local
+    L.lots = [l for l in L.lots if l.get("first")]   # no adds
+    pos = bot.chain_position(state())
+    assert bot.partial_plan(pos) is None
+    bot.partial_sync(pos, 105.0)
+    assert not bot.calls and not L.partials
+    L.partials = [{"pubkey": "PX", "lots": ["t"], "lot_time": "t", "size": 10.0, "px": 107.0}]
+    bot.chain = lambda: state()
+    bot.partial_sync(pos, 105.0)
+    assert [a["request"] for n, a in bot.calls if n == "cancel"] == ["PX"] and not L.partials
 
 
 def test_add_order_gone_without_fill_drops_record(bot):
@@ -405,9 +419,9 @@ def test_tp3_closing_an_add_moves_the_resting_add_to_the_lots_entry(bot):
     assert old != round(lot["price"], 2)
     bot.calls.clear()
     bot.resting_tick(pos, st2, 106.7, ACC, 100.0)
-    names = [n for n, _ in bot.calls]
-    assert names == ["cancel-limit-order", "create-limit-order"] and bot.calls[0][1] == {"request": "LIM1"}
-    args = bot.calls[1][1]
+    calls = [c for c in bot.calls if c[0] != "decrease"]   # (TP3 re-plan for the shrunk position is separate)
+    assert [n for n, _ in calls] == ["cancel-limit-order", "create-limit-order"] and calls[0][1] == {"request": "LIM1"}
+    args = calls[1][1]
     assert args["triggerPriceUsd"] == round(lot["price"], 2) and args["sizeUsd"] == pytest.approx(lot["size"], abs=0.01)
     assert L.rest_add["pubkey"] == "LIM2" and L.rest_add["trigger"] == round(lot["price"], 2) and L.rest_add["lev"] == lot["lev"]
     bot.calls.clear()   # next tick: already there -> no new calls, still exactly one resting add
@@ -428,7 +442,7 @@ def test_rearm_failed_cancel_places_nothing(bot):
     old = dict(bot.local.rest_add)
     bot.calls.clear()
     bot.resting_tick(pos, st2, 106.7, ACC, 100.0)
-    assert [n for n, _ in bot.calls] == ["cancel-limit-order"] and bot.local.rest_add == old
+    assert [n for n, _ in bot.calls if n != "decrease"] == ["cancel-limit-order"] and bot.local.rest_add == old
 
 
 def test_rearm_cleared_on_fill_and_market_unfavourable_keeps_plan(bot):

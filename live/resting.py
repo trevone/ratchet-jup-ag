@@ -1,7 +1,7 @@
 """Resting on-chain orders (Trevor 2026-10-11 spec; [resting] flags, all default OFF). Pure helpers, no I/O.
 
 1. resting add orders: the next ladder rung rests as a Jupiter limit-open order (live/src/limit.ts).
-2. per-add partial TP: a trigger decrease sized to each filled add, N analyst levels beyond its entry.
+2. the single partial TP (TP3): a trigger decrease sized to the adds that net a profit after fees at the target (tp3_plan).
 3. last partial price: the next add order must lie beyond the last partial price in the adverse direction.
 """
 from __future__ import annotations
@@ -62,36 +62,30 @@ def zone_f(rung: int, max_rungs: int, f_first: float, f_deep: float) -> float:
     return f_first - (f_first - f_deep) * min(1.0, max(0.0, (rung - 1) / (max_rungs - 1)))
 
 
-def partial_target_zone(side: int, entry: float, avg: float, size: float, lv: Any, rung: int, max_rungs: int,
-                        f_first: float, f_deep: float, *, snap_levels: bool = False, tol_atr: float, front_atr: float,
-                        front_pct: float, open_fee: float, close_fee: float, network_usd: float) -> dict[str, Any]:
-    """TP3 target from the covered entry (Trevor 2026-10-15). Primary: the zone edge entry + side x gap x f (gap = entry -> avg,
-    f = zone_f), if it covers fees. Optional snap_levels: instead the farthest analyst level (main + fine) inside the zone, fired
-    tol (+ front-run) before it; none usable -> the edge. Edge not covering fees -> the fee-covering minimum just past the entry.
-    Always returns a price."""
-    gap = max(side * (avg - entry), 0.0)   # entry at/past avg -> zone width 0, TP3 falls to the fee minimum (no avg cap)
+def tp3_plan(side: int, avg: float, adds: Sequence[dict[str, Any]], max_rungs: int, f_first: float, f_deep: float, *,
+             open_fee: float, close_fee: float, network_usd: float) -> dict[str, Any] | None:
+    """The single TP3 (Trevor 2026-10-15). ``adds`` = the open add lots (price / size), rung = how many. D = |furthest add - avg|;
+    target = avg + f x (furthest add - avg), f = zone_f(rung): a point between the trade avg and the furthest (deepest) add.
+    TP3 covers every add that nets > 0 after fees (open + close) and network at the target; size = their total. None = no add
+    does (or no add lies beyond the avg): no TP3."""
+    adds = [a for a in adds if float(a["size"]) > 0 and float(a["price"]) > 0]
+    if not adds:
+        return None
+    far = min(adds, key=lambda a: side * float(a["price"]))["price"]
+    far = float(far)
+    if side * (avg - far) <= 0:
+        return None
+    rung = len(adds)
     f = zone_f(rung, max_rungs, f_first, f_deep)
-    zone_end = entry + side * gap * f
-    out = {"rung": rung, "f": round(f, 4), "zone_end": round(zone_end, 6), "avg": round(avg, 6), "gap": round(gap, 6)}
-    if snap_levels and lv is not None:
-        beyond = sorted((x for x in trim_levels(side, lv) if side * (x - entry) > 0), key=lambda x: side * x)
-        for level in [x for x in beyond if side * (zone_end - x) >= 0][::-1]:   # farthest first
-            fire = trimmod.trigger_price(side, level, lv.atr, tol_atr, front_atr, front_pct)
-            net = lot_net_at(side, entry, size, fire, open_fee, close_fee, network_usd)
-            if side * (fire - entry) > 0 and net > 0:
-                return {**out, "mode": "level", "level": round(level, 6), "px": round(fire, 2), "net_usd": round(net, 4),
-                        "level_index": beyond.index(level) + 1}
-    fire = round(zone_end, 2)
-    net = lot_net_at(side, entry, size, fire, open_fee, close_fee, network_usd)
-    if side * (fire - entry) > 0 and net > 0:
-        return {**out, "mode": "zone_edge", "level": round(zone_end, 6), "px": fire, "net_usd": round(net, 4), "level_index": 0}
-    need = (open_fee + close_fee) + network_usd / size if size > 0 else 0.0
-    px = entry * (1 + side * need)
-    px = round(px, 2)
-    while lot_net_at(side, entry, size, px, open_fee, close_fee, network_usd) <= 0:
-        px = round(px + side * 0.01, 2)
-    return {**out, "mode": "fee_min", "level": None, "px": px, "level_index": 0,
-            "net_usd": round(lot_net_at(side, entry, size, px, open_fee, close_fee, network_usd), 4)}
+    px = round(avg + (far - avg) * f, 2)
+    cov = [a for a in adds if lot_net_at(side, float(a["price"]), float(a["size"]), px, open_fee, close_fee, network_usd) > 0]
+    if not cov:
+        return None
+    size = sum(float(a["size"]) for a in cov)
+    entry = size / sum(float(a["size"]) / float(a["price"]) for a in cov)
+    net = sum(lot_net_at(side, float(a["price"]), float(a["size"]), px, open_fee, close_fee, 0.0) for a in cov) - network_usd
+    return {"px": px, "size": round(size, 2), "entry": round(entry, 6), "rung": rung, "f": round(f, 4), "far": far,
+            "dist": round(abs(far - avg), 6), "avg": round(avg, 6), "lots": [a["time"] for a in cov], "net_usd": round(net, 4)}
 
 
 def add_ref(side: int, last_entry: float, last_partial_px: float | None) -> float:

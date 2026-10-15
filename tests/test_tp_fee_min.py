@@ -82,30 +82,3 @@ def test_fees_only_on_open_size_after_tp3(monkeypatch, tmp_path):
     mins, fees = b.tp_fee_mins(pos, st)
     assert fees == pytest.approx(0.0012 * 115.50 + 0.01)
     assert mins[0] == tp_fee_min_price(1, pos.avg_entry, 115.50, fees, b.cfg.tp.tp1_fee_mult)
-
-
-def test_tp3_fee_min_pushes_inside_levels_and_keeps_beyond(monkeypatch, tmp_path):
-    from tests.test_resting import LV
-    b = mkbot(monkeypatch, tmp_path, ON)
-    st = state(size=581.0)
-    st["positions"]["long"]["borrowFeeUsd"] = 0.0
-    b._last_st = st
-    pos = b.chain_position(st)
-    lot = b.local.lots[-1]
-    base = b.partial_plan(pos, [lot], LV)
-    c, size, entry = b.cfg.costs, float(lot["size"]), float(lot["price"])
-    f3 = (c.open_fee + c.close_fee) * size
-    assert base["fee_min"] == tp_fee_min_price(1, entry, size, f3, b.cfg.tp.tp3_fee_mult)
-    assert base["px"] >= base["fee_min"]
-    net = size * (base["px"] - entry) / entry - f3
-    assert net >= b.cfg.tp.tp3_fee_mult * f3 - 0.01 * size / entry   # within one cent of rounding
-    # big borrow on the position -> pro-rated share raises TP3's minimum beyond the level -> placed at the minimum
-    st["positions"]["long"]["borrowFeeUsd"] = 20.0
-    hi = b.partial_plan(pos, [lot], LV)
-    exp = tp_fee_min_price(1, entry, size, f3 + 20.0 * size / pos.size, b.cfg.tp.tp3_fee_mult)
-    assert hi["fee_min"] == exp and hi["px"] == max(exp, base["px"]) and exp > base["fee_min"]
-
-
-def test_tp3_config_default():
-    from config import TakeProfitConfig
-    assert TakeProfitConfig().tp3_fee_mult == 1.0

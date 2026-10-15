@@ -335,7 +335,6 @@ class Bot:
             raise RuntimeError(f"state read failed: {st}")
         if st.get("market", "SOL") != self.asset:
             raise RuntimeError(f"state is for market {st.get('market')} not {self.asset}")
-        self._last_st = st
         return st
 
     @staticmethod
@@ -905,7 +904,7 @@ class Bot:
 
     def tp3_set(self, pos: ChainPosition, st: dict[str, Any], f: Path) -> None:
         """One-shot manual TP3 move (file TP3_SET with a price; Trevor 2026-10-14): the resting TP3 (partial) trigger is
-        moved in place, clamped to the TP3 fee minimum; a new add re-places TP3 normally. Never halts."""
+        moved in place (no fee clamp; must be beyond market); the next add / resize re-plans TP3. Never halts."""
         want = self.set_file_price(f)
         if want is None:
             return
@@ -913,17 +912,15 @@ class Bot:
             log.warning("TP3_SET %.2f: no resting TP3; file deleted, nothing changed", want)
             return
         p = self.local.partials[0]
-        mn = self.tp3_fee_min(pos, p["entry"], p["size"], st)
-        px = mn if pos.side * (round(want, 2) - mn) < -1e-9 else round(want, 2)
+        px = round(want, 2)
         price = st["oracle"]["price"]
         if pos.side * (px - price) < self.cfg.tp.tp_market_gap - 1e-9:
-            log.warning("TP3_SET %.2f (clamped %.2f) not beyond market %.3f; file deleted, nothing changed", want, px, price)
+            log.warning("TP3_SET %.2f not beyond market %.3f; file deleted, nothing changed", want, price)
             return
         if not self.move_trigger(p["pubkey"], px):
             log.error("TP3_SET %.2f: in-place update failed; TP3 unchanged at %.2f (no halt)", px, p["px"])
             return
-        log.warning("TP3_SET: TP3 %.2f -> %.2f in place (requested %.2f%s)", p["px"], px, want,
-                    "" if abs(px - want) < 0.005 else ", clamped to TP3 fee minimum")
+        log.warning("TP3_SET: TP3 %.2f -> %.2f in place", p["px"], px)
         p["px"] = px
         self.save()
 
@@ -1521,7 +1518,7 @@ class Bot:
         assert new is not None
         self.sync_tp_ladder(new)
         if pos is not None and self.cfg.resting.partials_enabled:   # [resting]: the single partial TP covers the new add
-            self.partial_on_add(new, price, self.local.lots[-1])
+            self.partial_sync(new, price)
 
     # ------------------------------------------------------------- resting orders ([resting], 2026-10-11, default OFF)
     def _rest_note(self, key: str, msg: str, level: int = logging.INFO) -> None:
@@ -1755,7 +1752,7 @@ class Bot:
         """Every tick with an open position: place what is missing (per-add partials, then the next resting add)."""
         R = self.cfg.resting
         if R.partials_enabled:
-            self.place_missing_partials(pos, st, price)
+            self.partial_sync(pos, price)
         ra = self.local.rest_add
         if R.adds_enabled and ra is None:
             self.place_rest_add(pos, st, price, account, equity)
@@ -1877,108 +1874,64 @@ class Bot:
         self._rest_note("add", f"resting add creation refused / failed (retry next tick): "
                                f"{res.get('code') or ''} {res.get('error') or res.get('err')} args {args}", logging.WARNING)
 
-    def partial_plan(self, pos: ChainPosition, lots: list[dict[str, Any]], lv: Any) -> dict[str, Any] | None:
-        """Target of the ONE per-position partial TP covering ``lots`` (Trevor 23:10 MT): size = their total, entry = their
-        size-weighted entry (Jupiter-style avg), N from the highest rung among them; spec rule otherwise (N-th trim level
-        beyond the entry, tol before it, must cover fees)."""
+    def partial_plan(self, pos: ChainPosition) -> dict[str, Any] | None:
+        """The ONE TP3 (Trevor 2026-10-15): restmod.tp3_plan over the open add lots (rung = their count; a closed lot leaves
+        L.lots, so the rung drops), size capped at the position."""
         R, t, c = self.cfg.resting, self.cfg.trim, self.cfg.costs
-        if not lots:
-            return None
-        idx = {l["time"]: i for i, l in enumerate(self.local.lots)}
-        rung = max(int(l.get("rung") or max(1, idx.get(l.get("time"), 1))) for l in lots)
-        size = sum(float(l["size"]) for l in lots)
-        entry = size / sum(float(l["size"]) / float(l["price"]) for l in lots)
-        # 2026-10-12 00:53 MT: target between the covered entry and the trade avg (zone rule), replaces N levels beyond
-        tgt = restmod.partial_target_zone(pos.side, entry, pos.avg_entry, size, lv, rung, self.cfg.dca.ladder_max_rungs,
-                                          R.partial_zone_f_first, R.partial_zone_f_deep,
-                                          snap_levels=R.partial_snap_levels, tol_atr=t.trim_level_tol_atr,
-                                          front_atr=t.trim_level_front_run_atr, front_pct=t.trim_level_front_run_pct,
-                                          open_fee=c.open_fee, close_fee=c.close_fee, network_usd=t.trim_network_usd)
-        if tgt.get("px") is None:
-            self._rest_note("partial_zone", f"TP3 for adds (entry {entry:.4f}, rung {rung}): {tgt.get('why')}", logging.WARNING)
-            return None
-        tgt.update(rung=rung, entry=round(entry, 6), size=round(size, 2), n=0)
-        # Trevor 2026-10-13 20:38 MT: TP3 portion nets >= tp3_fee_mult x its own fees (open + close on its size +
-        # accrued borrow pro-rated by size share); zone / level kept when beyond that minimum, else placed at it.
-        mn, f3 = self.tp3_fee_min(pos, entry, size, getattr(self, "_last_st", None), fees=True)
-        tgt["fee_min"] = mn
-        if pos.side * (tgt["px"] - mn) < -1e-9:
-            log.info("TP3 fee minimum: %s %.2f inside min %.2f (fees $%.4f, entry %.4f) -> %.2f", tgt.get("mode"),
-                     tgt["px"], mn, f3, entry, mn)
-            tgt["px"], tgt["mode"] = mn, str(tgt.get("mode")) + "->fee_mult_min"
-            tgt["net_usd"] = round(pos.side * size * (mn - entry) / entry - f3, 4)
+        adds = [l for i, l in enumerate(self.local.lots) if not (l.get("first") or i == 0)]
+        tgt = restmod.tp3_plan(pos.side, pos.avg_entry, adds, self.cfg.dca.ladder_max_rungs, R.partial_zone_f_first,
+                               R.partial_zone_f_deep, open_fee=c.open_fee, close_fee=c.close_fee, network_usd=t.trim_network_usd)
+        if tgt is not None:
+            tgt["size"] = round(min(tgt["size"], pos.size), 2)
         return tgt
 
-    def tp3_fee_min(self, pos: ChainPosition, entry: float, size: float, st: dict[str, Any] | None, fees: bool = False):
-        """TP3 fee-minimum price (tp3_fee_mult x its fees; borrow pro-rated by size share; st None -> hourly estimate)."""
-        c = self.cfg.costs
-        borrow = self._accrued_borrow_usd(pos, st) * size / pos.size if pos.size > 0 else 0.0
-        f3 = tp_fee_total(size, size, c.open_fee, c.close_fee, borrow)
-        mn = tp_fee_min_price(pos.side, entry, size, f3, self.cfg.tp.tp3_fee_mult)
-        return (mn, f3) if fees else mn
-
-    def _place_partial(self, pos: ChainPosition, price: float, lots: list[dict[str, Any]], why: str) -> bool:
+    def _place_partial(self, pos: ChainPosition, price: float, tgt: dict[str, Any], why: str) -> bool:
         L = self.local
-        lv = self.strategy.levels_provider(pd.Timestamp.now(tz="UTC")) if self.strategy.levels_provider else None
-        tgt = self.partial_plan(pos, lots, lv)
-        desc = [f"@{float(l['price']):.4f} ${l['size']}" for l in lots]
-        if tgt is None:
-            self._rest_note("partial", f"partial for adds {desc}: no TP3 target (no price covers fees); retry next tick")
-            return False
         if pos.side * (tgt["px"] - price) < self.cfg.tp.tp_market_gap - 1e-9:
-            self._rest_note("partial", f"partial for adds {desc}: target {tgt['px']} not beyond market {price:.4f}; retry")
+            self._rest_note("partial", f"TP3 target {tgt['px']} not beyond market {price:.4f}; retry")
             return False
         side = "long" if pos.side == LONG else "short"
         args = {"side": side, "sizeUsd": tgt["size"], "triggerPriceUsd": tgt["px"], "triggerAbove": pos.side == LONG}
         res = self.cmd("decrease", args)
         if self.live.dry_run:
-            self._rest_note("partial", f"DRY RUN partial {args} ({why}; {tgt['mode']} {tgt['level']}, f {tgt['f']}, rung {tgt['rung']})")
+            self._rest_note("partial", f"DRY RUN partial {args} ({why}; f {tgt['f']}, rung {tgt['rung']})")
             return False
         if not res.get("ok"):
             self._rest_note("partial", f"partial placement failed (retry next tick): {res.get('err') or res.get('error')}",
                             logging.WARNING)
             return False
-        L.partials = [{"pubkey": res.get("positionRequest"), "lots": [l["time"] for l in lots], "lot_time": lots[-1]["time"],
-                       "size": args["sizeUsd"], "px": tgt["px"], "level": tgt["level"], "n": tgt["n"], "rung": tgt["rung"],
+        L.partials = [{"pubkey": res.get("positionRequest"), "lots": tgt["lots"], "lot_time": tgt["lots"][-1],
+                       "size": args["sizeUsd"], "px": tgt["px"], "level": None, "n": 0, "rung": tgt["rung"],
                        "entry": tgt["entry"], "placed": str(pd.Timestamp.now(tz="UTC")), "sig": res.get("sig"), "why": why}]
         self.save()
         self.__dict__.setdefault("_rest_notes", {}).pop("partial", None)
-        log.warning("PARTIAL TP (TP3) placed (%s): adds %s = $%.2f, entry %.4f avg %.4f (rung %d, f %.3f, zone to %.4f) -> %s "
-                    "%s, trigger %.4f (net est $%.4f), req %s", why, desc, tgt["size"], tgt["entry"], tgt["avg"], tgt["rung"],
-                    tgt["f"], tgt["zone_end"], tgt["mode"], tgt["level"], tgt["px"], tgt["net_usd"], res.get("positionRequest"))
+        log.warning("PARTIAL TP (TP3) placed (%s): adds %s = $%.2f, entry %.4f avg %.4f furthest add %.4f (rung %d, f %.3f) -> "
+                    "trigger %.4f (net est $%.4f), req %s", why, tgt["lots"], tgt["size"], tgt["entry"], tgt["avg"], tgt["far"],
+                    tgt["rung"], tgt["f"], tgt["px"], tgt["net_usd"], res.get("positionRequest"))
         return True
 
-    def place_missing_partials(self, pos: ChainPosition, st: dict[str, Any], price: float) -> None:
-        """ONE partial TP per position (Trevor 23:09 / 23:10 MT): placed when the trim is armed (existing arm rule, sticky
-        until flat) and >= 1 add is trim-eligible (trim.select_lots at the current price; never the first entry); it covers
-        the eligible adds. Otherwise never touched here (no toggling with the arm state); a new add updates it
-        (partial_on_add)."""
-        L, t, c = self.local, self.cfg.trim, self.cfg.costs
-        if L.partials:
-            return
-        if not (L.trim_armed or trimmod.arm_hit(pos.side, pos.avg_entry, price, t.trim_arm_dist_pct)):
-            return
-        elig = set(trimmod.select_lots(L.lots, pos.side, price, t, c.open_fee, c.close_fee))
-        due = [l for i, l in enumerate(L.lots) if i in elig and not (l.get("first") or i == 0)]
-        if due:
-            self._place_partial(pos, price, due, "armed + eligible adds")
-
-    def partial_on_add(self, pos: ChainPosition, price: float, new_lot: dict[str, Any]) -> None:
-        """A new add filled while the single partial TP exists: cancel + replace it so it also covers the new add (the
-        adds it covered that are still open + the new one), re-targeted. No partial yet -> nothing (placed when armed)."""
+    def partial_sync(self, pos: ChainPosition, price: float) -> None:
+        """Keep the single TP3 equal to partial_plan (every tick; right after an add): placed when missing, cancelled +
+        re-placed when its size / price differ (new add, rung or avg change, position shrank), cancelled when no add nets a
+        profit any more. A changed target not beyond the market leaves the old order untouched (retry next tick)."""
         L = self.local
-        if not (self.cfg.resting.partials_enabled and L.partials):
+        if not self.cfg.resting.partials_enabled:
             return
-        old = L.partials[0]
-        c = self.cancel_request(old["pubkey"], pos.size)
-        if c != "ok":
-            log.warning("partial update on add: cancel of %s returned %s; not replaced (next tick reconciles)", old["pubkey"], c)
+        tgt, old = self.partial_plan(pos), (L.partials[0] if L.partials else None)
+        if old and tgt and abs(float(old["size"]) - tgt["size"]) < 0.01 and abs(float(old["px"]) - tgt["px"]) < 0.005:
             return
-        L.partials = []
-        self.save()
-        keep = set(old.get("lots") or [old.get("lot_time")])
-        lots = [l for l in L.lots if l["time"] in keep or l["time"] == new_lot["time"]]
-        self._place_partial(pos, price, lots, "updated for new add")
+        if tgt and pos.side * (tgt["px"] - price) < self.cfg.tp.tp_market_gap - 1e-9:
+            self._rest_note("partial", f"TP3 target {tgt['px']} not beyond market {price:.4f}; retry")
+            return
+        if old:
+            c = self.cancel_request(old["pubkey"], pos.size)
+            if c != "ok":
+                log.warning("TP3 update: cancel of %s returned %s; not replaced (next tick reconciles)", old["pubkey"], c)
+                return
+            L.partials = []
+            self.save()
+        if tgt:
+            self._place_partial(pos, price, tgt, "re-planned" if old else "placed")
 
     def resting_status(self, pos: ChainPosition) -> str:
         L, R = self.local, self.cfg.resting
@@ -2655,8 +2608,7 @@ class Bot:
             self.resize_tps(self.chain_position(self.chain()) or pos)
         if rest_resync and pos is not None:   # an add filled via its order: fresh TP1/TP2 ladder
             self.sync_tp_ladder(self.chain_position(self.chain()) or pos)   # (exactly as after a market add)
-            if L.lots:
-                self.partial_on_add(pos, price, L.lots[-1])
+            self.partial_sync(pos, price)
         if pos is not None or L.side == 0:   # partial-TP proceeds / leftovers after booking
             try:
                 self.sweep(st, pos.side if pos is not None else None)

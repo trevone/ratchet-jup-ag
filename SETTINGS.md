@@ -33,9 +33,8 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 | [tp] | smart_tp2 / tp_res_buffer_atr | true / 0.1 | true / 0.1 | true / 0.1 | TP2 capped at nearest resistance - 0.1 ATR |
 | [tp] | tp_res_min_touches | 2 | 2 | 2 | Only levels with >= 2 touches cap TP2 |
 | [tp] | tp_periodic | false | false | false | TPs set only at open/add |
-| [tp] | tp1_fee_mult / tp2_fee_mult / tp3_fee_mult | 3.0 / 4.5 / 1.0 | same | same | Fee-minimum TP floors (code defaults, config.py): a TP portion nets >= mult x its fees. 2026-10-15: was 2.0 / 3.0 / 2.5 |
-| [resting] | partial_zone_f_first / partial_zone_f_deep | 0.50 / 0.27 | same | same | TP3 zone edge = entry + (entry->avg gap) x f; f tapers linearly rung 1 -> ladder_max_rungs (replaces partial_zone_f_max) |
-| [resting] | partial_snap_levels | false | false | false | true = snap TP3 to the farthest analyst level inside the zone (0.05 ATR tol); false = zone edge |
+| [tp] | tp1_fee_mult / tp2_fee_mult | 3.0 / 4.5 | same | same | Fee-minimum TP1 / TP2 floors (code defaults, config.py): a TP portion nets >= mult x its fees. 2026-10-15: was 2.0 / 3.0. tp3_fee_mult removed (TP3 = adds that net > 0 after fees) |
+| [resting] | partial_zone_f_first / partial_zone_f_deep | 0.50 / 0.27 | same | same | TP3 target = avg + f x (furthest open add - avg); f tapers linearly rung 1 (open adds) -> ladder_max_rungs; TP3 size = adds netting > 0 after fees + network at the target |
 | [tp] | close_remainder_after_min | 55 | 55 | 55 | After TP1, close remainder if net > 0 and equity >= HWM |
 | [trim] | trim_trigger | distance_level | distance_level | distance_level | Per-add trim mode |
 | [trim] | trim_arm_dist_pct | 0.0065 | 0.0065 | 0.0065 | Arm when price 0.65% against avg |

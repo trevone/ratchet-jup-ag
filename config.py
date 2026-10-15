@@ -166,7 +166,6 @@ class TakeProfitConfig:
     tp_min_gap_usd: float = 0.05         # TP1 sits at least this far inside TP2
     tp1_fee_mult: float = 3.0            # Trevor 2026-10-13: TP1 portion must net >= this x its share of the trade's total fees
     tp2_fee_mult: float = 4.5            # ... TP2 likewise (fees = all opening fees + est. close fee + accrued borrow)
-    tp3_fee_mult: float = 1.0            # TP3 (per-add partial) nets >= this x its own fees (open+close on its size + pro-rated borrow)
     tp_min_move: float = 0.05            # periodic check re-places a TP only when it moves >= this (USD)
     tp_market_gap: float = 0.02          # a trigger must sit at least this far beyond market (Jupiter rejects otherwise)
     tp_near_miss_frac: float = 0.85      # momentum fade armed once the best price reached this fraction of TP2's distance
@@ -467,12 +466,10 @@ class RestingConfig:
       Placed orders are never modified; after a fill the next missing rung is placed. Pending add orders are cancelled
       only when the trade closes or the side changes. A refused creation (e.g. utilisation > 80 %, $10 minimum) is logged
       and retried next tick. The market add on the bar is not used while this is on.
-    partials_enabled: ONE partial TP (trigger decrease) per position (Trevor 23:09 / 23:10 MT): placed once the trim is
-      ARMED (existing arm rule) and >= 1 add is trim-eligible (trim.select_lots now; never the first entry), sized to the
-      eligible adds' total, target = N analyst levels (main + fine, the trim's levels) beyond their size-weighted entry
-      in the profit direction, N = round(min + (max - min) x (rung - 1) / (ladder_max_rungs - 1)) for the highest rung
-      covered, fired trim_level_tol_atr (+ trim front-run) before the level, must cover fees (6+6 bps + trim_network_usd).
-      Not touched otherwise; when a new add fills it is cancelled + replaced to also cover that add.
+    partials_enabled: ONE partial TP (TP3, trigger decrease) per position (Trevor 2026-10-15): target = avg + f x (furthest
+      open add - avg), f tapering partial_zone_f_first (rung 1) -> partial_zone_f_deep (rung >= ladder_max_rungs), rung = number
+      of open adds; sized to the adds that net > 0 after fees (6+6 bps + trim_network_usd) at the target; none -> no TP3.
+      Re-planned (cancel + place) whenever size / price change: new add, position shrank, adds closed by a TP3 fill.
     last_partial_rule: the price of the last partial is recorded; the next add order must lie beyond it in the adverse
       direction (the ladder is planned from the more adverse of the last fill and the last partial price)."""
     adds_enabled: bool = False
@@ -480,9 +477,8 @@ class RestingConfig:
     last_partial_rule: bool = False
     partial_levels_min: int = 1
     partial_levels_max: int = 4
-    partial_zone_f_first: float = 0.50   # 2026-10-15: TP3 zone = entry .. entry + (entry->avg gap) x f; f at rung 1
+    partial_zone_f_first: float = 0.50   # TP3 target = avg + f x (furthest add - avg); f at rung 1
     partial_zone_f_deep: float = 0.27    # ... tapering linearly to this at rung >= ladder_max_rungs
-    partial_snap_levels: bool = False    # snap TP3 to the farthest analyst level inside the zone (0.05 ATR tol); default: zone edge
 
     def __post_init__(self) -> None:
         if not 1 <= self.partial_levels_min <= self.partial_levels_max:
