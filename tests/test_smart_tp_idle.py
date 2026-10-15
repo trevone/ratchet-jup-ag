@@ -26,6 +26,7 @@ PINNED = [
     "signal.oversold=45.0", "signal.overbought=55.0", "signal.idle_enabled=true", "signal.idle_after_min=60.0",
     "signal.idle_step_min=30.0", "signal.idle_long_rsi_steps=[48.0, 50.0]", "signal.idle_short_rsi_steps=[52.0, 50.0]",
     "signal.idle_max_long_rsi=50.0", "signal.idle_min_short_rsi=50.0",
+    "sides=both",   # live files may carry a one-sided bias; these tests need both sides
     "live.dry_run=true",   # the bot fixture never sends anyway (cmd is faked, conftest blocks the CLI)
 ]
 
