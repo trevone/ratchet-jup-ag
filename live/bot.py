@@ -1933,7 +1933,7 @@ class Bot:
         elif self.asset == "SOL":
             j = bankmod.load_journal()
             r = bankmod.recon_sol(b, float(st["wallet"]["sol"]), bankmod.pending_others(j), sol_px, lc.ext_min_usd,
-                                  self._busy(st, True))
+                                  self._busy(st, True), bankmod.rent_held(st))
             if r["action"] == "external" and lc.ext_flow_mode == "alert":
                 b["res_last"] = r["implied"]   # new reserve baseline so it alerts once; bal / hwm untouched
                 line = bankmod.write_alert("SOL", f"native SOL {r['diff']:+.9f} (~${r['diff'] * sol_px:+.2f}); banks "

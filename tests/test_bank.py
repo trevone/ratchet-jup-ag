@@ -350,3 +350,30 @@ def test_missing_baseline_migrates_once_to_hwm_without_touching_hwm(ebot):
     b.pop("trade_start_equity", None)
     wd = b["wd_mark"]
     assert ebot.guard_target(_st()) == pytest.approx(b["hwm"] * 1.002) and b["trade_start_equity"] == b["hwm"] and b["wd_mark"] == wd
+
+
+def test_sol_rent_churn_across_bots_does_not_alert_real_outflow_does():
+    """Shared wallet: every Perps request (any bot) locks 0.0037236 SOL, a position 0.00174752; refunds return it."""
+    px = 106.0
+    def st(nreq, npos):
+        return {"allOpenRequests": [{}] * nreq, "allPositions": [{}] * npos}
+    assert K.rent_held(st(3, 1)) == pytest.approx(3 * 0.0037236 + 0.00174752)
+    s = K.new_bank("SOL", 0.60)
+    base = 0.60 + 0.03                                  # bal + reserve float (+ rent held, added below)
+    rent = K.rent_held(st(2, 1))
+    assert K.recon_sol(s, base + rent, 0.0, px, 1.5, False, rent)["action"] == "init"
+    # ETH/BTC bots add 6 requests + 2 positions (0.0245 SOL leaves the wallet), later refunded in full
+    for nreq, npos in ((8, 3), (8, 3), (8, 3), (1, 1), (1, 1), (0, 0), (2, 1)):
+        rent = K.rent_held(st(nreq, npos))
+        r = K.recon_sol(s, base + rent - 0.00002, 0.0, px, 1.5, False, rent)   # + ~fee noise
+        assert r["action"] == "float", (nreq, npos, r)
+        assert s["pend"] is None
+    # a genuine 0.02 SOL transfer out still alerts (2 ticks), rent unchanged
+    rent = K.rent_held(st(2, 1))
+    assert K.recon_sol(s, base + rent - 0.02, 0.0, px, 1.5, False, rent)["action"] == "pending"
+    r = K.recon_sol(s, base + rent - 0.02, 0.0, px, 1.5, False, rent)
+    assert r["action"] == "external" and r["diff"] == pytest.approx(-0.02, abs=1e-4)
+    # old baseline (no res_v) is re-initialised once instead of mis-reading the rent
+    o = K.new_bank("SOL", 0.60)
+    o["res_last"] = 0.05
+    assert K.recon_sol(o, 0.7, 0.0, px, 1.5, False, 0.0112)["action"] == "init"
