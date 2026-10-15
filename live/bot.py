@@ -2254,7 +2254,9 @@ class Bot:
             swap = lc.swap_cost_pct if (pos.side == SHORT and self.asset != "SOL") else 0.0
             net = lc.close_network_native if self.asset == "SOL" else 0.0
             cv = bankmod.close_value_native(pos.side, pos.size, pos.avg_entry, pos.margin, fill, c.close_fee, cpx, swap, net)
-        return bankmod.equity(b, cv, bankmod.fee_debt_native(b, sol_px, cpx))
+        ra = self.local.rest_add   # a resting add's collateral left bal at placement and is neither refunded nor margin yet
+        rest = float(ra.get("nat") or 0.0) if ra and ra.get("debited") else 0.0
+        return bankmod.equity(b, cv, bankmod.fee_debt_native(b, sol_px, cpx)) + rest
 
     def guard_min_native(self) -> float:
         """Profit-guard margin above HWM (native). pct mode (2026-10-12): hwm x (pct + per_partial x partials this trade)."""

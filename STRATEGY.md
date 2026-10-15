@@ -328,3 +328,9 @@ A closed trade's row (trades.csv / ledger_summary) is no longer written at flat.
 (`bank_tick`). The SOL bot then re-reads the position's own flows, so the cancelled resting add's collateral refund
 (landing up to a minute after flat; SOL 0.0958 on 3p82BqdH.., F7RkVw.. earlier) is in the row's net. ETH / BTC already
 booked from the own-coin bank this way. Never halts, no KILL; a new open books the pending row first.
+
+### Equity includes the resting add's collateral (2026-10-14, Trevor)
+`hwm_equity()` (profit guard, `hwm_check`, status line) now adds the resting add's collateral (`rest_add.nat`, while
+`debited`) to the bank equity: it leaves `bal` at placement, so without it the bot looked further below HWM than it is.
+No double count: on a fill the record is cleared as the collateral becomes position margin; on cancel the refund returns
+to `bal` and the record is cleared. `bank.update_hwm` (flat only, from `bal`) and HWM / wd_mark are unchanged.

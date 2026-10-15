@@ -332,3 +332,23 @@ def test_max_one_resting_add_order(bot):
     for _ in range(3):   # tracked order (even before it shows on-chain) -> never a second one
         bot.resting_tick(pos, st, 106.6, ACC, 100.0)
     assert len([1 for n, _ in bot.calls if n == "create-limit-order"]) == 1
+
+
+def test_equity_includes_resting_add_collateral_not_double_counted(bot):
+    b = {"coin": "SOL", "bal": 1.0, "hwm": 1.0, "wd_mark": 1.0, "totals": {}, "trade_dep": 0.0}
+    bot.local.bank = b
+    object.__setattr__(bot.cfg.ledger, "enabled", True)
+    st = state()
+    pos = bot.chain_position(st)
+    base = bot.hwm_equity(pos, st, 106.6)
+    bot.resting_tick(pos, st, 106.6, ACC, 100.0)
+    nat = bot.local.rest_add["nat"]
+    assert b["bal"] == pytest.approx(1.0 - nat)
+    assert bot.hwm_equity(pos, st, 106.6) == pytest.approx(base)   # debit offset by the resting collateral
+    bot.local.rest_add["debited"] = False
+    assert bot.hwm_equity(pos, st, 106.6) == pytest.approx(base - nat)   # not debited -> not added
+    bot.local.rest_add["debited"] = True
+    st2 = state(reqs=[req("LIM1", 104.0, "increase")])
+    bot.chain = lambda: st2
+    assert bot.cancel_limit("LIM1")   # refund returns to bal, record cleared
+    assert bot.hwm_equity(pos, st, 106.6) == pytest.approx(base)
