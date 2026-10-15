@@ -408,6 +408,7 @@ class ProfitGuardConfig:
     close_when_met: bool = True           # market-close the whole position once the close now meets baseline + min
     close_requires: str = "adds_or_trims"  # "adds_or_trims" | "any"
     min_profit_pct_trade: float = 0.002   # live guard (Trevor 2026-10-14): close once equity >= trade_start_equity x (1 + this)
+    tps_off_after_partial: bool = False   # Trevor 2026-10-15: after a TP3 partial / trim, remove TP1/TP2 (guard = sole exit); BTC only
 
     def __post_init__(self) -> None:
         if self.min_trade_profit_sol < 0 or self.min_trade_profit_pct < 0 or self.close_network_sol < 0 or self.min_profit_pct_trade < 0:

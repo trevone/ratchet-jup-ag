@@ -636,6 +636,31 @@ class Bot:
                            trim_day_n=self.local.trim_day_n, bank=self.local.bank,
                            pending_cancels=self.local.pending_cancels)
 
+    def tps_off(self) -> bool:
+        """Trevor 2026-10-15: [profit_guard] tps_off_after_partial (code default off; BTC only): once a partial (TP3 per-add
+        partial or trim) was taken on this trade, TP1/TP2 are removed and not re-placed; the per-trade profit guard is the
+        sole exit. The 55-min timer only starts at a TP1 fill, so with TPs removed it never starts (timer code unchanged)."""
+        L = self.local
+        return bool(getattr(self.cfg.profit_guard, "tps_off_after_partial", False)) and (len(L.partials_done) + len(L.trims)) > 0
+
+    def remove_tps(self, st: dict[str, Any], why: str) -> bool:
+        """Cancel this position's pending TP1/TP2 requests (ladder_requests: never the resting add, never a TP3 partial).
+        The request list is computed before any cancel; a cancel that does not confirm goes through cancel_failed (retried
+        each tick, never halts). True = nothing left to cancel / all cancelled."""
+        L = self.local
+        reqs = self.tp_requests(st)
+        n = len(self.cfg.tp.ladder)
+        L.tp_px = [0.0] * n
+        if not reqs:
+            return True
+        log.warning("TPs OFF (%s): cancelling TP1/TP2 requests %s at %s; resting add / TP3 partials untouched", why,
+                    [r["pubkey"] for r in reqs], [r["triggerPrice"] for r in reqs])
+        if not self.cancel_reqs(st, reqs):
+            self.cancel_failed(reqs, "sync", "TP cancel (tps_off_after_partial)")
+            return False
+        self.save()
+        return True
+
     def sync_tp_ladder(self, pos: ChainPosition) -> None:
         """Any exception (targets, cancel, placement) never halts: it sets tp_retry so the next tick re-places the TPs."""
         try:
@@ -653,6 +678,9 @@ class Bot:
         price = st["oracle"]["price"]
         L = self.local
         n = len(self.cfg.tp.ladder)
+        if self.tps_off():   # partial taken + flag: no TP1/TP2 (cancel any), the profit guard is the sole exit
+            self.remove_tps(st, "sync")
+            return
         targets = self.trim_tp_guard(pos, self.strategy.tp_targets(pos, price=price), "placement")
         targets = self.fee_min_targets(pos, targets, st, "placement")
         if not self.cancel_reqs(st, self.ladder_requests(st)):
@@ -795,6 +823,9 @@ class Bot:
         want = self.set_file_price(f)
         if want is None:
             return
+        if self.tps_off():
+            log.warning("TP2_SET %.2f: TPs are off after a partial (tps_off_after_partial); file deleted, nothing changed", want)
+            return
         n = len(t.ladder)
         if n < 2 or pos.tp_hits > 1:
             log.warning("TP2_SET %.2f: no pending TP2 (tp_hits %d); file deleted, nothing changed", want, pos.tp_hits)
@@ -862,6 +893,9 @@ class Bot:
         triggers at the SAME prices (local.tp_px) sized on the remaining position with the ladder's % split. No
         recorded prices (e.g. after a restart): falls back to the normal full re-place (as RETP_NOW)."""
         n = len(self.cfg.tp.ladder)
+        if self.tps_off():
+            self.remove_tps(self.chain(), "resize after partial")
+            return
         pend = list(range(pos.tp_hits, n))
         if not pend or any(i >= len(self.local.tp_px) or not self.local.tp_px[i] for i in pend):
             log.warning("TP resize after TP3: no recorded TP prices; full TP re-place instead")
@@ -2318,7 +2352,22 @@ class Bot:
 
     def guard_check(self, pos: ChainPosition, st: dict[str, Any], price: float) -> tuple[bool, str]:
         eq, tgt = self.hwm_equity(pos, st, price), self.guard_target(st)
-        return eq >= tgt - 1e-12, f"trade guard: equity if closed now {eq:.9f} vs start {self.local.bank['trade_start_equity']:.9f} x (1+{self.cfg.profit_guard.min_profit_pct_trade:g}) = {tgt:.9f}"
+        return eq >= tgt - 1e-12, (f"trade guard: equity if closed now {eq:.9f} vs start {self.local.bank['trade_start_equity']:.9f} x (1+{self.cfg.profit_guard.min_profit_pct_trade:g}) = {tgt:.9f}"
+                                   + self.guard_sole_note(pos, st, price, eq, tgt))
+
+    def guard_sole_note(self, pos: ChainPosition, st: dict[str, Any], price: float, eq: float, tgt: float) -> str:
+        """TPs off after a partial: say the guard is the only exit, with the target (coin + USD) and the estimated close price
+        (equity is ~linear in price: two evaluations). Empty when TPs are not off."""
+        if not self.tps_off():
+            return ""
+        try:
+            cpx = self.coin_px(st)
+            p2 = price * 1.001
+            slope = (self.hwm_equity(pos, st, p2) - eq) / (p2 - price)
+            est = f", est. close price ~{price + (tgt - eq) / slope:.2f}" if slope > 0 else ""
+            return f" | SOLE EXIT: guard (TP1/TP2 off after partial) target {tgt:.9f} {self.local.bank['coin']} = ${tgt * cpx:.2f}{est}"
+        except Exception as e:  # noqa: BLE001 - log text only
+            return f" | SOLE EXIT: guard (TP1/TP2 off after partial; estimate failed: {e!r})"
 
     def hwm_check(self, pos: ChainPosition, st: dict[str, Any], price: float, min_native: float) -> tuple[bool, str]:
         """Equity if closed now (own coin) >= hwm + min_native? (guard: min_profit_native; TP timer: 0 = not below HWM)."""
@@ -2332,7 +2381,8 @@ class Bot:
         eq = self.hwm_equity(pos, st, price)
         tgt = self.guard_target(st) if pos is not None else None
         arm = (" | guard " + ("ARMED (adds/trims)" if self.hwm_close_armed() else "not armed (first entry: TPs only)")) if pos else ""
-        return bankmod.status_line(b, self.coin_px(st), self.sol_price(st), eq, tgt) + arm
+        sole = self.guard_sole_note(pos, st, price, eq, tgt) if (pos is not None and self.hwm_close_armed()) else ""
+        return bankmod.status_line(b, self.coin_px(st), self.sol_price(st), eq, tgt) + arm + sole
 
     # ------------------------------------------------------------- one tick
     def tick(self) -> None:
@@ -2504,6 +2554,9 @@ class Bot:
                 if expired:
                     log.info("timer expired but remainder at net %+.3f%s; holding (TPs stay, DCA active)", net,
                              f" / {pg_note}" if pg_note else "")
+            if self.tps_off() and not L.pending_cancels and self.tp_requests(st):   # deploy / stray TP1/TP2: remove, one try per tick
+                self.remove_tps(st, "partial taken")
+                return
             if not self._fee_rechecked:   # fee-based TP minimum (Trevor 2026-10-13): once per process on the open position
                 self._fee_rechecked = True
                 if self.fee_min_recheck(pos, st):
