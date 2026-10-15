@@ -112,6 +112,8 @@ class Local:
     partials_done: list[dict] = field(default_factory=list)
     # Trevor 2026-10-12 08:28 MT: cancels not confirmed -> retried each tick (no KILL); [{pubkey, change, ra, then}]
     pending_cancels: list[dict] = field(default_factory=list)
+    tp_retry_n: int = 0   # consecutive failed tp_retry attempts; 3 -> back off (tp_retry_until), the tick carries on
+    tp_retry_until: str = ""   # ISO UTC: no tp_retry attempt before this time
     tp_retry: bool = False   # Trevor 2026-10-12 08:46 MT: TP1/TP2 re-placed next tick (placement failed / TPs cancelled)
     last_partial_px: float | None = None
     rest_last_avg: float = 0.0
@@ -634,21 +636,30 @@ class Bot:
                            pending_cancels=self.local.pending_cancels)
 
     def sync_tp_ladder(self, pos: ChainPosition) -> None:
+        """Any exception (targets, cancel, placement) never halts: it sets tp_retry so the next tick re-places the TPs."""
+        try:
+            self._sync_tp_ladder(pos)
+        except Exception as e:  # noqa: BLE001 - never halt; reconcile next tick
+            log.error("TP ladder sync raised %r; tp_retry set (no halt)", e)
+            self.local.tp_retry = True
+
+    def _sync_tp_ladder(self, pos: ChainPosition) -> None:
         """Cancel existing TP triggers and place the full ladder on the whole position (strategy.tp_targets:
         normal ladder on the average, above-water TPs after a deep levels-mode add, smart TP2 / fee floors / never
-        past market when tp.smart_tp2). Resets the momentum-fade tracking."""
+        past market when tp.smart_tp2). Resets the momentum-fade tracking. Targets are computed BEFORE the old TPs
+        are cancelled, so an exception there leaves the existing TPs in place."""
         st = self.chain()
+        price = st["oracle"]["price"]
+        L = self.local
+        n = len(self.cfg.tp.ladder)
+        targets = self.trim_tp_guard(pos, self.strategy.tp_targets(pos, price=price), "placement")
+        targets = self.fee_min_targets(pos, targets, st, "placement")
         if not self.cancel_reqs(st, self.ladder_requests(st)):
             self.cancel_failed(self.ladder_requests(st), "sync", "TP cancel")
             return
         side = "long" if pos.side == LONG else "short"
-        price = st["oracle"]["price"]
-        L = self.local
-        n = len(self.cfg.tp.ladder)
         L.tp_px, L.tp_since, L.tp_peak, L.tp_faded = [0.0] * n, str(pd.Timestamp.now(tz="UTC")), price, False
         L.tp_rsi_ext = L.tp_rsi_now
-        targets = self.trim_tp_guard(pos, self.strategy.tp_targets(pos, price=price), "placement")
-        targets = self.fee_min_targets(pos, targets, st, "placement")
         if L.tp2_override and len(targets) > 1:   # TP2_SET override survives re-places until the next add
             from strategy import TpTarget
             targets = tuple(list(targets[:1]) + [TpTarget(self.tp2_clamp(pos, st, L.tp2_override, targets[0].price),
@@ -668,6 +679,32 @@ class Bot:
                 return
             prev = lv.close_pct
         self.save()
+
+    TP_RETRY_MAX = 3          # consecutive failed attempts, then back off
+    TP_RETRY_BACKOFF_S = 300  # a few minutes; the rest of the tick runs meanwhile and after every failed attempt
+
+    def tp_retry_step(self, pos: ChainPosition) -> bool:
+        """One tp_retry attempt. Returns True when the tick should end (TPs re-placed, as before); False when it is in
+        back-off or the attempt failed again, so a persistent TP placement failure never freezes the rest of the tick."""
+        L = self.local
+        now = pd.Timestamp.now(tz="UTC")
+        if L.tp_retry_until and now < pd.Timestamp(L.tp_retry_until):
+            return False
+        log.error("TP retry: re-placing TP1/TP2 on the open position (previous placement failed / not confirmed)")
+        L.tp_retry = False
+        self.sync_tp_ladder(pos)
+        if L.tp_retry:   # failed again
+            L.tp_retry_n += 1
+            if L.tp_retry_n >= self.TP_RETRY_MAX:
+                L.tp_retry_n = 0
+                L.tp_retry_until = str(now + pd.Timedelta(seconds=self.TP_RETRY_BACKOFF_S))
+                log.error("TP retry failed %d times in a row: backing off %d s (tick continues, no halt)",
+                          self.TP_RETRY_MAX, self.TP_RETRY_BACKOFF_S)
+            self.save()
+            return False
+        L.tp_retry_n, L.tp_retry_until = 0, ""
+        self.save()
+        return True
 
     def _accrued_borrow_usd(self, pos: ChainPosition, st: dict[str, Any] | None) -> float:
         """Accrued borrow fee of the open position: on-chain (jup.ts borrowFeeUsd), else est. hourly rate x size x hours."""
@@ -811,7 +848,16 @@ class Bot:
         self.save()
 
     def resize_tps(self, pos: ChainPosition) -> None:
-        """Trevor 2026-10-12 06:07 MT: after a TP3 (per-add partial) fill, cancel and re-place the pending TP1/TP2
+        """Any exception never halts: it sets tp_retry so the next tick re-places the TPs."""
+        try:
+            self._resize_tps(pos)
+        except Exception as e:  # noqa: BLE001 - never halt; reconcile next tick
+            log.error("TP resize raised %r; tp_retry set (no halt)", e)
+            self.local.tp_retry = True
+
+    def _resize_tps(self, pos: ChainPosition) -> None:
+        """(targets are computed before the old TPs are cancelled.)
+        Trevor 2026-10-12 06:07 MT: after a TP3 (per-add partial) fill, cancel and re-place the pending TP1/TP2
         triggers at the SAME prices (local.tp_px) sized on the remaining position with the ladder's % split. No
         recorded prices (e.g. after a restart): falls back to the normal full re-place (as RETP_NOW)."""
         n = len(self.cfg.tp.ladder)
@@ -821,13 +867,13 @@ class Bot:
             self.sync_tp_ladder(pos)
             return
         st = self.chain()
+        price = st["oracle"]["price"]
+        pxs = list(self.local.tp_px)
+        pxs[:n] = self.fee_min_prices(pos, st, pxs[:n], "resize")
         if not self.cancel_reqs(st, self.ladder_requests(st)):
             self.cancel_failed(self.ladder_requests(st), "resize", "TP cancel (resize after TP3)")
             return
         side = "long" if pos.side == LONG else "short"
-        price = st["oracle"]["price"]
-        pxs = list(self.local.tp_px)
-        pxs[:n] = self.fee_min_prices(pos, st, pxs[:n], "resize")
         prev = self.cfg.tp.ladder[pos.tp_hits - 1].close_pct if pos.tp_hits else 0.0
         for i in pend:
             px = pxs[i]
@@ -2325,11 +2371,7 @@ class Bot:
         elif pos is not None and not L.side:
             self.adopt_position(st, pos)
             return
-        if pos is not None and L.side == pos.side and L.tp_retry:
-            log.error("TP retry: re-placing TP1/TP2 on the open position (previous placement failed / not confirmed)")
-            L.tp_retry = False
-            self.sync_tp_ladder(pos)
-            self.save()
+        if pos is not None and L.side == pos.side and L.tp_retry and self.tp_retry_step(pos):
             return
         rest_resync = False
         if self.cfg.resting.any_on and pos is not None and L.side == pos.side:

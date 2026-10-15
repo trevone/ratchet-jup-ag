@@ -122,7 +122,10 @@ Two on-chain TPs: **TP1 closes 50%**, **TP2 the rest**. Calculated at **open and
 
 **Who moves TPs:** set at open/add. **No automatic guard ever moves TPs.** Only **Grok Bot** moves TP2 from the analyst read. Bot keeps its own **post-TP1 fade** for TP2 (85% of distance, then pullback &gt; `0.3` ATR or 15m RSI rolls ≥ `8` → pull to `max(fee floor, TP1 + gap, best − 0.05 ATR)`; `tp_fade_floor_at_tp1 = true`). Grok Bot also manually closes partials the bot misses. **TP2_SET** (Trevor 2026-10-13 20:57 MT): Grok Bot moves TP2 proactively by writing a price to `live/TP2_SET` (`live/eth/`, `live/btc/`). Next tick the bot moves the resting TP2 trigger in place (Jupiter `updateDecreasePositionRequest2`, same size; 2026-10-14) to that price clamped to >= the TP2 fee minimum and beyond TP1 + `tp_min_gap_usd`; recorded as `tp2_override` in state so restarts / resizes / re-places keep it until the next add re-places TPs normally. File deleted after use; invalid content is logged and deleted (never halts/KILL). Log tag `TP2_SET`. **TP3_SET** (Trevor 2026-10-14): same for the resting TP3 (partial) via `live/TP3_SET` (`live/eth/`, `live/btc/`): one price, moved in place, clamped to >= the TP3 fee minimum (`tp3_fee_mult`), must be beyond market else warning + nothing changed; updates the partial record's `px`; the next add re-places TP3 normally. Log tag `TP3_SET`.
 
-**TP timer:** `close_remainder_after_min = 55` after TP1. Closes only if remainder nets &gt; 0 **and** equity-if-closed ≥ HWM; else hold.
+**TP timer:** `close_remainder_after_min = 55`, counted from the first TP1 fill (`first_tp_time`). It closes only IN PROFIT (Trevor 2026-10-14): price beyond the average entry plus fees, i.e. `net_close_pnl > 0` (after accrued borrow, close fee and slippage; open fees are already sunk) with `[tp] timer_require_profit = true`, plus the HWM check. Exactly what the code does:
+- **Live per-tick path** (`live/bot.py` tick): after 55 min, closes only if `net_close_pnl > 0` **and** `hwm_check(..., 0)` (equity-if-closed incl. the resting add >= HWM; `pg_close_ok` when the bank is off); otherwise logs `timer expired ... holding` and keeps TPs / DCA active.
+- **Bar-close path** (`strategy.exit_intents`, backtests / bar logic): closes on `net_close_pnl > 0` alone, with NO HWM check.
+- **Discrepancy (noted, not changed; Trevor 2026-10-14 decided the timer behaviour stays):** the bar-close path lacks the HWM gate the per-tick path has. The live bot's per-tick path is the one that governs live closes; the intent in both is "close only in profit".
 
 ---
 
@@ -141,7 +144,7 @@ Jupiter books trims against the average; bot tracks true per-add gain separately
 
 ## 8. Profit guard (HWM)
 
-**Trevor 2026-10-11 06:31 MT - guard only when underwater** (`[ledger] guard_only_underwater = true`, all three bots): the profit-guard market close (HWM guard `hwm + min_profit_native`, or the legacy pg_close) may only fire while the position is on the losing side of its average (long: price < avg; short: price > avg). At/through the average on the profit side the guard does nothing; TP1/TP2 and Grok Bot's TP2 moves decide the exit. The 55-min TP timer (`close_remainder_after_min`) is unchanged: it still requires profit + the HWM check.
+**Trevor 2026-10-11 06:31 MT - guard only when underwater** (`[ledger] guard_only_underwater = true`, all three bots): the profit-guard market close (HWM guard `hwm + min_profit_native`, or the legacy pg_close) may only fire while the position is on the losing side of its average (long: price < avg; short: price > avg). At/through the average on the profit side the guard does nothing; TP1/TP2 and Grok Bot's TP2 moves decide the exit. The 55-min TP timer (`close_remainder_after_min`) is unchanged: it still requires profit (net > 0 after fees) + the HWM check (per-tick path; see the TP timer note).
 
 **Trevor 2026-10-11 - HWM reset on nightly withdrawal** (already implemented, all bots via `bank.apply_withdrawal`): when the daily job withdraws X of a bot's coin to JupSOL, bal and hwm both drop by X and wd_mark = the new hwm, so the guard never chases withdrawn money (e.g. SOL 10-11 00:05 MT: hwm 0.7879 -> 0.7832).
 
@@ -154,12 +157,12 @@ Close value in own coin: collateral + PnL − fees − slippage (− ~0.2% USDC�
 
 ## 9. Daily withdrawal and ops cadence
 
-**Trevor 2026-10-11 06:53 MT - no fixed minimum:** the old $0.50 minimum is gone. The 00:05 MT withdrawal (50% of HWM gain) is sent whenever amount_usd > `withdraw_fee_factor` (2) x estimated cost, where cost = amount_usd x `withdraw_cost_pct` + `withdraw_network_sol` x SOL price (SOL->JupSOL: 0.1% + 0.00005 SOL; ETH/WBTC->JupSOL: 0.3% + 0.0001 SOL). Smaller amounts are carried forward as before. Same logic on all three bots.
+**Trevor 2026-10-11 06:53 MT - no fixed minimum:** the old $0.50 minimum is gone. The 00:05 MT withdrawal (`withdraw_fraction` of HWM gain; 0.50 originally, now SOL 0.65 / ETH 0.65 / BTC 0.70) is sent whenever amount_usd > `withdraw_fee_factor` (2) x estimated cost, where cost = amount_usd x `withdraw_cost_pct` + `withdraw_network_sol` x SOL price (SOL->JupSOL: 0.1% + 0.00005 SOL; ETH/WBTC->JupSOL: 0.3% + 0.0001 SOL). Smaller amounts are carried forward as before. Same logic on all three bots.
 
 
 | Cadence | Action |
 |---------|--------|
-| Daily **00:05** MT | Per bot: **50%** (`withdraw_fraction`) of HWM gain since last withdrawal → **JupSOL** (SOL stakes; ETH/WBTC swap coin → JupSOL directly). Balance and HWM reduced by the amount; &lt; **$0.50** carries over. Each bot’s balance logged in coin and USD. ETH/BTC settle SOL fee debt when due. |
+| Daily **00:05** MT | Per bot: `withdraw_fraction` (now **SOL 0.65, ETH 0.65, BTC 0.70**, nudged +0.05 nightly at 00:23 MT by Grok Bot) of HWM gain since last withdrawal → **JupSOL** (SOL stakes; ETH/WBTC swap coin → JupSOL directly). Balance and HWM reduced by the amount; &lt; **$0.50** carries over. Each bot’s balance logged in coin and USD. ETH/BTC settle SOL fee debt when due. |
 | Sundays **18:40** MT | Weekly SOL / JupSOL rebalance (ops). |
 | When flat / safe | Recover empty ATA rent into JupSOL when appropriate. |
 
@@ -170,7 +173,7 @@ Close value in own coin: collateral + PnL − fees − slippage (− ~0.2% USDC�
 | Who | Cadence | Notes |
 |-----|---------|--------|
 | Analyst | Levels every **~15 min** (free refresh); news / events ~**every 2h** | Urgent pings only |
-| Grok Bot | Check-in every **3h at :52** | Message owner only on fills / adds / trims / closes /halts / errors; may move TP2 or close missed partials |
+| Grok Bot | Hourly overseer checks (see "Overseer checks (Grok Bot hourly)"); the older 3h check-in is superseded | Message owner only on fills / adds / trims / closes /halts / errors; may move TP2 or close missed partials |
 
 **Quoting:** read **live on-chain** before quoting size. Give jup.ag-style **size** plus **collateral at risk**.
 
@@ -215,8 +218,8 @@ JupSOL and restores settings. JupSOL too small (full JupSOL pushes liq < 2 pts o
 notify Trevor. Tool: `live/rescue.sh` (dry run by default); steps: `RESCUE_PLAYBOOK.md`.
 
 ## Withdrawal balancing (Trevor 2026-10-11 08:43 MT)
-- Each bot has its own `[ledger] withdraw_fraction` (share of HWM gain sent to JupSOL nightly at 00:05 MT); all start at 0.5. No $0.50 minimum: a withdrawal goes whenever it beats its swap costs.
-- Grok Bot nudges these nightly at 00:23 MT: +0.05 on all while JupSOL < the largest single bot; -0.05 on all once JupSOL > all bots combined; an extra +/-0.05 on any bot drifting from the 50/25/25 split. Bounds 0.2-0.9. Every change logged in live/changes.log.
+- Each bot has its own `[ledger] withdraw_fraction` (share of HWM gain sent to JupSOL nightly at 00:05 MT); all started at 0.5; **now SOL 0.65, ETH 0.65, BTC 0.70** (2026-10-14). No $0.50 minimum: a withdrawal goes whenever it beats its swap costs.
+- Grok Bot nudges these nightly at 00:23 MT: +0.05 on all while JupSOL < the largest single bot; -0.05 on all once JupSOL > all bots combined; an extra +/-0.05 on any bot drifting from the 50/25/25 split. Bounds 0.2-0.9. Every change logged in live/changes.log. Current: SOL 0.65, ETH 0.65, BTC 0.70, the +0.05 nightly nudge continuing while JupSOL < the largest single bot.
 - Goal: JupSOL at least the size of any one bot, so it can serve as the liquidation rescue reserve.
 
 ## JupSOL rescue, live test (2026-10-11 08:39 MT)
@@ -334,3 +337,32 @@ booked from the own-coin bank this way. Never halts, no KILL; a new open books t
 `debited`) to the bank equity: it leaves `bal` at placement, so without it the bot looked further below HWM than it is.
 No double count: on a fill the record is cleared as the collateral becomes position margin; on cancel the refund returns
 to `bal` and the record is cleared. `bank.update_hwm` (flat only, from `bal`) and HWM / wd_mark are unchanged.
+
+## Corrections and operating rules (2026-10-14 review)
+- **Withdraw fractions** are now SOL 0.65, ETH 0.65, BTC 0.70, with a +0.05 nightly nudge (00:23 MT, Grok Bot) while the JupSOL reserve is below the largest bot.
+- **Resting add in equity:** `hwm_equity` includes the debited resting add's collateral (section above), so the guard does not understate equity while an add rests.
+- **SOL trade rows are deferred** until the cancelled resting add's refund lands (`book_pend`, section above); ETH / BTC book from their own-coin bank the same way.
+- **Inter-bot loans (`ib_*`):** ANY bot can borrow from ANY other bot (not just SOL as lender) via `live/ib_loan.json`: cap **$50**, **one loan at a time**; the lender must be flat, without its own loan, with spare beyond the loan. HWM / equity / withdrawable amounts are never moved.
+- **JupSOL rescue is manual:** it is triggered by Grok Bot / Trevor when a position is within **3%** of liquidation (`live/rescue.sh`, `RESCUE_PLAYBOOK.md`), aiming for liq **10%** away (`target_pct`). Not an automatic bot action.
+- **PAUSE_UNTIL management is Grok Bot's job** (`live/PAUSE_UNTIL`, `live/eth/`, `live/btc/`; ISO time, naive = America/Denver): blocks fresh opens only; never closes positions or cancels adds. Grok Bot sets and lifts it and tells Trevor.
+- **Direction management via `[bot] sides`** (`both` / `long` / `short`) is operational and done by Grok Bot from the Analyst bias and the news. Config change then restart right after a `sweep:` log line. **The bots never read Analyst data** (the bot only reads its own `sides`); the `sides` lines in `configs/live_*.toml` are uncommitted on the droplet and must not be committed or reverted.
+- **TP2_SET / TP3_SET** overrides (Grok Bot, one-shot files; see section 6): moved in place, clamped to fee minimums; TP2 override kept in `tp2_override` until the next add.
+- **TP re-place safety (2026-10-14):** `sync_tp_ladder` / `resize_tps` compute all targets (tp_targets, trim_tp_guard, fee minimums) BEFORE cancelling the old TPs, so an exception cannot leave a position without TPs; any exception sets `tp_retry` (no halt, no KILL). The `tp_retry` tick branch makes at most 3 consecutive attempts, then backs off 5 minutes (`tp_retry_until`); while a retry fails or backs off the rest of the tick (guard, timer, trim, resting, adds) continues.
+- **TP timer:** see section 6 (bar-close vs per-tick difference).
+
+## Overseer checks (Grok Bot hourly)
+Silence rule: message Trevor only on issues or events (fills, closes, restarts, PAUSE_UNTIL set/lifted, alerts); otherwise stay quiet.
+1. **Direction alignment:** Analyst bias + news vs each bot's `sides`; change `sides` in `configs/live_*.toml` if misaligned, restart only right after a `sweep:` log line, one bot at a time, verify health. Never commit those config lines.
+2. **TP2 management:** volume, ATR and the 55-min timer (from first TP1 fill; closes only in profit + HWM check). Never place TP2 closer than the fee minimums except in a dire case.
+3. **Brownie tally and rules:** +1 for a TP2 moved and hit, +1 for a TP3 moved and hit, +1 for a new real-token HWM; tally target 5.
+4. **Liquidation within 3%:** flag; JupSOL rescue is manual (aim 10%).
+5. **Red risk** (positions deeply underwater / low margin): flag.
+6. **Missing TPs / adds:** every open position has TP1/TP2 (and TP3 when adds filled) and its resting add; a missing one is a `tp_retry` / `RETP_NOW` matter, never closed or cancelled by hand.
+7. **Borrow guard:** if any bot's free cash is below ~$12 while a flat bot can lend, pause fresh opens on another bot via PAUSE_UNTIL (prefer pausing ETH and keeping SOL as the lender); lift when not needed; tell Trevor when set and when lifted.
+8. **Profit-guard watching:** equity vs the HWM target, including the resting add's collateral.
+9. **EXT_FLOW_ALERT / wallet drain watch:** any new line in `live/EXT_FLOW_ALERT` is investigated on-chain; check again within 24 h.
+10. **Reboot-required / kernel pending** on the droplet: report.
+11. **state.json backup** exists and is fresh.
+12. **News days:** Thu Oct 15 06:30 MT PPI and Retail Sales (watch direction / pause if needed).
+13. **Nightly 00:47 audit** and **daily 00:23 withdraw nudge** (withdraw_fraction +0.05 rule above).
+Standing rules: never close positions, never cancel adds; HWM / wd_mark (marks) are sacred, never adjusted; bots never halt and never write KILL; restart a bot only right after a `sweep:` log line, one at a time, then verify health; bots never read Analyst data.
