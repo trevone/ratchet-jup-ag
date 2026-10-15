@@ -664,6 +664,44 @@ class Bot:
         out = tuple(TpTarget(round(px, 2), t.close_pct) if i < 2 else t for i, t in enumerate(targets))
         return self.fee_min_targets(pos, out, st, "placement")
 
+    GUARD_DEFER_MAX = 20       # ticks the guard-price TP re-place may wait for a payout credit / a plausible price
+    GUARD_FAR_PCT = 0.03       # TP1 more than this beyond max(market, TP2 fee floor) counts as implausible
+
+    def guard_bank_stale(self, st: dict[str, Any]) -> bool:
+        """ETH / BTC: a payout is on its way (pay_wait, set by bank_payout, cleared when recon credits it) or the wallet
+        token differs from the bank balance: the guard target would be computed from a stale bank."""
+        b = self.local.bank
+        if not self.bank_on or self.live.dry_run or not b or b.get("coin") not in bankmod.DUST or b["coin"] == "SOL":
+            return False
+        if b.get("pay_wait", 0) > 0:
+            return True
+        tok = st.get("sweepTokens") or {}
+        if "error" in tok:
+            return False
+        atoms = int((tok.get(b["coin"]) or {}).get("atoms") or 0)
+        return abs(atoms / 10 ** bankmod.DECIMALS[b["coin"]] - b["bal"]) > bankmod.DUST[b["coin"]]
+
+    def guard_defer(self, pos: ChainPosition, st: dict[str, Any], tp1: float | None) -> bool:
+        """tps_at_guard (2026-10-15): True = do not re-place now. Only while TPs are resting (never a window without TPs),
+        at most GUARD_DEFER_MAX ticks. tp1 None: stale-bank check (before computing); else plausibility of the computed TP1."""
+        L = self.local
+        if not L.bank or not self.tp_requests(st) or L.bank.get("tp_defer", 0) >= self.GUARD_DEFER_MAX:
+            return False
+        if tp1 is None:
+            why = "payout not credited to the bank yet" if self.guard_bank_stale(st) else ""
+        else:
+            price = st["oracle"]["price"]
+            ref = max(price, self.tp_fee_mins(pos, st)[0][1]) if pos.side == LONG else min(price, self.tp_fee_mins(pos, st)[0][1])
+            far = pos.side * (tp1 - ref) / ref > self.GUARD_FAR_PCT
+            why = f"TP1 {tp1:.2f} implausibly far from market {price:.2f} / fee floor {ref:.2f}" if far else ""
+        if not why:
+            return False
+        L.bank["tp_defer"] = L.bank.get("tp_defer", 0) + 1
+        log.warning("TP at guard: re-place deferred (%s); resting TPs kept, retry next tick (%d/%d)", why, L.bank["tp_defer"],
+                    self.GUARD_DEFER_MAX)
+        self.save()
+        return True
+
     def sync_tp_ladder(self, pos: ChainPosition) -> None:
         """Any exception (targets, cancel, placement) never halts: it sets tp_retry so the next tick re-places the TPs."""
         try:
@@ -683,7 +721,13 @@ class Bot:
         n = len(self.cfg.tp.ladder)
         targets = self.trim_tp_guard(pos, self.strategy.tp_targets(pos, price=price), "placement")
         at_guard = self.tps_at_guard()
+        if at_guard and self.guard_defer(pos, st, None):   # payout not credited yet: keep the resting TPs, retry
+            return
         targets = self.guard_tp_targets(pos, st, targets) if at_guard else self.fee_min_targets(pos, targets, st, "placement")
+        if at_guard and self.guard_defer(pos, st, targets[0].price):   # implausibly far from market: keep, retry
+            return
+        if at_guard:
+            L.bank.pop("tp_defer", None)
         if not self.cancel_reqs(st, self.ladder_requests(st)):
             self.cancel_failed(self.ladder_requests(st), "sync", "TP cancel")
             return
@@ -1925,6 +1969,7 @@ class Bot:
             bankmod.credit(b, amt, "payout_est", f"{why}: ${usd:.4f} at SOL {self._sol_px:.3f}")
             log.info("BANK payout (est) %s: %+.9f SOL (bal %.9f)", why, amt, b["bal"])
         else:
+            b["pay_wait"] = self.GUARD_DEFER_MAX   # tps_at_guard: no guard-price TP re-place until the credit lands
             log.info("BANK payout event %s (~$%.4f): window %d ticks for the own-coin change", why, usd, b["window"])
         self.save()
 
@@ -1992,6 +2037,8 @@ class Bot:
             if "error" not in (st.get("sweepTokens") or {}):
                 r = bankmod.recon_token(b, atoms / 10 ** bankmod.DECIMALS[coin], cpx, lc.ext_min_usd, self._busy(st, False),
                                         lc.ext_flow_mode)
+                if r["action"] in ("payout", "adjust", "external"):
+                    b["pay_wait"] = 0
                 if r["action"] in ("payout", "adjust"):
                     log.info("BANK %s %+.9f %s (bal %.9f)", r["action"], r["diff"], coin, b["bal"])
                 elif r["action"] == "alert":
@@ -2007,6 +2054,8 @@ class Bot:
                 self.bank_settle_external(st, sol_px, cpx)
         if b.get("window", 0) > 0:
             b["window"] -= 1
+        if b.get("pay_wait", 0) > 0:
+            b["pay_wait"] = 0 if self.asset == "SOL" or pos is None else b["pay_wait"] - 1
         flat = pos is None and b.get("window", 0) == 0 and not self._busy(st, self.asset == "SOL")
         if pos is None and b.get("window", 0) == 0 and not self._busy(st, False) and b.get("book_pend") and not b.get("pend"):
             self.bank_book_pending(sol_px, cpx)
@@ -2432,6 +2481,11 @@ class Bot:
             return
         if pos is not None and L.side == pos.side and L.tp_retry and self.tp_retry_step(pos):
             return
+        if pos is not None and L.side == pos.side and (L.bank or {}).get("tp_defer") and not self.guard_bank_stale(st):
+            log.info("TP at guard: payout credited / retry after deferral; re-placing TPs at the guard price")
+            self.sync_tp_ladder(self.chain_position(self.chain()) or pos)
+            if not (L.bank or {}).get("tp_defer"):
+                return
         rest_resync = False
         if self.cfg.resting.any_on and pos is not None and L.side == pos.side:
             pos, rest_resync = self.resting_reconcile(st, pos, price)
