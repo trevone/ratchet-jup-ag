@@ -1912,7 +1912,7 @@ class Bot:
         c = self.cfg.costs
         borrow = self._accrued_borrow_usd(pos, st) * size / pos.size if pos.size > 0 else 0.0
         f3 = tp_fee_total(size, size, c.open_fee, c.close_fee, borrow)
-        mn = tp_fee_min_price(pos.side, entry, size, f3, getattr(self.cfg.tp, "tp3_fee_mult", 2.0))
+        mn = tp_fee_min_price(pos.side, entry, size, f3, getattr(self.cfg.tp, "tp3_fee_mult", 2.5))
         return (mn, f3) if fees else mn
 
     def _place_partial(self, pos: ChainPosition, price: float, lots: list[dict[str, Any]], why: str) -> bool:
@@ -1921,7 +1921,7 @@ class Bot:
         tgt = self.partial_plan(pos, lots, lv)
         desc = [f"@{float(l['price']):.4f} ${l['size']}" for l in lots]
         if tgt is None:
-            self._rest_note("partial", f"partial for adds {desc}: no target between entry and avg; retry next tick")
+            self._rest_note("partial", f"partial for adds {desc}: no TP3 target (no price covers fees); retry next tick")
             return False
         if pos.side * (tgt["px"] - price) < self.cfg.tp.tp_market_gap - 1e-9:
             self._rest_note("partial", f"partial for adds {desc}: target {tgt['px']} not beyond market {price:.4f}; retry")

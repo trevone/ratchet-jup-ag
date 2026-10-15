@@ -65,13 +65,11 @@ def zone_f(rung: int, max_rungs: int, f_max: float) -> float:
 def partial_target_zone(side: int, entry: float, avg: float, size: float, lv: Any, rung: int, max_rungs: int, f_max: float,
                         *, tol_atr: float, front_atr: float, front_pct: float, open_fee: float, close_fee: float,
                         network_usd: float) -> dict[str, Any]:
-    """TP3 target between the covered entry and the trade avg (Trevor 2026-10-12 00:53 MT): never at/beyond avg.
+    """TP3 target from the covered entry (Trevor 2026-10-12 00:53 MT; 2026-10-15: may be at/past the trade avg, fee minimum is the floor).
     Rung 1: first analyst level (main + fine) past the entry. Deeper: the farthest level inside entry .. entry + gap x f
     (gap = entry -> avg, f = zone_f). Fired tol (+ front-run) before the level; must cover fees. No usable level ->
-    zone edge (entry + gap x f, fired tol before it) if it covers fees, else the fee-covering minimum just past the entry. Returns {"px": None, "why": ...} when no price satisfies the rule."""
-    gap = side * (avg - entry)
-    if gap <= 0:
-        return {"px": None, "why": f"entry {entry:.4f} not underwater vs avg {avg:.4f} (no room between entry and avg)"}
+    zone edge (entry + gap x f, fired tol before it) if it covers fees, else the fee-covering minimum just past the entry. Always returns a price."""
+    gap = max(side * (avg - entry), 0.0)   # 2026-10-15: entry at/past avg -> zone width 0, TP3 falls to level/fee-min (no avg cap)
     f = zone_f(rung, max_rungs, f_max)
     zone_end = entry + side * gap * f
     beyond = sorted((x for x in (trim_levels(side, lv) if lv is not None else []) if side * (x - entry) > 0),
@@ -84,13 +82,13 @@ def partial_target_zone(side: int, entry: float, avg: float, size: float, lv: An
     for k, level in enumerate(cands):
         fire = trimmod.trigger_price(side, level, lv.atr, tol_atr, front_atr, front_pct)
         net = lot_net_at(side, entry, size, fire, open_fee, close_fee, network_usd)
-        if side * (fire - entry) > 0 and side * (avg - fire) > 0 and net > 0:
+        if side * (fire - entry) > 0 and net > 0:
             return {**out, "mode": "level", "level": round(level, 6), "px": round(fire, 2), "net_usd": round(net, 4),
                     "level_index": beyond.index(level) + 1}
     if rung > 1 and f > 0 and lv is not None:   # 2026-10-12 01:36 MT: no level in the zone -> the zone edge (front-run)
         fire = round(trimmod.trigger_price(side, zone_end, lv.atr, tol_atr, front_atr, front_pct), 2)
         net = lot_net_at(side, entry, size, fire, open_fee, close_fee, network_usd)
-        if side * (fire - entry) > 0 and side * (avg - fire) > 0 and net > 0:
+        if side * (fire - entry) > 0 and net > 0:
             return {**out, "mode": "zone_edge", "level": round(zone_end, 6), "px": fire, "net_usd": round(net, 4),
                     "level_index": 0}
     need = (open_fee + close_fee) + network_usd / size if size > 0 else 0.0
@@ -98,8 +96,6 @@ def partial_target_zone(side: int, entry: float, avg: float, size: float, lv: An
     px = round(px, 2)
     while lot_net_at(side, entry, size, px, open_fee, close_fee, network_usd) <= 0:
         px = round(px + side * 0.01, 2)
-    if side * (avg - px) <= 0:
-        return {**out, "px": None, "why": f"fee-covering minimum {px} is at/beyond avg {avg:.4f}"}
     return {**out, "mode": "fee_min", "level": None, "px": px, "level_index": 0,
             "net_usd": round(lot_net_at(side, entry, size, px, open_fee, close_fee, network_usd), 4)}
 

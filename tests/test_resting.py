@@ -209,6 +209,15 @@ def test_add_fill_via_order_books_lot_leverage_step_and_partial(bot):
     plan = bot.partial_plan(pos, [lot], LV)
     # zone edge sits inside the TP3 fee minimum (2 x its own fees, 2026-10-13) -> pushed out to exactly the minimum
     assert plan["mode"] == "zone_edge->fee_mult_min" and plan["px"] == plan["fee_min"] and lot["price"] < plan["px"] < pos.avg_entry
+    # 2026-10-15: no avg cap - with the avg at/below the add entry TP3 is still placed, at the fee minimum
+    class _P(type(pos)):
+        avg_entry = lot["price"] - 1.0
+    import copy
+    pos2 = copy.copy(pos)
+    pos2.__class__ = _P
+    plan2 = bot.partial_plan(pos2, [lot], LV)
+    assert plan2 is not None and plan2["px"] > pos2.avg_entry and plan2["px"] >= plan2["fee_min"] - 1e-9
+    assert plan2["px"] > lot["price"]
     bot.place_missing_partials(pos, st2, 105.6)
     assert not [a for n, a in bot.calls if n == "decrease"] and not L.partials
 

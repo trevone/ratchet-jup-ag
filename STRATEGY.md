@@ -290,7 +290,10 @@ close of the whole position, still only while underwater.
 ## Ladder preset C + resting orders: LIVE since 2026-10-12 00:30 MT on all three bots.
 
 
-## TP3 target: between the add entry and the average (LIVE 2026-10-12 01:01 MT, replaces "N levels beyond entry")
+## TP3 may sit at/past the trade average (Trevor 2026-10-15)
+The "never at/beyond avg" limit is removed: partial_target_zone no longer refuses when the add entry is not underwater vs avg or when a level / zone edge / fee minimum lies at or beyond avg (gap is taken as max(gap, 0)). The fee minimum (tp3_fee_mult, now default **2.5**, code default in config.py, not in any toml) is the floor and the fallback always returns a price. The average source is unchanged (Jupiter avg; the lots-based average is deferred). Existing resting TP3s are not touched; the new rule applies when TP3 is next (re-)placed (next add / re-place).
+
+## TP3 target: between the add entry and the average (LIVE 2026-10-12 01:01 MT; avg cap superseded 2026-10-15, see above, replaces "N levels beyond entry")
 TP3 always closes while the covered add(s) are still underwater versus the trade average: target strictly between the
 add entry and avg. Allowed distance = (entry -> avg gap) x f, f rising linearly from 0 at rung 1 to
 [resting] partial_zone_f_max (0.5 = halfway to avg) at the deepest rung (ladder_max_rungs). Rung 1: the first analyst
@@ -338,7 +341,7 @@ attribution were removed (2026-10-14; on 2026-10-13 04:31 MT it had handed an ET
 - At open, after every add, and whenever TP1/TP2 are re-placed or re-sized (and once per bot start on the open position), the fees of the CURRENTLY OPEN size are computed (TP3 partials covered their own; Trevor 2026-10-13 20:37 MT): F = open_fee (0.06%) x current size + close_fee (0.06%) x current size + accrued borrow fee of the open position (on-chain: (collateral-custody cumulativeInterestRate - position snapshot) x current size / 1e9; Jupiter settles borrow on every increase/decrease, so this is already the current size share; fallback est. hourly rate x size x hours).
 - A TP portion of c USD carries fees F x c / size and must net >= mult x that after fees: c x |P - avg| / avg - F c/size >= mult F c/size, i.e. minimum price P_min = avg x (1 +/- (1 + mult) x F / size) (+ long, - short), rounded outward to the cent. mult = tp1_fee_mult (default 2.0) for TP1, tp2_fee_mult (default 3.0) for TP2, per bot in [tp].
 - Analyst / strategy TP1 / TP2 beyond P_min are kept; otherwise the TP is placed exactly at P_min. TP2 then stays beyond TP1 by >= tp_min_gap_usd. Re-placement uses the existing cancel/replace path. TP3, guard, entries unchanged; no min-out; no halt from this rule.
-- TP3 (per-add partial, Trevor 2026-10-13 20:38 MT): its portion (covered adds, size s, size-weighted entry e) must net >= tp3_fee_mult (default 2.0, [tp]) x its own fees F3 = (open_fee + close_fee) x s + accrued borrow x s / position size. P3_min = e x (1 +/- (1 + tp3_fee_mult) x F3 / s), rounded outward to the cent. The zone / level / zone-edge / fee-covering target is kept when beyond P3_min, else TP3 is placed exactly at P3_min (mode "...->fee_mult_min"). Zone logic otherwise unchanged.
+- TP3 (per-add partial, Trevor 2026-10-13 20:38 MT): its portion (covered adds, size s, size-weighted entry e) must net >= tp3_fee_mult (default 2.5 since 2026-10-15, [tp]) x its own fees F3 = (open_fee + close_fee) x s + accrued borrow x s / position size. P3_min = e x (1 +/- (1 + tp3_fee_mult) x F3 / s), rounded outward to the cent. The zone / level / zone-edge / fee-covering target is kept when beyond P3_min, else TP3 is placed exactly at P3_min (mode "...->fee_mult_min"). Zone logic otherwise unchanged.
 
 
 ### Cancelled resting add refunds its request rent too (2026-10-15, Trevor)

@@ -108,4 +108,4 @@ def test_tp3_fee_min_pushes_inside_levels_and_keeps_beyond(monkeypatch, tmp_path
 
 def test_tp3_config_default():
     from config import TakeProfitConfig
-    assert TakeProfitConfig().tp3_fee_mult == 2.0
+    assert TakeProfitConfig().tp3_fee_mult == 2.5

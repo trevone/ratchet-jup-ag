@@ -48,9 +48,15 @@ def test_short_mirror_uses_supports_between_entry_and_avg():
     assert t["level"] == 96.5 and t["px"] == 96.55
 
 
-def test_entry_not_underwater_or_level_beyond_avg_refused():
-    assert R.partial_target_zone(LONG, 100.0, 99.0, 30.0, LV, 3, 10, 0.5, **KW)["px"] is None
-    # rung 1 first level 100.4 lies beyond avg 100.3 -> fee minimum instead (still < avg)
+def test_tp3_at_or_past_avg_allowed_fee_min_floor():
+    # 2026-10-15: no avg cap. Entry past avg (gap 0) -> first level / fee minimum, always a price
+    t = R.partial_target_zone(LONG, 100.0, 99.0, 30.0, LV, 3, 10, 0.5, **KW)
+    assert t["px"] is not None and t["px"] > 100.0 and t["net_usd"] > 0
+    # rung 1 first level 100.4 beyond avg 100.3 -> level kept (no avg check)
     t = R.partial_target_zone(LONG, 100.0, 100.3, 30.0, LV, 1, 10, 0.5, **KW)
-    assert t["mode"] == "fee_min" and t["px"] < 100.3
-    assert R.partial_target_zone(LONG, 100.0, 100.1, 30.0, LV, 1, 10, 0.5, **KW)["px"] is None   # fees need > avg
+    assert t["mode"] == "level" and t["px"] > 100.3
+    t2 = R.partial_target_zone(LONG, 100.0, 100.0, 30.0, None, 1, 10, 0.5, **KW)
+    assert t2["mode"] == "fee_min" and t2["px"] > 100.0 and t2["net_usd"] > 0
+    assert R.lot_net_at(LONG, 100.0, 30.0, round(t2["px"] - 0.01, 2), 0.0006, 0.0006, 0.02) <= 0
+    s_ = R.partial_target_zone(SHORT, 100.0, 101.0, 30.0, None, 1, 10, 0.5, **KW)
+    assert s_["mode"] == "fee_min" and s_["px"] < 100.0
