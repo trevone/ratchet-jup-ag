@@ -1491,6 +1491,9 @@ class Bot:
         b["bal"] = round(b["bal"] + amt, 9)
         b["trade_dep"] = round(b.get("trade_dep", 0.0) - amt, 9)
         bankmod.note(b, "refund", amt, why)
+        if b.get("coin") == "SOL":   # 2026-10-15: the cancel also refunds the request account rent (SOL; ETH / BTC banks are other coins)
+            bankmod.credit(b, bankmod.REQ_RENT, "refund_rent", why)
+            amt = round(amt + bankmod.REQ_RENT, 9)
         b["window"] = max(b.get("window", 0), self.cfg.ledger.window_ticks)
         log.info("BANK resting add refund %+.9f %s (%s)", amt, b["coin"], why)
 

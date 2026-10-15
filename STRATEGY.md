@@ -341,6 +341,9 @@ attribution were removed (2026-10-14; on 2026-10-13 04:31 MT it had handed an ET
 - TP3 (per-add partial, Trevor 2026-10-13 20:38 MT): its portion (covered adds, size s, size-weighted entry e) must net >= tp3_fee_mult (default 2.0, [tp]) x its own fees F3 = (open_fee + close_fee) x s + accrued borrow x s / position size. P3_min = e x (1 +/- (1 + tp3_fee_mult) x F3 / s), rounded outward to the cent. The zone / level / zone-edge / fee-covering target is kept when beyond P3_min, else TP3 is placed exactly at P3_min (mode "...->fee_mult_min"). Zone logic otherwise unchanged.
 
 
+### Cancelled resting add refunds its request rent too (2026-10-15, Trevor)
+Cancelling a resting add refunds the collateral AND the request-account rent (0.0037236 SOL). `_rest_bank_refund` now credits the rent to the SOL bot bank (`bank.REQ_RENT`, kind `refund_rent`) along with the collateral; ETH / BTC banks are other coins and are unchanged (their rent stays in the SOL reserve float). Before, a refund landing after the flat true-up left the rent in the reserve float (SOL 23:49 MT 2026-10-14 trade: row +0.007816 vs bank +0.004109). hwm / wd_mark are not edited; the HWM catches up when flat.
+
 ### Trade row waits for the cancelled resting add's refund (2026-10-14, Trevor)
 A closed trade's row (trades.csv / ledger_summary) is no longer written at flat. Every bank bot stores the booking args
 (`bank.book_pend`) and books once the payout window is over and this market has no open request in flight

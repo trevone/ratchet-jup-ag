@@ -299,7 +299,7 @@ def test_bank_debit_at_placement_refund_on_cancel_no_double_debit_on_fill(bot):
     st2 = state(reqs=[req("LIM1", 104.0, "increase")])
     bot.chain = lambda: st2
     assert bot.cancel_limit("LIM1") and bot.local.rest_add is None
-    assert b["bal"] == pytest.approx(1.0) and b["trade_dep"] == pytest.approx(0.0)
+    assert b["bal"] == pytest.approx(1.0 + bankmod.REQ_RENT) and b["trade_dep"] == pytest.approx(0.0)   # + request rent (SOL)
     assert bankmod  # (module used for the ledger maths)
     # fill: the placement debit stands, nothing debited again
     bot.local.rest_last_avg = AVG
@@ -351,4 +351,24 @@ def test_equity_includes_resting_add_collateral_not_double_counted(bot):
     st2 = state(reqs=[req("LIM1", 104.0, "increase")])
     bot.chain = lambda: st2
     assert bot.cancel_limit("LIM1")   # refund returns to bal, record cleared
-    assert bot.hwm_equity(pos, st, 106.6) == pytest.approx(base)
+    assert bot.hwm_equity(pos, st, 106.6) == pytest.approx(base + 0.0037236)   # + request rent refunded to the SOL bank
+
+
+def test_sol_cancel_refund_credits_request_rent_too_eth_does_not(bot):
+    from live import bank as bankmod
+    b = {"coin": "SOL", "asset": "SOL", "bal": 1.0, "hwm": 1.0, "wd_mark": 1.0, "totals": {}, "trade_dep": 0.0, "hist": []}
+    bot.local.bank = b
+    object.__setattr__(bot.cfg.ledger, "enabled", True)
+    st = state()
+    bot.resting_tick(bot.chain_position(st), st, 106.6, ACC, 100.0)
+    nat = bot.local.rest_add["nat"]
+    bot.chain = lambda: state(reqs=[req("LIM1", 104.0, "increase")])
+    assert bot.cancel_limit("LIM1")
+    assert b["bal"] == pytest.approx(1.0 + bankmod.REQ_RENT) and b["trade_dep"] == pytest.approx(0.0)
+    assert nat > 0
+    # ETH / BTC banks are own-coin: the SOL rent is not theirs
+    ra = {"debited": True, "nat": 0.5}
+    b2 = {"coin": "ETH", "bal": 1.0, "hwm": 1.0, "wd_mark": 1.0, "totals": {}, "trade_dep": 0.5, "hist": []}
+    bot.local.bank = b2
+    bot._rest_bank_refund(ra, "x")
+    assert b2["bal"] == pytest.approx(1.5)
