@@ -969,3 +969,4 @@ Files: config.py, live/bot.py, live/trim.py, configs/live_100.toml, live_eth.tom
 2026-10-16 03:05 MT: place_tp/cancel 6003 retry also matches 0x1773 (simulation message omits 6003).
 2026-10-16 03:20 MT: TP3 planner logs why it skips (no lot nets positive with target/avg/furthest/rung/f/best lot net); investigation: SOL/ETH no-TP3 is rule-as-designed (target within fee distance of avg), no strategy change; test added.
 2026-10-16 03:15 MT: TP3 distance re-based on the bot's own lot-weighted avg entry instead of Jupiter avg (Trevor); tests added.
+2026-10-16 03:30 MT: TP3 reference = true whole-position breakeven (bank-based), fallback lot avg; hysteresis 0.03%; tests.

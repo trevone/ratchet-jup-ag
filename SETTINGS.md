@@ -65,3 +65,5 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 Note 2026-10-16 03:20 MT: no new setting; TP3 planner now logs `resting: TP3 skipped: no lot nets positive ...` (once per change) when it places nothing.
 
 Note 2026-10-16 03:15 MT: TP3 reference avg = bot's own lot-weighted entry (not Jupiter avg); no new setting.
+
+Note 2026-10-16 03:30 MT: TP3 reference = whole-position breakeven (bank equity == trade_start_equity); no new setting.

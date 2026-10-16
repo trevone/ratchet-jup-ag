@@ -1753,6 +1753,7 @@ class Bot:
     def resting_tick(self, pos: ChainPosition, st: dict[str, Any], price: float, account: Any, equity: float) -> None:
         """Every tick with an open position: place what is missing (per-add partials, then the next resting add)."""
         R = self.cfg.resting
+        self._tp3_st = st
         if R.partials_enabled:
             self.partial_sync(pos, price)
         ra = self.local.rest_add
@@ -1884,10 +1885,41 @@ class Bot:
         self._rest_note("add", f"resting add creation refused / failed (retry next tick): "
                                f"{res.get('code') or ''} {res.get('error') or res.get('err')} args {args}", logging.WARNING)
 
+    def breakeven_price(self, pos: ChainPosition, st: dict[str, Any]) -> float | None:
+        """Price at which the WHOLE position nets zero: hwm_equity (own-coin bank incl. banked partial payouts, fee debt, close
+        fee / slippage) == trade_start_equity (the guard target without its min-profit margin). Bisection on the existing
+        hwm_equity (monotone in price). None when the bank has no baseline or no root in [1%, 3x] of market."""
+        b = self.local.bank
+        if not self.bank_on or not b or b.get("trade_start_equity") is None:
+            return None
+        tgt, price = float(b["trade_start_equity"]), float(st["oracle"]["price"])
+        f = lambda p: self.hwm_equity(pos, st, p) - tgt   # noqa: E731
+        lo, hi = price * 0.01, price * 3.0
+        flo, fhi = f(lo), f(hi)
+        if flo == 0 or flo * fhi > 0:
+            return None
+        for _ in range(80):
+            mid = (lo + hi) / 2
+            fm = f(mid)
+            if (fm > 0) == (flo > 0):
+                lo = mid
+            else:
+                hi = mid
+        return (lo + hi) / 2
+
     def tp3_ref_avg(self, pos: ChainPosition) -> float:
-        """TP3 reference avg (Trevor 2026-10-16): the bot's OWN weighted average entry of its open lots (first + adds), NOT
-        Jupiter's reported avg (which keeps the old entry when a lot is partially closed)."""
-        return restmod.lots_avg(self.local.lots) or pos.avg_entry
+        """TP3 reference (Trevor 2026-10-16): the position's TRUE breakeven price (whole position nets zero incl. banked partial
+        payouts and fees; breakeven_price), NOT Jupiter's reported avg. Falls back to the bot's lot-weighted avg entry, then
+        Jupiter's avg, when the bank has no baseline."""
+        st = getattr(self, "_tp3_st", None)
+        be = None
+        if st is not None:
+            try:
+                be = self.breakeven_price(pos, st)
+            except Exception as e:   # never let the reference break the tick
+                log.warning("TP3 breakeven failed (%s); falling back to lot avg", e)
+        self._tp3_ref = (be, "breakeven") if be else (restmod.lots_avg(self.local.lots) or pos.avg_entry, "lot avg")
+        return self._tp3_ref[0]
 
     def partial_plan(self, pos: ChainPosition) -> dict[str, Any] | None:
         """The ONE TP3 (Trevor 2026-10-15): restmod.tp3_plan over the open add lots (rung = their count; a closed lot leaves
@@ -1920,6 +1952,7 @@ class Bot:
                        "entry": tgt["entry"], "placed": str(pd.Timestamp.now(tz="UTC")), "sig": res.get("sig"), "why": why}]
         self.save()
         self.__dict__.setdefault("_rest_notes", {}).pop("partial", None)
+        log.warning("TP3 reference %s = %.4f", getattr(self, "_tp3_ref", (0, "?"))[1], tgt["avg"])
         log.warning("PARTIAL TP (TP3) placed (%s): adds %s = $%.2f, entry %.4f avg %.4f furthest add %.4f (rung %d, f %.3f) -> "
                     "trigger %.4f (net est $%.4f), req %s", why, tgt["lots"], tgt["size"], tgt["entry"], tgt["avg"], tgt["far"],
                     tgt["rung"], tgt["f"], tgt["px"], tgt["net_usd"], res.get("positionRequest"))
@@ -1942,7 +1975,7 @@ class Bot:
                     open_fee=c.open_fee, close_fee=c.close_fee, network_usd=t.trim_network_usd), logging.WARNING)
         else:
             self.__dict__.setdefault("_rest_notes", {}).pop("tp3_skip", None)
-        if old and tgt and abs(float(old["size"]) - tgt["size"]) < 0.01 and abs(float(old["px"]) - tgt["px"]) < 0.005:
+        if old and tgt and abs(float(old["size"]) - tgt["size"]) < 0.01 and abs(float(old["px"]) - tgt["px"]) < max(0.005, 0.0003 * price):   # hysteresis: breakeven drifts with the coin / SOL price
             return
         if tgt and pos.side * (tgt["px"] - price) < self.cfg.tp.tp_market_gap - 1e-9:
             self._rest_note("partial", f"TP3 target {tgt['px']} not beyond market {price:.4f}; retry")
