@@ -105,6 +105,7 @@ class DcaConfig:
     max_gap_atr: float = 2.0
     target_avg_atr: float = 1.0          # size adds so avg lands this many ATR short of the next opposing level
     min_add_usd: float = 3.0
+    add_frontrun_atr: float = 0.1        # Trevor 2026-10-15: resting add placed this many own-1h-ATR before the level (live bots only); 0 = at the level
     max_add_frac: float = 1.0           # levels mode: cap one add's collateral at this fraction of available
     # --- levels mode: target-resistance guard (root-cause fix 2026-10-07 16:30) ---
     min_target_gap_atr: float = 0.5      # opposing level must sit >= this many ATR beyond the add price (else ignored)
@@ -389,11 +390,13 @@ class ProfitGuardConfig:
     close_when_met: bool = True           # market-close the whole position once the close now meets baseline + min
     close_requires: str = "adds_or_trims"  # "adds_or_trims" | "any"
     min_profit_pct_trade: float = 0.002   # live guard (Trevor 2026-10-14): close once equity >= trade_start_equity x (1 + this)
-    tps_at_guard: bool = False   # Trevor 2026-10-15: TP1/TP2 placed AT the profit-guard close price (re-placed on every partial/add); BTC only
+    tp_guard_gap_pct: float = 0.003   # Trevor 2026-10-15: after a TP3 fill TP2 sits AT the guard price, TP1 this fraction inside it
 
     def __post_init__(self) -> None:
         if self.min_trade_profit_sol < 0 or self.min_trade_profit_pct < 0 or self.close_network_sol < 0 or self.min_profit_pct_trade < 0:
             raise ValueError("profit_guard.* must be >= 0")
+        if not 0 <= self.tp_guard_gap_pct < 0.05:
+            raise ValueError("profit_guard.tp_guard_gap_pct must be in [0, 0.05)")
         if self.close_requires not in ("adds_or_trims", "any"):
             raise ValueError("profit_guard.close_requires must be 'adds_or_trims' or 'any'")
 

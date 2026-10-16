@@ -29,7 +29,7 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 | [live] | max_collateral_usd / max_position_usd / max_daily_loss_usd | 1e12 | 1e12 | 1e12 | Caps effectively off |
 | [live] | kill_switch_path | live/KILL | live/eth/KILL | live/btc/KILL | Per-bot kill file (global: live/KILL_ALL) |
 | [tp] | levels (TP1 / TP2 dist) | $0.45 / $0.75 (mode price_abs) | 0.45% / 0.75% | 0.45% / 0.75% | Close split 50% / 100%; dist only used when tp1_pct / tp2_pct are unset |
-| [tp] | tp1_pct / tp2_pct | 0.008 / 0.015 | 0.008 / 0.015 | 0.008 / 0.015 (unused: tps_at_guard) | Trevor 2026-10-15 (Option A): TP1 = avg x (1 -/+ 0.8%), TP2 = avg x (1 -/+ 1.5%); 0 < tp1_pct < tp2_pct, set together; fee floors / min gap / market clamp still apply; levels give only the close split. Unset = levels dist |
+| [tp] | tp1_pct / tp2_pct | 0.008 / 0.015 | 0.008 / 0.015 | 0.008 / 0.015 | Trevor 2026-10-15 (Option A): TP1 = avg x (1 -/+ 0.8%), TP2 = avg x (1 -/+ 1.5%); 0 < tp1_pct < tp2_pct, set together; fee floors / min gap / market clamp still apply; levels give only the close split. Unset = levels dist |
 | [tp] | smart_tp2 | true | true | true | Fee floors, TP1 inside TP2, never past market (resistance cap / fade removed 2026-10-15) |
 | [tp] | tp_periodic | false | false | false | TPs set only at open/add |
 | [tp] | tp1_fee_mult / tp2_fee_mult | 3.0 / 4.5 | same | same | Fee-minimum TP1 / TP2 floors (code defaults, config.py): a TP portion nets >= mult x its fees. 2026-10-15: was 2.0 / 3.0. tp3_fee_mult removed (TP3 = adds that net > 0 after fees) |
@@ -56,3 +56,8 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 | rescue_cfg.json | emergency_min_push_pct / emergency_min_collat_pct | 2 / 10 | same | same | EMERGENCY (notify Trevor) if all JupSOL pushes liq < 2 pts or < 10% of collateral |
 | rescue_cfg.json | extend_rungs | 6 | 6 | 6 | `rescue.sh extend`: temp +ladder_max_rungs, auto-restored on repay |
 | (code) bank.py | IB_MIN_USD / IB_TOPUP_TIMEOUT_S | 2.0 / 1800 | same | same | Inter-bot loans (Trevor 2026-10-15): NO loan cap (old IB_MAX_USD $50 removed); request/top-up = shortfall + $1, min $2; pending/stuck top-up cancelled after 30 min |
+
+| [profit_guard] | tp_guard_gap_pct | 0.003 | 0.003 | 0.003 | Trevor 2026-10-15: after a TP3 fill TP2 = guard price, TP1 this fraction inside it (replaces tps_at_guard) |
+| [dca] | add_frontrun_atr | 0.1 | 0.1 | 0.1 | Trevor 2026-10-15: resting add placed this x own 1h ATR before the level; 0 = at the level |
+| [ledger] | withdraw_fraction | 0.75 | 0.75 | 0.75 | unified 2026-10-15 (SOL/ETH were 0.70) |
+| [scale] | own_atr_fallback | true | true | true | SOL added 2026-10-15 |

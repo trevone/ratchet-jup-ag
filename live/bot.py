@@ -632,8 +632,10 @@ class Bot:
                            trim_day_n=self.local.trim_day_n, bank=self.local.bank,
                            pending_cancels=self.local.pending_cancels)
 
-    def tps_at_guard(self) -> bool:
-        return bool(getattr(self.cfg.profit_guard, "tps_at_guard", False))
+    def guard_tps(self) -> bool:
+        """Trevor 2026-10-15 (all bots): TP1/TP2 sit at the profit-guard price only once a TP3 partial has filled on this
+        trade (partials_done is reset on flat); before that tp1_pct / tp2_pct from the average."""
+        return bool(self.local.partials_done and self.bank_on and self.local.bank)
 
     def guard_price(self, pos: ChainPosition, st: dict[str, Any]) -> float | None:
         """Trevor 2026-10-15: price at which hwm_equity() == guard_target() (bisection on the existing functions; equity is
@@ -651,13 +653,15 @@ class Bot:
         return hi
 
     def guard_tp_targets(self, pos: ChainPosition, st: dict[str, Any], targets: tuple) -> tuple:
-        """tps_at_guard: TP1 and TP2 at the guard close price, then the fee-minimum floors apply (no tp_min_gap_usd gap in guard mode: TP1 == TP2 price unless the floors differ). Guard
-        already met at market (None): both at market, i.e. clamped to the fee floors (the guard fires this tick)."""
+        """guard_tps: TP2 at the guard close price, TP1 profit_guard.tp_guard_gap_pct inside it, then the fee-minimum floors
+        and tp_min_gap_usd apply. Guard already met at market (None): both at market, i.e. clamped to the fee floors."""
         from strategy import TpTarget
         gp = self.guard_price(pos, st)
         px = st["oracle"]["price"] if gp is None else gp
         log.info("TP at guard: close price %s", f"{gp:.2f}" if gp else "n/a (guard met at market) -> fee floors")
-        out = tuple(TpTarget(round(px, 2), t.close_pct) if i < 2 else t for i, t in enumerate(targets))
+        g = self.cfg.profit_guard.tp_guard_gap_pct
+        out = tuple(TpTarget(round(px * (1 - pos.side * g), 2) if i == 0 else round(px, 2), t.close_pct) if i < 2 else t
+                    for i, t in enumerate(targets))
         return self.fee_min_targets(pos, out, st, "placement")
 
     GUARD_DEFER_MAX = 20       # ticks the guard-price TP re-place may wait for a payout credit / a plausible price
@@ -678,7 +682,7 @@ class Bot:
         return abs(atoms / 10 ** bankmod.DECIMALS[b["coin"]] - b["bal"]) > bankmod.DUST[b["coin"]]
 
     def guard_defer(self, pos: ChainPosition, st: dict[str, Any], tp1: float | None) -> bool:
-        """tps_at_guard (2026-10-15): True = do not re-place now. Only while TPs are resting (never a window without TPs),
+        """guard_tps (2026-10-15): True = do not re-place now. Only while TPs are resting (never a window without TPs),
         at most GUARD_DEFER_MAX ticks. tp1 None: stale-bank check (before computing); else plausibility of the computed TP1."""
         L = self.local
         if not L.bank or not self.tp_requests(st) or L.bank.get("tp_defer", 0) >= self.GUARD_DEFER_MAX:
@@ -716,7 +720,7 @@ class Bot:
         L = self.local
         n = len(self.cfg.tp.ladder)
         targets = self.trim_tp_guard(pos, self.strategy.tp_targets(pos, price=price), "placement")
-        at_guard = self.tps_at_guard()
+        at_guard = self.guard_tps()
         if at_guard and self.guard_defer(pos, st, None):   # payout not credited yet: keep the resting TPs, retry
             return
         targets = self.guard_tp_targets(pos, st, targets) if at_guard else self.fee_min_targets(pos, targets, st, "placement")
@@ -799,8 +803,7 @@ class Bot:
     def fee_min_prices(self, pos: ChainPosition, st: dict[str, Any] | None, prices: list[float], ctx: str) -> list[float]:
         pend = list(range(pos.tp_hits, len(prices)))
         mins, fees = self.tp_fee_mins(pos, st)
-        out, why = apply_tp_fee_min(pos.side, [round(p, 2) for p in prices], pend, mins,
-                                   0.0 if self.tps_at_guard() else self.cfg.tp.tp_min_gap_usd)   # guard mode: TP1 == TP2 price
+        out, why = apply_tp_fee_min(pos.side, [round(p, 2) for p in prices], pend, mins, self.cfg.tp.tp_min_gap_usd)
         log.info("TP fee minimum (%s): total fees $%.4f -> TP1 min %.2f, TP2 min %.2f%s", ctx, fees, mins[0], mins[1],
                  "; " + "; ".join(why) if why else " (levels kept)")
         return out
@@ -864,8 +867,8 @@ class Bot:
         want = self.set_file_price(f)
         if want is None:
             return
-        if self.tps_at_guard():
-            log.warning("TP2_SET %.2f: ignored (tps_at_guard); file deleted, nothing changed", want)
+        if self.guard_tps():
+            log.warning("TP2_SET %.2f: ignored (guard_tps); file deleted, nothing changed", want)
             return
         n = len(t.ladder)
         if n < 2 or pos.tp_hits > 1:
@@ -932,7 +935,7 @@ class Bot:
         triggers at the SAME prices (local.tp_px) sized on the remaining position with the ladder's % split. No
         recorded prices (e.g. after a restart): falls back to the normal full re-place (as RETP_NOW)."""
         n = len(self.cfg.tp.ladder)
-        if self.tps_at_guard():   # guard price changes with every partial / add: full re-place at the new price
+        if self.guard_tps():   # guard price changes with every partial / add: full re-place at the new price
             self._sync_tp_ladder(pos)
             return
         pend = list(range(pos.tp_hits, n))
@@ -1751,7 +1754,7 @@ class Bot:
         if R.adds_enabled and ra is None:
             self.place_rest_add(pos, st, price, account, equity)
         elif R.adds_enabled and self.local.rearm and not ra.get("unconfirmed") and not self.live.dry_run \
-                and ra["trigger"] != round(self.local.rearm["px"], 2):
+                and abs(ra["trigger"] - self.local.rearm["px"]) > self.add_front() + 0.011:
             self.rearm_add(pos, st, price, account, equity, ra)
 
     def rearm_add(self, pos: ChainPosition, st: dict[str, Any], price: float, account: Any, equity: float,
@@ -1812,6 +1815,14 @@ class Bot:
             return None, f"next rung {plan.trigger:.4f} is not beyond the last partial price {L.last_partial_px}"
         return plan, ""
 
+    def add_front(self) -> float:
+        """Own-ATR front-run distance (USD) before the add level (dca.add_frontrun_atr x own 1h ATR; 0 without an ATR)."""
+        return max(self.cfg.dca.add_frontrun_atr, 0.0) * (self._own_atr or 0.0)
+
+    def add_px(self, pos: ChainPosition, trigger: float) -> float:
+        """Resting add price: the level moved add_front() toward the market (long up, short down)."""
+        return round(trigger + pos.side * self.add_front(), 2)
+
     def rest_add_args(self, pos: ChainPosition, st: dict[str, Any], plan: Any) -> tuple[dict[str, Any], float, float]:
         """CLI args for the limit add (same collateral funding as a market add) + (native units debited, SOL deposited)."""
         sol = plan.margin / self.sol_price(st)
@@ -1824,7 +1835,7 @@ class Bot:
             atoms = int(sol * LAMPORTS)
             nat, mint = atoms / LAMPORTS, bankmod.MINT["SOL"]
         args = {"side": side, "inputMint": mint, "inputAtoms": str(atoms), "sizeUsd": round(plan.margin * plan.leverage, 2),
-                "triggerPriceUsd": round(plan.trigger, 2)}
+                "triggerPriceUsd": self.add_px(pos, plan.trigger)}
         return args, nat, sol
 
     def place_rest_add(self, pos: ChainPosition, st: dict[str, Any], price: float, account: Any, equity: float) -> None:
@@ -1862,7 +1873,7 @@ class Bot:
             self.save()
             self.__dict__.setdefault("_rest_notes", {}).pop("add", None)
             log.warning("RESTING ADD placed: %s $%.2f coll x%g = $%.2f at %.4f (req %s, sig %s%s)", args["side"], plan.margin,
-                        plan.leverage, args["sizeUsd"], plan.trigger, res["positionRequest"], res.get("sig"),
+                        plan.leverage, args["sizeUsd"], args["triggerPriceUsd"], res["positionRequest"], res.get("sig"),
                         "" if res.get("ok") else ", NOT YET CONFIRMED")
             return
         self._rest_note("add", f"resting add creation refused / failed (retry next tick): "
@@ -1968,7 +1979,7 @@ class Bot:
             bankmod.credit(b, amt, "payout_est", f"{why}: ${usd:.4f} at SOL {self._sol_px:.3f}")
             log.info("BANK payout (est) %s: %+.9f SOL (bal %.9f)", why, amt, b["bal"])
         else:
-            b["pay_wait"] = self.GUARD_DEFER_MAX   # tps_at_guard: no guard-price TP re-place until the credit lands
+            b["pay_wait"] = self.GUARD_DEFER_MAX   # guard_tps: no guard-price TP re-place until the credit lands
             log.info("BANK payout event %s (~$%.4f): window %d ticks for the own-coin change", why, usd, b["window"])
         self.save()
 
@@ -2487,8 +2498,8 @@ class Bot:
                                    + self.guard_sole_note(pos, st, price, eq, tgt))
 
     def guard_sole_note(self, pos: ChainPosition, st: dict[str, Any], price: float, eq: float, tgt: float) -> str:
-        """tps_at_guard: target (coin + USD) and the guard close price where TP1/TP2 sit. Empty when the flag is off."""
-        if not self.tps_at_guard():
+        """guard_tps: target (coin + USD) and the guard close price where TP1/TP2 sit. Empty when the flag is off."""
+        if not self.guard_tps():
             return ""
         try:
             gp = self.guard_price(pos, st)
