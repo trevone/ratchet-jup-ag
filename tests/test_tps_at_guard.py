@@ -214,7 +214,7 @@ def test_place_tp_retries_6003_in_error_key(monkeypatch, tmp_path):
     b, st, pos = _setup(monkeypatch, tmp_path, ON + [FLAG])
     import live.bot as lb
     monkeypatch.setattr(lb.time, "sleep", lambda s: None)
-    seq = [{"ok": False, "error": "custom program error: 0x1773 Custom 6003"}, {"ok": True}]
+    seq = [{"ok": False, "error": "Simulation failed ... custom program error: 0x1773"}, {"ok": True}]
     orig = b.cmd
     b.cmd = lambda n, a=None: seq.pop(0) if seq else orig(n, a)
     assert b.place_tp(pos, "long", 0, 111.0, 0.0) and not seq

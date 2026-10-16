@@ -580,7 +580,7 @@ class Bot:
             res = self.cmd("cancel", {"request": pubkey})
             if res.get("ok"):
                 return "ok"
-            if attempt < 2 and "6003" in json.dumps([res.get("err"), res.get("error")]):
+            if attempt < 2 and any(k in json.dumps([res.get("err"), res.get("error")]) for k in ("6003", "0x1773")):
                 log.warning("cancel %s hit StaleOraclePrice (6003); retrying in 5s (%d/2)", pubkey, attempt + 1)
                 time.sleep(5)
                 continue
@@ -981,7 +981,7 @@ class Bot:
             res = self.cmd("decrease", args)
             if res.get("ok"):
                 break
-            if attempt < 2 and "6003" in json.dumps([res.get("err"), res.get("error")]):
+            if attempt < 2 and any(k in json.dumps([res.get("err"), res.get("error")]) for k in ("6003", "0x1773")):
                 log.warning("TP%d placement hit StaleOraclePrice (6003); retrying in 5s (%d/2)", i + 1, attempt + 1)
                 time.sleep(5)
                 continue
