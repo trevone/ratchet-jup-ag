@@ -60,9 +60,9 @@ def test_tps_placed_at_guard_price_after_partial_resting_add_kept(monkeypatch, t
     b.local.tp_px = [110.33, 110.63]
     b.resize_tps(pos)
     mins, _ = b.tp_fee_mins(pos, st)
-    want = max(gp, mins[0]), max(gp, mins[1])
+    want = (max(gp, *mins),) * 2
     got = _placed(b)
-    assert abs(got[0] - want[0]) < 0.01 and abs(got[1] - want[1]) < 0.01 and got[1] >= got[0]
+    assert abs(got[0] - want[0]) < 0.01 and abs(got[1] - want[1]) < 0.01 and got[1] == got[0]
     assert b.calls[0] == ("cancel", ["R110.33", "R110.63"])   # never PT (TP3 partial) nor RA (resting add)
     assert not b.local.tp_retry
 
@@ -72,7 +72,7 @@ def test_clamped_to_fee_minimum(monkeypatch, tmp_path):
     mins, _ = b.tp_fee_mins(pos, st)
     b.sync_tp_ladder(pos)
     got = _placed(b)
-    assert got[0] >= mins[0] - 0.005 and got[1] >= mins[1] - 0.005
+    assert got[0] == got[1] and got[0] >= max(mins) - 0.005
 
 
 def test_guard_met_places_at_fee_floors(monkeypatch, tmp_path):
@@ -80,7 +80,7 @@ def test_guard_met_places_at_fee_floors(monkeypatch, tmp_path):
     mins, _ = b.tp_fee_mins(pos, st)
     b.sync_tp_ladder(pos)
     got = _placed(b)
-    assert abs(got[0] - round(mins[0], 2)) < 0.01 and got[1] >= mins[1] - 0.005
+    assert got[0] == got[1] and abs(got[0] - round(max(mins), 2)) < 0.01
 
 
 def test_pct_placement_before_any_tp3_fill(monkeypatch, tmp_path):
@@ -190,25 +190,31 @@ def test_bank_payout_sets_pay_wait_and_recon_clears(monkeypatch, tmp_path):
     assert bk["pay_wait"] == b.GUARD_DEFER_MAX and b.guard_bank_stale({"sweepTokens": {"WBTC": {"atoms": 100000}}})
 
 
-def test_guard_tp2_at_guard_tp1_gap_inside_no_churn(monkeypatch, tmp_path):
+def test_guard_tp1_equals_tp2_at_guard_no_gap_no_churn(monkeypatch, tmp_path):
     b, st, pos = _setup(monkeypatch, tmp_path, ON + [FLAG])
     b.guard_price = lambda *a: 111.0   # above both fee floors
     mins, _ = b.tp_fee_mins(pos, st)
     b.sync_tp_ladder(pos)
     got = _placed(b)
-    assert got[1] == 111.0 and got[0] == round(111.0 * (1 - 0.003), 2) and got[0] < got[1]   # TP1 inside, never equal
-    assert got[0] >= mins[0] and got[1] >= mins[1]
-    assert b.fee_min_recheck(pos, st) is False   # no re-place churn
-    n = len(b.calls)
-    b.fee_min_recheck(pos, st)
-    assert len(b.calls) == n
+    assert got == [111.0, 111.0] and max(mins) <= 111.0
+    assert b.fee_min_prices(pos, st, [111.0, 111.0], "recheck") == [111.0, 111.0]   # recheck keeps equal prices
 
 
-def test_add_frontrun_toward_market(monkeypatch, tmp_path):
-    b, st, pos = _setup(monkeypatch, tmp_path, ON)
-    b._own_atr = 2.0
-    assert b.add_px(pos, 100.0) == 100.2   # long: level 100.00 -> 0.1 ATR (0.20) toward the market
-    b._own_atr = None
-    assert b.add_px(pos, 100.0) == 100.0   # no ATR: at the level
+def test_guard_floor_clamp_equal_long_and_short(monkeypatch, tmp_path):
+    for short in (False, True):
+        b, st, pos = _setup(monkeypatch, tmp_path, ON + [FLAG], short=short)
+        mins, _ = b.tp_fee_mins(pos, st)
+        strict = min(mins) if short else max(mins)
+        b.guard_price = lambda *a: strict + (1.0 if short else -1.0)   # guard inside the floor
+        b.sync_tp_ladder(pos)
+        assert _placed(b) == [round(strict, 2)] * 2
 
 
+def test_place_tp_retries_6003_in_error_key(monkeypatch, tmp_path):
+    b, st, pos = _setup(monkeypatch, tmp_path, ON + [FLAG])
+    import live.bot as lb
+    monkeypatch.setattr(lb.time, "sleep", lambda s: None)
+    seq = [{"ok": False, "error": "custom program error: 0x1773 Custom 6003"}, {"ok": True}]
+    orig = b.cmd
+    b.cmd = lambda n, a=None: seq.pop(0) if seq else orig(n, a)
+    assert b.place_tp(pos, "long", 0, 111.0, 0.0) and not seq

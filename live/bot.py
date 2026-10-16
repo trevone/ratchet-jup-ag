@@ -580,7 +580,7 @@ class Bot:
             res = self.cmd("cancel", {"request": pubkey})
             if res.get("ok"):
                 return "ok"
-            if attempt < 2 and "6003" in json.dumps(res.get("err")):
+            if attempt < 2 and "6003" in json.dumps([res.get("err"), res.get("error")]):
                 log.warning("cancel %s hit StaleOraclePrice (6003); retrying in 5s (%d/2)", pubkey, attempt + 1)
                 time.sleep(5)
                 continue
@@ -653,16 +653,20 @@ class Bot:
         return hi
 
     def guard_tp_targets(self, pos: ChainPosition, st: dict[str, Any], targets: tuple) -> tuple:
-        """guard_tps: TP2 at the guard close price, TP1 profit_guard.tp_guard_gap_pct inside it, then the fee-minimum floors
-        and tp_min_gap_usd apply. Guard already met at market (None): both at market, i.e. clamped to the fee floors."""
+        """guard_tps: TP1 = TP2 = the guard close price clamped by the stricter fee floor (no gap). Guard already met at market (None): both at market, i.e. clamped to the fee floors."""
         from strategy import TpTarget
         gp = self.guard_price(pos, st)
         px = st["oracle"]["price"] if gp is None else gp
         log.info("TP at guard: close price %s", f"{gp:.2f}" if gp else "n/a (guard met at market) -> fee floors")
-        g = self.cfg.profit_guard.tp_guard_gap_pct
-        out = tuple(TpTarget(round(px * (1 - pos.side * g), 2) if i == 0 else round(px, 2), t.close_pct) if i < 2 else t
-                    for i, t in enumerate(targets))
-        return self.fee_min_targets(pos, out, st, "placement")
+        # Trevor 2026-10-16: TP1 and TP2 at the SAME price: guard price clamped by the stricter of the two fee floors
+        # (long: higher, short: lower = beyond both); no tp_guard_gap_pct spacing, no tp_min_gap_usd.
+        mins, _ = self.tp_fee_mins(pos, st)
+        floor = max(mins[:2]) if pos.side == LONG else min(mins[:2])
+        px = round(px, 2)
+        if pos.side * (px - floor) < 0:
+            log.info("TP at guard: %.2f inside the stricter fee floor -> %.2f", px, floor)
+            px = round(floor, 2)
+        return tuple(TpTarget(px, t.close_pct) if i < 2 else t for i, t in enumerate(targets))
 
     GUARD_DEFER_MAX = 20       # ticks the guard-price TP re-place may wait for a payout credit / a plausible price
     GUARD_FAR_PCT = 0.03       # TP1 more than this beyond max(market, TP2 fee floor) counts as implausible
@@ -803,7 +807,8 @@ class Bot:
     def fee_min_prices(self, pos: ChainPosition, st: dict[str, Any] | None, prices: list[float], ctx: str) -> list[float]:
         pend = list(range(pos.tp_hits, len(prices)))
         mins, fees = self.tp_fee_mins(pos, st)
-        out, why = apply_tp_fee_min(pos.side, [round(p, 2) for p in prices], pend, mins, self.cfg.tp.tp_min_gap_usd)
+        out, why = apply_tp_fee_min(pos.side, [round(p, 2) for p in prices], pend, mins,
+                                     0.0 if self.guard_tps() else self.cfg.tp.tp_min_gap_usd)   # guard: TP1 == TP2 allowed
         log.info("TP fee minimum (%s): total fees $%.4f -> TP1 min %.2f, TP2 min %.2f%s", ctx, fees, mins[0], mins[1],
                  "; " + "; ".join(why) if why else " (levels kept)")
         return out
@@ -976,7 +981,7 @@ class Bot:
             res = self.cmd("decrease", args)
             if res.get("ok"):
                 break
-            if attempt < 2 and "6003" in json.dumps(res.get("err")):
+            if attempt < 2 and "6003" in json.dumps([res.get("err"), res.get("error")]):
                 log.warning("TP%d placement hit StaleOraclePrice (6003); retrying in 5s (%d/2)", i + 1, attempt + 1)
                 time.sleep(5)
                 continue

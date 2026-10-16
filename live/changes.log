@@ -964,3 +964,5 @@ Files: config.py, live/bot.py, live/trim.py, configs/live_100.toml, live_eth.tom
 2026-10-15 17:45 MT quickcheck: quiet (SOL short $225 TPs+TP3 ok after 17:44 restart hash c3f5f44a; ETH short $500 TP3 resting 2426.77 + retry-beyond-market noise; BTC flat amber pause_new_opens; no TP2_SET; liq SOL 11.3% ETH 8.3%)
 2026-10-15 19:46 MT quickcheck: quiet
 2026-10-15 20:30 MT: unify bots - TP1/TP2 pct until TP3 fill then TP2@guard/TP1 gap inside (tp_guard_gap_pct 0.003; tps_at_guard removed), add_frontrun_atr 0.1, withdraw_fraction 0.75 all, SOL extra_pause_files + own_atr_fallback.
+2026-10-15 20:46 MT quickcheck: events reviewed, no action (ETH add filled 2441 20:38 -> avg 2431.17, TP1 2419.38/TP2@guard 2412.15, TP3 2435.58, next add 2459.56; SOL one transient state-read error at 20:23 restart then ticking normally, TPs 103.49/103.40 TP3 104.75; BTC flat; liq SOL 11.3% ETH 6.7%; risk green; no TP2_SET)
+2026-10-16 03:00 MT: after TP3 fill TP1==TP2 at guard price clamped by stricter fee floor (no tp_guard_gap_pct, no tp_min_gap_usd in guard mode); place_tp 6003 retry also checks res['error']; tests updated.

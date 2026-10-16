@@ -57,7 +57,7 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 | rescue_cfg.json | extend_rungs | 6 | 6 | 6 | `rescue.sh extend`: temp +ladder_max_rungs, auto-restored on repay |
 | (code) bank.py | IB_MIN_USD / IB_TOPUP_TIMEOUT_S | 2.0 / 1800 | same | same | Inter-bot loans (Trevor 2026-10-15): NO loan cap (old IB_MAX_USD $50 removed); request/top-up = shortfall + $1, min $2; pending/stuck top-up cancelled after 30 min |
 
-| [profit_guard] | tp_guard_gap_pct | 0.003 | 0.003 | 0.003 | Trevor 2026-10-15: after a TP3 fill TP2 = guard price, TP1 this fraction inside it (replaces tps_at_guard) |
+| [profit_guard] | tp_guard_gap_pct | 0.003 | 0.003 | 0.003 | Trevor 2026-10-16: UNUSED - after a TP3 fill TP1 == TP2 = guard price clamped by the stricter fee floor (no gap) |
 | [dca] | add_frontrun_atr | 0.1 | 0.1 | 0.1 | Trevor 2026-10-15: resting add placed this x own 1h ATR before the level; 0 = at the level |
 | [ledger] | withdraw_fraction | 0.75 | 0.75 | 0.75 | unified 2026-10-15 (SOL/ETH were 0.70) |
 | [scale] | own_atr_fallback | true | true | true | SOL added 2026-10-15 |
