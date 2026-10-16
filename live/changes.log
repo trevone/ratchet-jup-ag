@@ -967,3 +967,4 @@ Files: config.py, live/bot.py, live/trim.py, configs/live_100.toml, live_eth.tom
 2026-10-15 20:46 MT quickcheck: events reviewed, no action (ETH add filled 2441 20:38 -> avg 2431.17, TP1 2419.38/TP2@guard 2412.15, TP3 2435.58, next add 2459.56; SOL one transient state-read error at 20:23 restart then ticking normally, TPs 103.49/103.40 TP3 104.75; BTC flat; liq SOL 11.3% ETH 6.7%; risk green; no TP2_SET)
 2026-10-16 03:00 MT: after TP3 fill TP1==TP2 at guard price clamped by stricter fee floor (no tp_guard_gap_pct, no tp_min_gap_usd in guard mode); place_tp 6003 retry also checks res['error']; tests updated.
 2026-10-16 03:05 MT: place_tp/cancel 6003 retry also matches 0x1773 (simulation message omits 6003).
+2026-10-16 03:20 MT: TP3 planner logs why it skips (no lot nets positive with target/avg/furthest/rung/f/best lot net); investigation: SOL/ETH no-TP3 is rule-as-designed (target within fee distance of avg), no strategy change; test added.

@@ -57,6 +57,24 @@ def tp3_plan(side: int, avg: float, adds: Sequence[dict[str, Any]], max_rungs: i
             "dist": round(abs(far - avg), 6), "avg": round(avg, 6), "lots": [a["time"] for a in cov], "net_usd": round(net, 4)}
 
 
+def tp3_skip_why(side: int, avg: float, adds: Sequence[dict[str, Any]], max_rungs: int, f_first: float, f_deep: float, *,
+                 open_fee: float, close_fee: float, network_usd: float) -> str:
+    """Why tp3_plan returned None (for the log): 'no lot nets positive ...' with the target and the best lot's net."""
+    adds = [a for a in adds if float(a["size"]) > 0 and float(a["price"]) > 0]
+    if not adds:
+        return "no open add lots"
+    far = float(min(adds, key=lambda a: side * float(a["price"]))["price"])
+    if side * (avg - far) <= 0:
+        return f"furthest add {far} is not beyond avg {avg:.4f}"
+    rung = len(adds)
+    f = zone_f(rung, max_rungs, f_first, f_deep)
+    px = round(avg + (far - avg) * f, 2)
+    nets = [(lot_net_at(side, float(a["price"]), float(a["size"]), px, open_fee, close_fee, network_usd), a) for a in adds]
+    best = max(nets, key=lambda t: t[0])
+    return (f"no lot nets positive: target {px} (avg {avg:.4f}, furthest add {far}, rung {rung}, f {f:.3f}); best lot "
+            f"${float(best[1]['size']):.0f}@{float(best[1]['price'])} nets {best[0]:+.4f} after fees+network")
+
+
 def add_ref(side: int, last_entry: float, last_partial_px: float | None) -> float:
     """Ladder reference for the next add: the more adverse of the last fill and the last partial price."""
     if not last_partial_px:

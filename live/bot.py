@@ -1928,6 +1928,15 @@ class Bot:
         if not self.cfg.resting.partials_enabled:
             return
         tgt, old = self.partial_plan(pos), (L.partials[0] if L.partials else None)
+        if tgt is None:
+            R, t, c = self.cfg.resting, self.cfg.trim, self.cfg.costs
+            adds = [l for i, l in enumerate(L.lots) if not (l.get("first") or i == 0)]
+            if adds:
+                self._rest_note("tp3_skip", "TP3 skipped: " + restmod.tp3_skip_why(
+                    pos.side, pos.avg_entry, adds, self.cfg.dca.ladder_max_rungs, R.partial_zone_f_first, R.partial_zone_f_deep,
+                    open_fee=c.open_fee, close_fee=c.close_fee, network_usd=t.trim_network_usd), logging.WARNING)
+        else:
+            self.__dict__.setdefault("_rest_notes", {}).pop("tp3_skip", None)
         if old and tgt and abs(float(old["size"]) - tgt["size"]) < 0.01 and abs(float(old["px"]) - tgt["px"]) < 0.005:
             return
         if tgt and pos.side * (tgt["px"] - price) < self.cfg.tp.tp_market_gap - 1e-9:

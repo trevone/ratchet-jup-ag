@@ -61,3 +61,5 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 | [dca] | add_frontrun_atr | 0.1 | 0.1 | 0.1 | Trevor 2026-10-15: resting add placed this x own 1h ATR before the level; 0 = at the level |
 | [ledger] | withdraw_fraction | 0.75 | 0.75 | 0.75 | unified 2026-10-15 (SOL/ETH were 0.70) |
 | [scale] | own_atr_fallback | true | true | true | SOL added 2026-10-15 |
+
+Note 2026-10-16 03:20 MT: no new setting; TP3 planner now logs `resting: TP3 skipped: no lot nets positive ...` (once per change) when it places nothing.

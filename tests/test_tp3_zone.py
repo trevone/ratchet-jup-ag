@@ -62,3 +62,15 @@ def test_fees_and_network_decide_not_a_multiple():
 def test_all_adds_qualify_sums_sizes():
     p = P(SHORT, 100.0, [lot(104.0, 40), lot(106.0, 60)], f_first=0.5)   # rung 2 target ~102.85: both above
     assert p["size"] == 100.0 and len(p["lots"]) == 2
+
+def test_live_sol_eth_20261016_no_lot_nets_positive_and_skip_reason():
+    """Live 2026-10-16: chain avg 105.9849 / 2445.4447 with the re-armed add right at the market -> target ~ add, nets < 0."""
+    sol = [lot(104.14, 75), lot(105.02, 100), lot(105.77, 125), lot(106.15, 150)]
+    assert P(SHORT, 105.9849, sol) is None
+    why = R.tp3_skip_why(SHORT, 105.9849, sol, 10, 0.5, 0.27, **KW)
+    assert why.startswith("no lot nets positive: target 106.05") and "rung 4" in why and "106.15" in why
+    eth = [lot(2390.87, 75), lot(2409.51, 100), lot(2438.85, 125), lot(2450.0, 150)]
+    assert P(SHORT, 2445.4447, eth) is None
+    assert R.tp3_skip_why(SHORT, 2445.4447, eth, 10, 0.5, 0.27, **KW).startswith("no lot nets positive: target 2447.37")
+    # same lots, avg lower (a deeper add): the 106.15 lot nets positive again
+    assert P(SHORT, 105.5, sol) is not None
