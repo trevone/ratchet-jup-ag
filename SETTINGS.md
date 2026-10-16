@@ -63,3 +63,5 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 | [scale] | own_atr_fallback | true | true | true | SOL added 2026-10-15 |
 
 Note 2026-10-16 03:20 MT: no new setting; TP3 planner now logs `resting: TP3 skipped: no lot nets positive ...` (once per change) when it places nothing.
+
+Note 2026-10-16 03:15 MT: TP3 reference avg = bot's own lot-weighted entry (not Jupiter avg); no new setting.

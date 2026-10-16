@@ -31,6 +31,14 @@ def zone_f(rung: int, max_rungs: int, f_first: float, f_deep: float) -> float:
     return f_first - (f_first - f_deep) * min(1.0, max(0.0, (rung - 1) / (max_rungs - 1)))
 
 
+def lots_avg(lots: Sequence[dict[str, Any]]) -> float | None:
+    """Size-weighted (harmonic) average entry of the bot's own open lots; None when there are none."""
+    ls = [l for l in lots if float(l.get("size", 0)) > 0 and float(l.get("price", 0)) > 0]
+    if not ls:
+        return None
+    return sum(float(l["size"]) for l in ls) / sum(float(l["size"]) / float(l["price"]) for l in ls)
+
+
 def tp3_plan(side: int, avg: float, adds: Sequence[dict[str, Any]], max_rungs: int, f_first: float, f_deep: float, *,
              open_fee: float, close_fee: float, network_usd: float) -> dict[str, Any] | None:
     """The single TP3 (Trevor 2026-10-15). ``adds`` = the open add lots (price / size), rung = how many. D = |furthest add - avg|;

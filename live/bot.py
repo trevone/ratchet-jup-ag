@@ -1884,12 +1884,17 @@ class Bot:
         self._rest_note("add", f"resting add creation refused / failed (retry next tick): "
                                f"{res.get('code') or ''} {res.get('error') or res.get('err')} args {args}", logging.WARNING)
 
+    def tp3_ref_avg(self, pos: ChainPosition) -> float:
+        """TP3 reference avg (Trevor 2026-10-16): the bot's OWN weighted average entry of its open lots (first + adds), NOT
+        Jupiter's reported avg (which keeps the old entry when a lot is partially closed)."""
+        return restmod.lots_avg(self.local.lots) or pos.avg_entry
+
     def partial_plan(self, pos: ChainPosition) -> dict[str, Any] | None:
         """The ONE TP3 (Trevor 2026-10-15): restmod.tp3_plan over the open add lots (rung = their count; a closed lot leaves
         L.lots, so the rung drops), size capped at the position."""
         R, t, c = self.cfg.resting, self.cfg.trim, self.cfg.costs
         adds = [l for i, l in enumerate(self.local.lots) if not (l.get("first") or i == 0)]
-        tgt = restmod.tp3_plan(pos.side, pos.avg_entry, adds, self.cfg.dca.ladder_max_rungs, R.partial_zone_f_first,
+        tgt = restmod.tp3_plan(pos.side, self.tp3_ref_avg(pos), adds, self.cfg.dca.ladder_max_rungs, R.partial_zone_f_first,
                                R.partial_zone_f_deep, open_fee=c.open_fee, close_fee=c.close_fee, network_usd=t.trim_network_usd)
         if tgt is not None:
             tgt["size"] = round(min(tgt["size"], pos.size), 2)
@@ -1933,7 +1938,7 @@ class Bot:
             adds = [l for i, l in enumerate(L.lots) if not (l.get("first") or i == 0)]
             if adds:
                 self._rest_note("tp3_skip", "TP3 skipped: " + restmod.tp3_skip_why(
-                    pos.side, pos.avg_entry, adds, self.cfg.dca.ladder_max_rungs, R.partial_zone_f_first, R.partial_zone_f_deep,
+                    pos.side, self.tp3_ref_avg(pos), adds, self.cfg.dca.ladder_max_rungs, R.partial_zone_f_first, R.partial_zone_f_deep,
                     open_fee=c.open_fee, close_fee=c.close_fee, network_usd=t.trim_network_usd), logging.WARNING)
         else:
             self.__dict__.setdefault("_rest_notes", {}).pop("tp3_skip", None)

@@ -74,3 +74,12 @@ def test_live_sol_eth_20261016_no_lot_nets_positive_and_skip_reason():
     assert R.tp3_skip_why(SHORT, 2445.4447, eth, 10, 0.5, 0.27, **KW).startswith("no lot nets positive: target 2447.37")
     # same lots, avg lower (a deeper add): the 106.15 lot nets positive again
     assert P(SHORT, 105.5, sol) is not None
+
+
+def test_lots_avg_and_rebased_tp3_live_numbers():
+    sol_all = [lot(102.830726, 50), lot(104.139999, 75), lot(105.02, 100), lot(105.769999, 125), lot(106.15, 150)]
+    avg = R.lots_avg(sol_all)
+    assert avg == pytest.approx(105.1851, abs=1e-3)
+    t = P(SHORT, avg, sol_all[1:])
+    assert t["px"] == 105.59 and t["size"] == 275.0 and t["rung"] == 4 and t["net_usd"] > 0
+    assert R.lots_avg([]) is None
