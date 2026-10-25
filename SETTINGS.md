@@ -29,7 +29,7 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 | [live] | max_collateral_usd / max_position_usd / max_daily_loss_usd | 1e12 | 1e12 | 1e12 | Caps effectively off |
 | [live] | kill_switch_path | live/KILL | live/eth/KILL | live/btc/KILL | Per-bot kill file (global: live/KILL_ALL) |
 | [tp] | levels (TP1 / TP2 dist) | $0.45 / $0.75 (mode price_abs) | 0.45% / 0.75% | 0.45% / 0.75% | Close split 50% / 100%; dist only used when tp1_pct / tp2_pct are unset |
-| [tp] | tp1_pct / tp2_pct | 0.008 / 0.015 | 0.008 / 0.015 | 0.008 / 0.015 | Trevor 2026-10-15 (Option A): TP1 = avg x (1 -/+ 0.8%), TP2 = avg x (1 -/+ 1.5%); 0 < tp1_pct < tp2_pct, set together; fee floors / min gap / market clamp still apply; levels give only the close split. Unset = levels dist |
+| [tp] | tp1_pct / tp2_pct | 0.0064 / 0.012 | 0.0064 / 0.012 | 0.0064 / 0.012 | Trevor 2026-10-24: both cut ~20% (was 0.008 / 0.015, Option A 2026-10-15): TP1 = avg x (1 -/+ 0.64%), TP2 = avg x (1 -/+ 1.2%); 0 < tp1_pct < tp2_pct, set together; fee floors / min gap / market clamp still apply; levels give only the close split. Unset = levels dist |
 | [tp] | smart_tp2 | true | true | true | Fee floors, TP1 inside TP2, never past market (resistance cap / fade removed 2026-10-15) |
 | [tp] | tp_periodic | false | false | false | TPs set only at open/add |
 | [tp] | tp1_fee_mult / tp2_fee_mult | 3.0 / 4.5 | same | same | Fee-minimum TP1 / TP2 floors (code defaults, config.py): a TP portion nets >= mult x its fees. 2026-10-15: was 2.0 / 3.0. tp3_fee_mult removed (TP3 = adds that net > 0 after fees) |
