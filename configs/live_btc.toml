@@ -62,7 +62,7 @@ max_adds = 100000              # effectively unlimited; wallet / liq rule stop a
 mode = "levels"                # adds at analyst support/resistance ("fixed" = trigger_dist spacing)
 levels_path = "/workspace/market-analysis/btc/latest.json"   # analyst per asset; stale/missing -> own-ATR fallback
 levels_max_age_min = 45.0      # stale/missing -> fixed trigger_dist spacing
-min_gap_atr = 0.3              # gap from last fill to the add level, in 1h ATR
+min_gap_atr = 0.6              # gap from last fill to the add level, in 1h (analyst) ATR (Trevor 2026-10-25: 0.3 -> 0.6)
 max_gap_atr = 1.2              # no level within 2x ATR -> fixed spacing
 target_avg_atr = 1.0           # size add so new avg lands 1x ATR below the next resistance (longs)
 min_add_usd = 10.0              # floor per add (capped at available)

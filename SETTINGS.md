@@ -15,7 +15,7 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 | [dca] | mode | levels | levels | levels | Adds at analyst S/R levels |
 | [dca] | levels_path | market-analysis/latest.json | market-analysis/eth/latest.json | market-analysis/btc/latest.json | Analyst levels file |
 | [dca] | levels_max_age_min | 45 | 45 | 45 | Older -> fallback spacing |
-| [dca] | min_gap_atr / max_gap_atr | 0.3 / 1.2 | 0.3 / 1.2 | 0.3 / 1.2 | Allowed gap last fill -> add level (1h ATR) |
+| [dca] | min_gap_atr / max_gap_atr | 0.6 / 1.2 | 0.6 / 1.2 | 0.6 / 1.2 | Allowed gap last fill -> add level (1h analyst ATR); Trevor 2026-10-25: min 0.3 -> 0.6. No level in range -> fixed trigger_dist fallback (SOL $0.85; ETH/BTC 1.15 x own ATR) |
 | [dca] | trigger_dist | 0.85 ($) | (overridden by [scale]) | (overridden by [scale]) | Fallback rung spacing |
 | [scale] | trigger_dist_atr | - | 1.15 | 1.15 | ETH/BTC fallback spacing = 1.15 x own 1h ATR |
 | [dca] | ladder_min_rungs / ladder_max_rungs | 4 / 14 | 4 / 14 | 4 / 14 | Ladder rung count |
