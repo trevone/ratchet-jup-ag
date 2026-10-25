@@ -1,5 +1,5 @@
 """2026-10-25: inter-bot loan request sized from the next rung's normal collateral (never a cash + 1e9 probe), capped at
-IB_MAX_RUNGS rungs; an own stale request is withdrawn when the borrower goes flat or the next rung is affordable."""
+NO cap (Trevor 2026-10-15); an own stale request is withdrawn when the borrower goes flat or the next rung is affordable."""
 import json
 
 import pandas as pd
@@ -31,10 +31,10 @@ def env(monkeypatch, tmp_path):
 
 
 def test_bank_helpers_sane():
-    assert bankmod.ib_cap_usd(10.0) == 50.0 and bankmod.ib_cap_usd(0.0) == bankmod.IB_MIN_USD
-    assert bankmod.ib_need_usd(10.0, 1.5, 50.0) == 9.5           # shortfall + $1
-    assert bankmod.ib_need_usd(10.0, 9.8, 50.0) == bankmod.IB_MIN_USD
-    assert bankmod.ib_need_usd(180_893_111.0, 0.0, 50.0) == 50.0   # the 2026-10-25 absurd request can never recur
+    assert bankmod.ib_need_usd(10.0, 1.5) == 9.5           # shortfall + $1
+    assert bankmod.ib_need_usd(10.0, 9.8) == bankmod.IB_MIN_USD
+    assert bankmod.ib_need_usd(500.0, 0.0) == 501.0        # no cap
+    assert not hasattr(bankmod, "IB_MAX_RUNGS") and not hasattr(bankmod, "ib_cap_usd") and not hasattr(B.Bot, "ib_cap_usd")
 
 
 @pytest.mark.parametrize("cash", [0.0, 2.0, 6.5, 9.0])
@@ -46,7 +46,7 @@ def test_request_from_next_rung_margin_not_millions(env, cash):
     bot.strategy.plan_next_add = lambda p, avail, now: (seen.append(avail), real(p, avail, now))[1]
     plan, why = bot.rest_add_plan(bot.chain_position(state()), cash)
     assert plan is None and "no ladder plan" in why
-    assert max(seen) <= cash + bot.ib_cap_usd() + 1e-9          # never a 1e9 probe
+    assert max(seen) <= cash + bankmod.IB_PROBE_STEPS * bot.ib_rung_usd() + 1e-9 < 1e6   # never a 1e9 probe
     rec = json.loads(f.read_text())
     assert rec["status"] == "requested" and rec["borrower"] == "SOL"
     assert rec["need_usd"] == round(max(bankmod.IB_MIN_USD, 10.0 - cash + 1.0), 2)   # $10 rung - cash + $1
@@ -60,14 +60,34 @@ def test_budget_scaled_ladder_old_probe_absurd_new_request_sane(env):
     plan, _ = bot.rest_add_plan(pos, 1.0)
     assert plan is None
     rec = json.loads(f.read_text())
-    assert bankmod.IB_MIN_USD <= rec["need_usd"] <= bot.ib_cap_usd() == 15.0   # smallest probe with a plan ($6.90), not 1e9
+    assert bankmod.IB_MIN_USD <= rec["need_usd"] < 10.0   # smallest probe with a plan ($6.90), not 1e9
 
 
-def test_request_and_topup_capped(env):
+def test_no_cap_request_in_full(env):
     f, mk = env
     bot = mk()
-    bot.ib_request(180_893_111.76)
-    assert json.loads(f.read_text())["need_usd"] == 50.0 == bot.ib_cap_usd()
+    bot.ib_request(500.0)
+    assert json.loads(f.read_text())["need_usd"] == 500.0
+
+
+@pytest.mark.parametrize("rung", [100.0, 250.0])
+def test_large_real_rung_shortfall_requested_in_full(env, rung):
+    f, mk = env
+    bot = mk(flags=[f"dca.min_add_usd={rung}", f"dca.ladder_fixed_usd={rung}"])
+    plan, _ = bot.rest_add_plan(bot.chain_position(state()), 2.0)
+    assert plan is None
+    rec = json.loads(f.read_text())
+    assert rec["need_usd"] == round(rung - 2.0 + 1.0, 2)   # whole rung shortfall, no cap
+
+
+def test_rung_found_beyond_first_steps(env, monkeypatch):
+    f, mk = env
+    bot = mk()
+    real = bot.strategy.plan_next_add
+    # a real next rung that only plans with >= $120 free (12 probe steps of $10): found and requested in full
+    bot.strategy.plan_next_add = lambda p, avail, now: real(p, avail, now) if avail >= 120.0 else None
+    plan, _ = bot.rest_add_plan(bot.chain_position(state()), 2.0)
+    assert plan is None and json.loads(f.read_text())["need_usd"] == 9.0
 
 
 def test_borrow_false_never_requests(env):

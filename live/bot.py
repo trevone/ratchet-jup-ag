@@ -1857,13 +1857,14 @@ class Bot:
         if plan is None:
             # 2026-10-25: probe the next rung with a SANE budget, never cash + 1e9: the
             # rung collateral is capped by the budget, so a 1e9 probe asked for $180M and no lender could ever fund it.
-            # Smallest sane probe first: free cash + 1 rung, + 2 rungs, ... up to the cap (IB_MAX_RUNGS rungs).
-            rung, cap, big, k = self.ib_rung_usd(), self.ib_cap_usd(), None, 1
-            while borrow and big is None and k * rung <= cap + 1e-9:
+            # Smallest probe first: free cash + 1 rung, + 2 rungs, ... (IB_PROBE_STEPS is a search bound, not a loan cap);
+            # the first plan found is the real next rung and its shortfall is requested in full.
+            rung, big, k = self.ib_rung_usd(), None, 1
+            while borrow and big is None and rung > 0 and k <= bankmod.IB_PROBE_STEPS:
                 big = self.strategy.plan_next_add(p, max(cash, 0.0) + k * rung, pd.Timestamp.now(tz="UTC"))
                 k += 1
-            if borrow and big is not None and big.margin > cash:   # Trevor 18:13 MT: short of equity -> borrow from a flat bot
-                self.ib_request(bankmod.ib_need_usd(big.margin, cash, cap))   # shortfall + $1, min $2, <= cap
+            if borrow and big is not None and big.margin > cash:   # Trevor 18:13 MT: short of equity -> borrow from a flat bot (no cap)
+                self.ib_request(bankmod.ib_need_usd(big.margin, cash))   # shortfall + $1, min $2
             return None, "no ladder plan (budget / liq rule)"
         if not self.strategy._adds_left(pos):
             return None, "no adds left (max_adds / allow_after_partial)"
@@ -2369,14 +2370,9 @@ class Bot:
         log.error("INTER-BOT LOAN top-up cancelled (%s); loan stays open", why)
 
     def ib_rung_usd(self) -> float:
-        """2026-10-25: normal rung collateral for loan sizing: max(dca.min_add_usd, dca.ladder_fixed_usd) ($10 live)."""
+        """2026-10-25: probe step for the next-rung search: max(dca.min_add_usd, dca.ladder_fixed_usd) ($10 live)."""
         d = self.cfg.dca
         return max(float(d.min_add_usd), float(getattr(d, "ladder_fixed_usd", 0.0) or 0.0))
-
-    def ib_cap_usd(self) -> float:
-        """2026-10-25 sanity cap of one loan request / top-up: IB_MAX_RUNGS x ib_rung_usd() ($10 live -> $50),
-        never below IB_MIN_USD."""
-        return bankmod.ib_cap_usd(self.ib_rung_usd())
 
     def ib_cancel_request(self, why: str) -> None:
         """2026-10-25: withdraw this bot's own outstanding request (status requested -> settled; a pending top-up ->
@@ -2396,15 +2392,14 @@ class Bot:
             log.error("INTER-BOT LOAN request cancel failed: %s", e)
 
     def ib_request(self, need_usd: float) -> None:
-        """Borrower side: not enough free for the next rung -> ask a flat bot for ``need_usd`` (min $2; 2026-10-25 capped
-        at ib_cap_usd(), a few rungs). With an open loan of its own it asks its lender for a top-up of that loan instead
-        (Trevor 2026-10-15)."""
+        """Borrower side: not enough free for the next rung -> ask a flat bot for ``need_usd`` (no cap; min $2). With an open
+        loan of its own it asks its lender for a top-up of that loan instead (Trevor 2026-10-15)."""
         b = self.local.bank
         ln = b.get("ib_loan")
         if (ln and ln.get("role") != "borrower") or not self.bank_on or self.live.dry_run:
             return
         try:
-            need_usd = min(max(bankmod.IB_MIN_USD, need_usd), self.ib_cap_usd())
+            need_usd = max(bankmod.IB_MIN_USD, need_usd)
             now = str(pd.Timestamp.now(tz="UTC"))
             with bankmod.journal_lock():
                 rec = self._ib_read()
