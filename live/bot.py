@@ -34,7 +34,7 @@ from live.live_broker import jup
 from live import ledger
 from live.run_dry import KLINES, HTTP_TIMEOUT
 from strategy import LONG, SHORT, Action, DcaStrategy, Intent
-from dca_levels import load_analyst_levels
+from dca_levels import level_tf, load_analyst_levels
 from asset_scale import atr_from_klines, levels_with_fallback, scale_config, scaled_summary
 from live.budget import budget_from_state
 from live.flows import flow_extras, position_net_sol
@@ -1759,40 +1759,84 @@ class Bot:
         ra = self.local.rest_add
         if R.adds_enabled and ra is None:
             self.place_rest_add(pos, st, price, account, equity)
-        elif R.adds_enabled and self.local.rearm and not ra.get("unconfirmed") and not self.live.dry_run \
-                and abs(ra["trigger"] - self.local.rearm["px"]) > self.add_front() + 0.011:
-            self.rearm_add(pos, st, price, account, equity, ra)
+            return
+        if not R.adds_enabled or ra.get("unconfirmed") or self.live.dry_run:
+            return
+        if self.local.rearm and abs(ra["trigger"] - self.local.rearm["px"]) > self.add_front() + 0.011 \
+                and self.rearm_add(pos, st, price, account, equity, ra):
+            return
+        self.replan_add(pos, st, price, account, equity, ra)
 
     def rearm_add(self, pos: ChainPosition, st: dict[str, Any], price: float, account: Any, equity: float,
-                  ra: dict[str, Any]) -> None:
+                  ra: dict[str, Any]) -> bool:
         """2026-10-15: a TP3 partial closed add lot(s) -> the single resting add moves to the closed lot's entry. No in-place
-        edit (keeper co-signed): cancel, and ONLY on a confirmed cancel place the new one (never two resting adds)."""
-        L = self.local
+        edit (keeper co-signed): cancel, and ONLY on a confirmed cancel place the new one (never two resting adds).
+        True when a cancel was attempted (the re-plan check is then skipped this tick)."""
         acc = types.SimpleNamespace(cash=account.cash + float(ra["margin"]))   # the cancel frees the old add's collateral
         plan, why = self.rest_add_plan(pos, acc.cash, price)
         if plan is None or getattr(plan, "source", "") != "rearm":
             self._rest_note("rearm", f"resting add stays at {ra['trigger']}: {why or 'market not beyond the re-arm price'}")
-            return
+            return False
+        blocked = self._replace_guard(pos, st, equity, ra, plan)
+        if blocked:
+            self._rest_note("rearm", f"resting add stays at {ra['trigger']}: re-arm blocked: {blocked}")
+            return False
+        log.warning("RESTING ADD re-arm: cancelling %s at %s to re-place at the closed lot's entry %.2f ($%.2f x%g)",
+                    ra["pubkey"], ra["trigger"], plan.trigger, plan.margin, plan.leverage)
+        self._cancel_then_place(pos, st, price, acc, equity, ra, "re-arm")
+        return True
+
+    def _replace_guard(self, pos: ChainPosition, st: dict[str, Any], equity: float, ra: dict[str, Any], plan: Any) -> str | None:
+        """guard() for the replacement add, with the old add's bank debit counted as already refunded."""
         b = self.local.bank if self.bank_on and ra.get("debited") else None
         if b:
             b["bal"] += float(ra.get("nat") or 0.0)   # funds check as if already refunded
         try:
-            blocked = self.guard(Intent(Action.ADD, pos.side, plan.trigger, plan.margin, plan.leverage), pos, st, equity)
+            return self.guard(Intent(Action.ADD, pos.side, plan.trigger, plan.margin, plan.leverage), pos, st, equity)
         finally:
             if b:
                 b["bal"] -= float(ra.get("nat") or 0.0)
-        if blocked:
-            self._rest_note("rearm", f"resting add stays at {ra['trigger']}: re-arm blocked: {blocked}")
-            return
-        log.warning("RESTING ADD re-arm: cancelling %s at %s to re-place at the closed lot's entry %.2f ($%.2f x%g)",
-                    ra["pubkey"], ra["trigger"], plan.trigger, plan.margin, plan.leverage)
-        if not self.cancel_limit(ra["pubkey"]) or L.rest_add is not None:
-            log.warning("resting add re-arm: cancel not confirmed; nothing re-placed, retry next tick")
+
+    def _cancel_then_place(self, pos: ChainPosition, st: dict[str, Any], price: float, acc: Any, equity: float,
+                           ra: dict[str, Any], what: str) -> None:
+        """Cancel the resting add; ONLY on a confirmed cancel (record cleared, refund booked) place the replacement. A failed
+        cancel leaves the old add on-chain and recorded (never zero, never two); a failed placement after a confirmed
+        cancel is retried by the normal 'no resting add -> place' path next tick."""
+        if not self.cancel_limit(ra["pubkey"]) or self.local.rest_add is not None:
+            log.warning("resting add %s: cancel not confirmed; nothing re-placed, retry next tick", what)
             return
         left = dict(st, openRequests=[r for r in st["openRequests"] if r.get("pubkey") != ra["pubkey"]])
         self.place_rest_add(pos, left, price, acc, equity)
 
-    def rest_add_plan(self, pos: ChainPosition, cash: float, price: float | None = None) -> tuple[Any, str]:
+    def replan_add(self, pos: ChainPosition, st: dict[str, Any], price: float, account: Any, equity: float,
+                   ra: dict[str, Any]) -> bool:
+        """2026-10-24 (Trevor): the analyst levels moved -> a confirmed resting add whose current plan is a "levels" rung is
+        re-placed at add_px(new level) when it is off by more than max(add_front(), 0.25 x ATR) (the analyst ATR the
+        ladder gaps use). Same confirmed cancel-then-place as the re-arm; size from the normal ladder plan. True = re-placed."""
+        acc = types.SimpleNamespace(cash=account.cash + float(ra["margin"]))   # the cancel frees the old add's collateral
+        plan, _ = self.rest_add_plan(pos, acc.cash, price, borrow=False)
+        if plan is None or getattr(plan, "source", "") != "levels":
+            return False
+        lv = self.strategy._levels
+        atr = float(lv.atr) if lv and lv.atr else 0.0
+        if atr <= 0 or self.front_atr() is None:
+            return False
+        new, old = self.add_px(pos, plan.trigger), float(ra["trigger"])
+        thr = max(self.add_front(), 0.25 * atr)
+        if abs(new - old) <= thr:
+            return False
+        blocked = self._replace_guard(pos, st, equity, ra, plan)
+        if blocked:
+            self._rest_note("replan", f"resting add stays at {old}: re-plan to {new} blocked: {blocked}")
+            return False
+        log.warning("RESTING ADD re-planned: %.2f -> %.2f (level %.2f src %s, |diff| %.2f > max(front %.2f, 0.25 x ATR %.2f)) "
+                    "cancelling %s; new $%.2f x%g", old, new, plan.trigger, level_tf(lv, plan.trigger), abs(new - old),
+                    self.add_front(), atr, ra["pubkey"], plan.margin, plan.leverage)
+        self._cancel_then_place(pos, st, price, acc, equity, ra, "re-plan")
+        return True
+
+    def rest_add_plan(self, pos: ChainPosition, cash: float, price: float | None = None,
+                      borrow: bool = True) -> tuple[Any, str]:
         """(AddPlan | None, why-not) for the next resting add: the ladder's next rung, planned from the last fill (rule 3:
         from the more adverse of the last fill and the last partial price) with this bot's free collateral."""
         R, L = self.cfg.resting, self.local
@@ -1812,7 +1856,7 @@ class Bot:
         plan = self.strategy.plan_next_add(p, cash, pd.Timestamp.now(tz="UTC"))
         if plan is None:
             big = self.strategy.plan_next_add(p, cash + 1e9, pd.Timestamp.now(tz="UTC"))
-            if big is not None and big.margin > cash:   # Trevor 18:13 MT: short of equity -> borrow from a flat bot (no cap, 10-15)
+            if borrow and big is not None and big.margin > cash:   # Trevor 18:13 MT: short of equity -> borrow from a flat bot (no cap, 10-15)
                 self.ib_request(max(bankmod.IB_MIN_USD, big.margin - cash + 1.0))   # shortfall + $1, min $2
             return None, "no ladder plan (budget / liq rule)"
         if not self.strategy._adds_left(pos):
@@ -1821,9 +1865,17 @@ class Bot:
             return None, f"next rung {plan.trigger:.4f} is not beyond the last partial price {L.last_partial_px}"
         return plan, ""
 
+    def front_atr(self) -> float | None:
+        """ATR for the add front-run: own 1h ATR; 2026-10-24: before the first kline fetch (first tick after a restart)
+        the analyst / ladder ATR (strategy._levels.atr); None when neither is known."""
+        if self._own_atr:
+            return float(self._own_atr)
+        lv = self.strategy._levels
+        return float(lv.atr) if lv is not None and lv.atr else None
+
     def add_front(self) -> float:
-        """Own-ATR front-run distance (USD) before the add level (dca.add_frontrun_atr x own 1h ATR; 0 without an ATR)."""
-        return max(self.cfg.dca.add_frontrun_atr, 0.0) * (self._own_atr or 0.0)
+        """Front-run distance (USD) before the add level: dca.add_frontrun_atr x front_atr() (0 without an ATR)."""
+        return max(self.cfg.dca.add_frontrun_atr, 0.0) * (self.front_atr() or 0.0)
 
     def add_px(self, pos: ChainPosition, trigger: float) -> float:
         """Resting add price: the level moved add_front() toward the market (long up, short down)."""
@@ -1855,6 +1907,10 @@ class Bot:
         plan, why = self.rest_add_plan(pos, account.cash, price)
         if plan is None:
             self._rest_note("add", f"no resting add placed: {why}")
+            return
+        if self.cfg.dca.add_frontrun_atr > 0 and self.front_atr() is None:   # 2026-10-24: never placed at the bare level
+            self._rest_note("add", "no resting add placed this tick: no ATR yet for the front-run (own 1h ATR unset, no "
+                                   "analyst ATR); retry next tick", logging.WARNING)
             return
         if self.add_pending_wait(st, pos):
             return
@@ -2831,8 +2887,14 @@ class Bot:
         intents = self.strategy.entry_intents(bar, account)
         if pos is not None and self.cfg.dca.mode == "levels":
             p = self.strategy.plan_next_add(pos, account.cash, pd.Timestamp.now(tz="UTC"))
-            log.info("next add plan: %s", p and (f"{p.source} trigger {p.trigger:.2f} margin ${p.margin:.2f} x{p.leverage:g} "
-                     f"-> avg {p.new_avg:.3f} liq {p.liq:.2f} next level {p.next_level:.2f} target {p.target_level:.2f}"))
+            lv, fa = self.strategy._levels, self.front_atr()
+            log.info("next add plan: %s", p and (
+                f"{p.source} trigger {p.trigger:.2f} (level src {level_tf(lv, p.trigger) if p.source == 'levels' else p.source}) "
+                f"add price {self.add_px(pos, p.trigger):.2f} (front {self.add_front():.2f} = "
+                f"{self.cfg.dca.add_frontrun_atr:g} x ATR {fa if fa is not None else float('nan'):.3f} "
+                f"{'own' if self._own_atr else 'analyst'}; ladder ATR {lv.atr if lv else float('nan'):.3f}) "
+                f"margin ${p.margin:.2f} x{p.leverage:g} "
+                f"-> avg {p.new_avg:.3f} liq {p.liq:.2f} next level {p.next_level:.2f} target {p.target_level:.2f}"))
             try:   # projected ladder: each rung fills at its trigger, re-planned with what is left
                 for i, r in enumerate(self.strategy.project_ladder(pos, account.cash), 1):
                     log.info("ladder rung %d: %.2f coll $%.2f x%g notional $%.2f -> avg %.3f liq %.2f (next %.2f)",

@@ -29,6 +29,16 @@ class Levels:
     # analyst levels.fine (15m/1h intraday S/R, 2026-10-08): used by the per-add trim trigger only, never by the ladder
     fine_supports: tuple[float, ...] = ()
     fine_resistances: tuple[float, ...] = ()
+    # 2026-10-24: which analyst timeframe(s) each h1/h4 level came from ((price, "h1"|"h4"), ...); logging only
+    tfs: tuple[tuple[float, str], ...] = ()
+
+
+def level_tf(lv: "Levels | None", px: float) -> str:
+    """Analyst timeframe(s) of the h1/h4 level at ``px`` ("h1", "h4", "h1+h4"), "?" when unknown (logging only)."""
+    if lv is None:
+        return "?"
+    got = sorted({tf for x, tf in lv.tfs if abs(x - px) <= 1e-9 * max(abs(px), 1.0)})
+    return "+".join(got) or "?"
 
 
 @dataclass(frozen=True)
@@ -85,7 +95,10 @@ def load_analyst_levels(path: str | Path, max_age_min: float, now: pd.Timestamp 
                 except (TypeError, ValueError):
                     pass
             return tuple(out)
-        return Levels(sup, res, atr, fine_supports=_px(fine.get("supports")), fine_resistances=_px(fine.get("resistances")))
+        tfs = tuple((float(x), tf) for tf in ("h1", "h4") for k in ("support", "resistance")
+                    for x in (lv[tf].get(k) or []) if x is not None)
+        return Levels(sup, res, atr, fine_supports=_px(fine.get("supports")), fine_resistances=_px(fine.get("resistances")),
+                      tfs=tfs)
     except (OSError, KeyError, ValueError, TypeError, AttributeError):
         return None
 

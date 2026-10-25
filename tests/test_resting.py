@@ -129,7 +129,8 @@ def test_resting_add_placed_with_ladder_size_and_rung_price(bot):
     bot.resting_tick(pos, st, 106.6, ACC, 100.0)
     lim = [a for n, a in bot.calls if n == "create-limit-order"]
     assert len(lim) == 1
-    assert lim[0]["side"] == "long" and lim[0]["triggerPriceUsd"] == round(plan.trigger, 2)
+    assert lim[0]["side"] == "long" and lim[0]["triggerPriceUsd"] == bot.add_px(pos, plan.trigger)
+    assert bot.add_front() == pytest.approx(0.1 * LV.atr)   # 2026-10-24: own ATR unset -> analyst ATR front-run
     assert lim[0]["sizeUsd"] == round(plan.margin * plan.leverage, 2) and plan.leverage == 20.0   # 19x + 1, cap 20
     assert int(lim[0]["inputAtoms"]) == int(plan.margin / 106.6 * 1e9)
     ra = bot.local.rest_add
@@ -399,8 +400,8 @@ def test_tp3_closing_an_add_moves_the_resting_add_to_the_lots_entry(bot):
     calls = [c for c in bot.calls if c[0] != "decrease"]   # (TP3 re-plan for the shrunk position is separate)
     assert [n for n, _ in calls] == ["cancel-limit-order", "create-limit-order"] and calls[0][1] == {"request": "LIM1"}
     args = calls[1][1]
-    assert args["triggerPriceUsd"] == round(lot["price"], 2) and args["sizeUsd"] == pytest.approx(lot["size"], abs=0.01)
-    assert L.rest_add["pubkey"] == "LIM2" and L.rest_add["trigger"] == round(lot["price"], 2) and L.rest_add["lev"] == lot["lev"]
+    assert args["triggerPriceUsd"] == bot.add_px(pos, lot["price"]) and args["sizeUsd"] == pytest.approx(lot["size"], abs=0.01)
+    assert L.rest_add["pubkey"] == "LIM2" and L.rest_add["trigger"] == bot.add_px(pos, lot["price"]) and L.rest_add["lev"] == lot["lev"]
     bot.calls.clear()   # next tick: already there -> no new calls, still exactly one resting add
     bot.resting_tick(pos, st2, 106.7, ACC, 100.0)
     assert not bot.calls
