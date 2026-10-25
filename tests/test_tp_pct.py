@@ -8,6 +8,8 @@ from config import TakeProfitConfig, TpLevel, load_config
 from strategy import LONG, SHORT, DcaStrategy
 
 LIVE_FILES = ["configs/live_100.toml", "configs/live_eth.toml", "configs/live_btc.toml"]
+# Live TP percents (Trevor 2026-10-24: cut ~20% from 0.008 / 0.015). Expected prices below derive from these.
+TP1_PCT, TP2_PCT = 0.0064, 0.012
 
 
 def pos(side, avg, size, tp_hits=0):
@@ -41,7 +43,7 @@ def test_validation():
 @pytest.mark.parametrize("f", LIVE_FILES)
 def test_live_files_set_pct(f):
     t = load_config(f).tp
-    assert (t.tp1_pct, t.tp2_pct) == (0.008, 0.015)
+    assert (t.tp1_pct, t.tp2_pct) == (TP1_PCT, TP2_PCT)
 
 
 def test_sol_mode_is_price_abs():
@@ -50,18 +52,22 @@ def test_sol_mode_is_price_abs():
 
 
 def test_sol_short_dry_run():
-    assert prices(strat(), pos(SHORT, 104.3207, 225.0), 104.30) == [103.49, 102.76]
+    avg = 104.3207
+    assert prices(strat(), pos(SHORT, avg, 225.0), 104.30) == [round(avg * (1 - TP1_PCT), 2), round(avg * (1 - TP2_PCT), 2)]
+    assert prices(strat(), pos(SHORT, avg, 225.0), 104.30) == [103.65, 103.07]
 
 
 def test_eth_short_dry_run():
     s = strat("configs/live_eth.toml")
-    assert prices(s, pos(SHORT, 2425.74, 500.0), 2420.0) == [2406.33, 2389.35]
+    avg = 2425.74
+    assert prices(s, pos(SHORT, avg, 500.0), 2420.0) == [round(avg * (1 - TP1_PCT), 2), round(avg * (1 - TP2_PCT), 2)]
+    assert prices(s, pos(SHORT, avg, 500.0), 2420.0) == [2410.22, 2396.63]
 
 
 def test_long_above_avg_and_bypasses_levels_and_levels_provider():
     s = strat()
     s.levels_provider = lambda now: (_ for _ in ()).throw(AssertionError("analyst levels must not be read"))
-    assert prices(s, pos(LONG, 100.0, 200.0), 100.0) == [100.8, 101.5]
+    assert prices(s, pos(LONG, 100.0, 200.0), 100.0) == [round(100.0 * (1 + TP1_PCT), 2), round(100.0 * (1 + TP2_PCT), 2)]  # 100.64 / 101.2
 
 
 def test_fee_floor_wins_when_pct_price_is_inside_it():
@@ -73,7 +79,7 @@ def test_fee_floor_wins_when_pct_price_is_inside_it():
 
 def test_market_clamp_and_min_gap_still_apply():
     s = strat()
-    t = s.tp_targets(pos(SHORT, 100.0, 200.0), price=99.0)   # TP1 99.2 / TP2 98.5 inside; push market below TP1
+    t = s.tp_targets(pos(SHORT, 100.0, 200.0), price=99.0)   # TP1 99.36 / TP2 98.8 inside; push market below TP1
     assert t[0].price < 99.0 - 0.02 + 1e-9 and any(s.last_tp.past_market)
     assert t[0].price - t[1].price >= 0.05 - 1e-9
 
@@ -81,7 +87,7 @@ def test_market_clamp_and_min_gap_still_apply():
 def test_after_tp1_fill_tp2_only_pending():
     s = strat()
     t = s.tp_targets(pos(SHORT, 100.0, 100.0, tp_hits=1), price=99.0)
-    assert round(t[1].price, 2) == 98.5 and s.last_tp.floors[0] is None
+    assert round(t[1].price, 2) == round(100.0 * (1 - TP2_PCT), 2) and s.last_tp.floors[0] is None   # 98.8
 
 
 def test_unset_keeps_levels_ladder():

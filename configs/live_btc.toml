@@ -4,6 +4,7 @@
 # withdraw.enabled (only the SOL bot runs the one daily stake over all bots' trade files).
 # Small live-size account on the default $1.00 / $1.50 TP ladder, stops from with_stops (on for now).
 name = "live_btc"
+sides = "short"  # Grok hourly 2026-10-14 08:47 MT: block new BTC longs (Analyst long invalidated: price < 82207.3 invalidation + below 4h EMA200, hot-CPI news selling). Fresh entries only; adds untouched.
 
 [market]
 symbol = "BTCUSDT"          # Binance klines (same source as SOL): 15m signals, 4h EMA200
@@ -30,30 +31,15 @@ start_equity = 26.0
 [tp]
 mode = "price_pct"            # TP distances as a fraction of the average entry (SOL: +$0.50/+$0.75 at ~$116)
 levels = [{ dist = 0.0045, close_pct = 0.5 }, { dist = 0.0075, close_pct = 1.0 }]   # 2026-10-08: TP1 0.30% -> 0.45% (60% of TP2; ladder fallback, ratio mode sets TP1)
-tp_res_min_touches = 2         # TP2 cap only at analyst levels with >= 2 touches (h1+h4 merged); unknown = strong
 close_remainder_after_min = 55.0
-deep_buffer_usd = 0.15         # tp1_mode = ladder only: after deep adds TP1 = avg + fees + $0.15 (unused in ratio mode)
 # smart TP2 / TP1 sanity (Trevor 2026-10-07 20:14 MT): at open, after each add and every tp_check_min
 smart_tp2 = true
-tp_res_buffer_atr = 0.1        # TP2 = min(avg + 0.75, nearest resistance above avg - 0.1 x 1h ATR)
+tp1_pct = 0.0064             # Trevor 2026-10-24: -20% (was 0.008). TP1 = avg x (1 -/+ 0.64%), short below / long above avg
+tp2_pct = 0.012              # Trevor 2026-10-24: -20% (was 0.015). TP2 = avg x (1 -/+ 1.2%); fee floors / min gap / market clamp still apply; levels give close_pct only
 tp_min_net_usd = 0.05          # each TP's closing chunk nets >= $0.05 after 6 bps open + 6 bps close fees
 tp_min_gap_usd = 0.05          # TP1 at least $0.05 inside TP2
 tp_min_move = 0.05             # periodic re-place only when a TP moves >= $0.05
 tp_market_gap = 0.02           # trigger always >= $0.02 beyond market
-tp_near_miss_frac = 0.85       # fade armed when the best price reached 85% of TP2's distance ...
-tp_fade_atr = 0.3              # ... then pulled back > 0.3 ATR ...
-tp_fade_rsi_drop = 8.0         # ... or 15m RSI fell >= 8 pts from its post-placement high (longs)
-tp_swing_buffer_atr = 0.05     # faded TP2 = max(fee floor, TP1 + gap, best price - 0.05 ATR)
-# TP1 rule (Trevor 2026-10-08 06:51 MT, "be profit aware"): TP1 = avg + tp1_ratio x (actual smart TP2 - avg) on every
-# position (scope "all"; "after_add" = only after an add); the above-water TP1 (avg + fees + deep_buffer) is OFF in ratio
-# mode. tp1_mode = "ladder" restores levels[0].dist + above-water. Fee floor / tp_min_gap_usd / never-past-market still apply.
-# TP rules (Trevor 2026-10-11 06:08 MT, do not change without his say-so): TP1 front-runs the nearest analyst level
-# (main + fine) beyond avg that clears fee floor/market gap, set once at open/add; TP2 = avg + (TP1-avg)/0.6. See STRATEGY.md.
-tp1_mode = "level"
-tp2_from_tp1_ratio = 0.6
-tp1_ratio = 0.6
-tp1_ratio_scope = "all"
-tp_fade_floor_at_tp1 = true    # a faded TP2 never goes inside TP1 (pre-fade 60% level) + tp_min_gap_usd
 
 [stops]
 # margin_loss_pct removed (off) by Trevor's choice
@@ -76,8 +62,8 @@ max_adds = 100000              # effectively unlimited; wallet / liq rule stop a
 mode = "levels"                # adds at analyst support/resistance ("fixed" = trigger_dist spacing)
 levels_path = "/workspace/market-analysis/btc/latest.json"   # analyst per asset; stale/missing -> own-ATR fallback
 levels_max_age_min = 45.0      # stale/missing -> fixed trigger_dist spacing
-min_gap_atr = 0.5              # gap from last fill to the add level, in 1h ATR
-max_gap_atr = 2.0              # no level within 2x ATR -> fixed spacing
+min_gap_atr = 0.3              # gap from last fill to the add level, in 1h ATR
+max_gap_atr = 1.2              # no level within 2x ATR -> fixed spacing
 target_avg_atr = 1.0           # size add so new avg lands 1x ATR below the next resistance (longs)
 min_add_usd = 10.0              # floor per add (capped at available)
 max_add_frac = 1.0             # optional extra per-add cap (fraction of free collateral); 1.0 = off, the ladder budgets instead
@@ -165,7 +151,6 @@ atr_tf = "1h"
 atr_len = 14
 trigger_dist_atr = 1.15        # fixed rung spacing = 1.15 x own 1h ATR   [0.85]
 trigger_dist_pct = 0.0073      # ... only until the first klines give an ATR [0.85 / 116]
-deep_buffer_pct = 0.0013       # above-water TP1 buffer after deep adds  [$0.15]
 tp_min_gap_pct = 0.00043       # TP1 at least this inside TP2            [$0.05]
 tp_min_move_pct = 0.00043      # periodic TP re-place threshold          [$0.05]
 tp_market_gap_pct = 0.00017    # trigger at least this beyond market     [$0.02]
@@ -216,7 +201,7 @@ ext_flow_mode = "alert"       # Trevor 2026-10-11 19:08 MT: unexplained wallet c
 window_ticks = 3
 withdraw_enabled = true         # daily: withdraw_fraction x HWM gain since last withdrawal -> JupSOL (replaces old SOL nightly stake)
 withdraw_time_mt = "00:05"
-withdraw_fraction = 0.70
+withdraw_fraction = 0.75
 # Trevor 2026-10-11 06:53 MT: no $0.50 minimum; withdraw when amount_usd > withdraw_fee_factor x est. cost (WBTC->JupSOL swap: ~0.3% route fee + impact, ~0.0001 SOL network/priority)
 withdraw_cost_pct = 0.003
 withdraw_network_sol = 0.0001

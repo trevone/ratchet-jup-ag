@@ -51,3 +51,8 @@ market-analysis/**/history.jsonl
 market-analysis/**/*state*.json
 market-analysis/events.json
 market-analysis/outputs/
+# live runtime markers / alerts (2026-10-24)
+.quickcheck_last
+**/.quickcheck_last
+EXT_FLOW_ALERT*
+**/EXT_FLOW_ALERT*
