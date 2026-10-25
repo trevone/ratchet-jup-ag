@@ -8,6 +8,8 @@ from live import sweep as sweepmod
 import live.bot as B
 from tests.test_resting import ON, mkbot, state
 
+LIVE_RUNG = ["dca.min_add_usd=10", "dca.ladder_fixed_usd=10"]
+
 
 def bk(coin, bal, hwm, ln=None):
     b = {"coin": coin, "bal": bal, "hwm": hwm, "wd_mark": hwm, "hist": [], "totals": {}}
@@ -24,7 +26,7 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(B.Bot, "bank_on", property(lambda s: True))
 
     def mk(asset, bank):
-        b = mkbot(monkeypatch, tmp_path, ON)
+        b = mkbot(monkeypatch, tmp_path, ON + LIVE_RUNG)   # live rung size ($10) -> request cap $50
         b.asset = asset
         b.local.bank = bank
         b.bank_fee = lambda *a: None
@@ -95,15 +97,15 @@ def _fund(monkeypatch, got="10000", sig="T1"):
         {"ok": True, "sig": sig, "deltas": {"tokenDeltaAtoms": {"WBTC": got}}}, "ok", []))
 
 
-def test_topup_request_no_cap_min_two_and_gating(env):
+def test_topup_request_cap_min_two_and_gating(env):
     f, mk = env
     sol, btc = _open_pair(f, mk)
     btc.ib_request(0.5)   # below the $2 minimum
     r = json.loads(f.read_text())
     assert r["status"] == "topup_requested" and r["need_usd"] == 2.0 and r["topup"] and r["topup_prev"]["sol"] == 0.02
     f.write_text(json.dumps({**r, "status": "open"}))
-    btc.ib_request(500.0)   # no cap
-    assert json.loads(f.read_text())["need_usd"] == 500.0
+    btc.ib_request(500.0)   # 2026-10-25: capped at IB_MAX_RUNGS x rung collateral ($50 with $10 rungs)
+    assert json.loads(f.read_text())["need_usd"] == 50.0 == btc.ib_cap_usd()
     f.write_text(json.dumps({**r, "status": "open", "borrower": "ETH"}))   # not this borrower's loan
     btc.ib_request(5.0)
     assert json.loads(f.read_text())["status"] == "open"

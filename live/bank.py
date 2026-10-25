@@ -146,6 +146,17 @@ def apply_withdrawal(b: dict[str, Any], amt_in: float, why: str = "") -> None:
 IB_FILE = "live/ib_loan.json"
 IB_MIN_USD = 2.0            # smallest request / top-up (Trevor 2026-10-15: no loan cap)
 IB_TOPUP_TIMEOUT_S = 1800   # a pending / stuck top-up is cancelled / reverted after ~30 min
+IB_MAX_RUNGS = 5            # 2026-10-25 sanity cap: one request / top-up <= 5 rungs of collateral ($50 live)
+
+
+def ib_cap_usd(rung_usd: float) -> float:
+    """Largest single request / top-up (USD): IB_MAX_RUNGS x the rung collateral, never below IB_MIN_USD."""
+    return max(IB_MIN_USD, IB_MAX_RUNGS * max(float(rung_usd), 0.0))
+
+
+def ib_need_usd(rung_margin: float, cash: float, cap_usd: float) -> float:
+    """Loan size for the next rung: its collateral minus free cash + $1 buffer, min IB_MIN_USD, at most cap_usd."""
+    return min(max(IB_MIN_USD, float(rung_margin) - float(cash) + 1.0), max(cap_usd, IB_MIN_USD))
 
 
 def ib_adj(b: dict[str, Any]) -> float:

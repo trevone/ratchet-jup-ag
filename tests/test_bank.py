@@ -212,7 +212,7 @@ def test_bank_persists_in_state_json(ebot):
 
 
 def test_live_configs_ledger():
-    for f, m, wf in (("live_100", 0.0015, 0.75), ("live_eth", 0.000066, 0.75), ("live_btc", 0.00000195, 0.75)):
+    for f, m, wf in (("live_100", 0.0015, 0.80), ("live_eth", 0.000066, 0.80), ("live_btc", 0.00000195, 0.80)):
         lc = load_config(f"configs/{f}.toml").ledger
         assert lc.enabled and lc.min_profit_native == m and lc.withdraw_fraction == wf and lc.ext_split == (0.5, 0.25, 0.25)
         assert lc.ext_flow_mode == "alert"
