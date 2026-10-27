@@ -731,7 +731,7 @@ class Bot:
 
     def guard_drift_check(self, pos: ChainPosition, st: dict[str, Any]) -> bool:
         """Trevor 2026-10-27 14:55 MT: guard_tps owns TP1/TP2 and fees accrue (borrow, network fees) after they were placed:
-        when a pending resting TP is now on the wrong side of the current conservative guard TP price (a fill there would
+        when a pending resting TP is now on the wrong side of the current conservative guard price (before the fee-floor clamp; a fill there would
         land below the guard target; short: TP above it, long: below), cancel and re-place TP1/TP2 via the normal
         sync_tp_ladder path (guard_defer, cancel_failed, tp_retry all apply). A TP merely further out than needed is kept.
         Hysteresis: compared on the rounded tick (>= 1 tick wrong), at most once per GUARD_DRIFT_COOLDOWN_S, skipped while a
@@ -745,9 +745,10 @@ class Bot:
         now = time.time()
         if now < self._guard_drift_until or self.guard_bank_stale(st):
             return False
-        px, gp = self.guard_tp_px(pos, st, verbose=False)
+        gp = self.guard_price(pos, st)
         if gp is None:   # guard met at market: the tick's market-close guard handles it
             return False
+        px = self.guard_round(pos.side, gp)   # the guard side only: a fee-floor move is fee_min_recheck's job (no churn on borrow accrual)
         wrong = [i for i in pend if pos.side * (px - L.tp_px[i]) > self.PRICE_TICK / 2]
         if not wrong:
             return False

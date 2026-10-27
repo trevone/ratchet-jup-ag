@@ -81,3 +81,14 @@ def test_drift_short_side(monkeypatch, tmp_path):
     assert b.guard_drift_check(pos, st) and len(b.synced) == 1
     b._guard_drift_until, b.local.tp_px, b.gp = 0.0, [100.24, 100.24], 100.2499
     assert not b.guard_drift_check(pos, st_tp(100.24))
+
+
+def test_fee_floor_move_alone_does_not_replace(monkeypatch, tmp_path):
+    """BTC 2026-10-27 15:02 MT: TPs at the fee floor far beyond the guard; borrow accrual moves the floor by cents: no re-place."""
+    b = gbot(monkeypatch, tmp_path, gp=80205.48, mins=(79942.65, 79950.0))
+    st = st_tp(79942.73)
+    pos = b.chain_position(st)
+    pos.side = SHORT
+    b.local.tp_px = [79942.73, 79942.73]
+    assert b.guard_tp_px(pos, st, verbose=False)[0] == 79942.65
+    assert not b.guard_drift_check(pos, st) and b.synced == []
