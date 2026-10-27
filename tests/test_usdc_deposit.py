@@ -17,6 +17,7 @@ PX = {"SOL": 110.0, "ETH": 2450.0, "BTC": 80000.0}
 CFG = {"SOL": "configs/live_100.toml", "ETH": "configs/live_eth.toml", "BTC": "configs/live_btc.toml"}
 MINT2ASSET = {K.MINT["SOL"]: "SOL", K.MINT["ETH"]: "ETH", K.MINT["WBTC"]: "BTC"}
 FEE = 5000
+ONCHAIN_SLIP = {"InstructionError": [2, {"Custom": 6001}]}   # live 2026-10-26 21:57 MT, tx 2KK5zVRB...
 
 
 class Chain:
@@ -61,6 +62,14 @@ class Chain:
             mode = (self.modes.get(asset) or [None]).pop(0) if self.modes.get(asset) else None
             if mode == "fatal":
                 return {"ok": False, "error": "price impact 2.1% over the cap"}
+            if mode == "simslip":    # send.ts own simulation before signing (live 2026-10-26 21:51 MT)
+                return {"ok": False, "error": 'Error: simulation failed {"InstructionError":[1,{"Custom":6001}]} Program '
+                                              'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4 success | Program JUP6'}
+            if mode == "preflight":  # RPC preflight of the first send (live 2026-10-26 21:45 MT): never forwarded
+                return {"ok": False, "error": "Error: Simulation failed. \nMessage: Transaction simulation failed: Error "
+                                              "processing Instruction 2: custom program error: 0x1771. \nLogs: \n[\n"}
+            if mode == "siminsufficient":
+                return {"ok": False, "error": 'Error: simulation failed {"InstructionError":[1,{"Custom":6024}]} x'}
             if mode == "lost":   # CLI died mid-send, nothing landed
                 raise TimeoutError("cli timeout")
             if mode == "noresult":   # CLI died after the tx landed
@@ -71,8 +80,8 @@ class Chain:
                 sig = f"SIG{self.n}ERR"
                 self.lamports -= FEE
                 self.txs[sig], self.bt[sig] = {"feeLamports": FEE, "nativeDeltaLamports": -FEE, "tokenDeltaAtoms":
-                                               {"USDC": "0", "ETH": "0", "WBTC": "0"}, "err": {"custom": 6001}}, time.time()
-                return {"ok": False, "sent": True, "sig": sig, "err": {"custom": 6001}, "deltas": self.txs[sig]}
+                                               {"USDC": "0", "ETH": "0", "WBTC": "0"}, "err": ONCHAIN_SLIP}, time.time()
+                return {"ok": False, "sent": True, "sig": sig, "err": ONCHAIN_SLIP, "deltas": self.txs[sig]}
             sig, d, got = self.land(asset, atoms)
             if mode == "nodeltas":
                 return {"ok": True, "sent": True, "sig": sig, "quotedOut": str(got * 2), "deltas": None}
@@ -370,6 +379,7 @@ def test_partial_failure_resumes_missing_legs_only(env, caplog):
     r = journal()["records"][0]
     assert r["legs"]["ETH"]["status"] == "landed" and r["status"] == "swapped" and ch.usdc == 0
     assert len(ch.swaps("SOL")) == 1 and len(ch.swaps("BTC")) == 1 and len(ch.swaps("ETH")) == 3
+    assert [x["slippageBps"] for x in ch.swaps("ETH")] == [50, 50, 100]   # fatal: same bps; on-chain 6001: 2x
     credit_all(ch, bots)
     credit_all(ch, bots)
     for a, b in bots.items():
@@ -497,3 +507,91 @@ def test_kill_switch_holds_swaps(env):
     sol.kill.unlink()
     run(ch, sol, 2)
     assert len(ch.swaps()) == 3
+
+
+# ------------------------------------------------------------------ simulation rejections (2026-10-26 deposit #1 BTC leg)
+def test_sim_rejected_only_when_provably_not_sent():
+    assert D.sim_rejected({"ok": False, "error": 'Error: simulation failed {"InstructionError":[1,{"Custom":6001}]}'})
+    assert D.sim_rejected({"ok": False, "error": "Error: Simulation failed. \nMessage: Transaction simulation failed: "
+                                                 "Error processing Instruction 2: custom program error: 0x1771."})
+    assert not D.sim_rejected({"ok": False, "sig": "S", "error": "Error: simulation failed {x}"})      # has a sig
+    assert not D.sim_rejected({"ok": False, "sent": True, "error": "Error: simulation failed {x}"})    # was sent
+    assert not D.sim_rejected({"ok": False, "error": "cli exception: Command timed out ... simulation failed {"})
+    assert not D.sim_rejected({"ok": False, "error": "Error: expired, not landed"})
+    assert not D.sim_rejected({"ok": False, "error": "price impact 2.1% over the cap"})
+    for e in (str(ONCHAIN_SLIP), 'simulation failed {"InstructionError":[1,{"Custom":6001}]}', "custom program error: 0x1771."):
+        assert D.SLIPPAGE_RE.search(e)
+    assert not D.SLIPPAGE_RE.search('{"InstructionError":[1,{"Custom":6024}]}')
+
+
+def test_sweep_args_slippage_default_unchanged_and_override_capped():
+    cfg = load_config(CFG["BTC"])
+    w = cfg.withdraw
+    assert sweepmod.sweep_args(cfg, K.MINT["USDC"], 5, K.MINT["WBTC"])["slippageBps"] == w.unstake_slippage_bps == 50
+    assert sweepmod.sweep_args(cfg, K.MINT["USDC"], 5, K.MINT["WBTC"], slippage_bps=100)["slippageBps"] == 100
+    with pytest.raises(ValueError):
+        sweepmod.sweep_args(cfg, K.MINT["USDC"], 5, K.MINT["WBTC"], slippage_bps=w.stake_max_slippage_bps + 1)
+    assert D.retry_bps(cfg, None) == min(w.stake_max_slippage_bps, 2 * w.unstake_slippage_bps) == 100
+    assert D.retry_bps(cfg, 100) == 100
+
+
+def test_sim_slippage_rejection_retries_in_60s_at_higher_slippage_and_credits_once(env, caplog):
+    ch, mk, _ = env
+    bots = {a: mk(a) for a in ("SOL", "ETH", "BTC")}
+    b0 = {a: dict(b.local.bank) for a, b in bots.items()}
+    ch.usdc = 5_000_000
+    ch.modes = {"BTC": ["preflight", "simslip"]}
+    clock = [10_000.0]
+
+    def step(dt):
+        clock[0] += dt
+        return D.run_swapper(ch.st("SOL", read_at=clock[0]), bots["SOL"].cfg, ch.jup, now=lambda: clock[0])
+    step(0)
+    step(30)                                          # detect, then SOL + ETH land, BTC rejected at RPC preflight
+    leg = journal()["records"][0]["legs"]["BTC"]
+    assert leg["status"] == "pending" and leg["sig"] is None and leg["slip_bps"] == 100
+    assert leg["next_try"] == pytest.approx(clock[0] + D.RETRY_S, abs=1)
+    assert "BTC leg rejected at simulation" in caplog.text and "nothing sent, retry in 60s at 100 bps" in caplog.text
+    assert "outcome unknown" not in caplog.text and ch.usdc == 1_666_666
+    assert not D.own_work("BTC", bots["BTC"].local.bank)["inflight"]   # nothing in flight: BTC recon not held
+    credit_all(ch, bots)
+    step(10)
+    assert len(ch.swaps("BTC")) == 1                  # waits RETRY_S, never the 300 s unknown path
+    step(D.RETRY_S)                                   # own simulation 6001 again: still nothing sent, stays at 100
+    assert len(ch.swaps("BTC")) == 2 and journal()["records"][0]["legs"]["BTC"]["status"] == "pending"
+    step(D.RETRY_S + 1)
+    r = journal()["records"][0]
+    assert r["legs"]["BTC"]["status"] == "landed" and r["status"] == "swapped" and ch.usdc == 0
+    assert [x["slippageBps"] for x in ch.swaps("BTC")] == [50, 100, 100]
+    assert [x["slippageBps"] for x in ch.swaps("SOL") + ch.swaps("ETH")] == [50, 50]
+    credit_all(ch, bots)
+    credit_all(ch, bots)
+    bb = bots["BTC"].local.bank
+    got = r["legs"]["BTC"]["got"]
+    for k in ("bal", "hwm", "wd_mark"):
+        assert bb[k] == pytest.approx(b0["BTC"][k] + got, abs=1e-12)
+    assert len([d for d in bb["deposits"] if d["id"] == r["id"]]) == 1
+    assert journal()["records"][0]["status"] == "done"
+    assert not K.alert_path().exists() and bb.get("ext_alert") is None
+
+
+def test_sim_rejection_other_error_retries_without_raising_slippage(env):
+    ch, mk, _ = env
+    bots = {a: mk(a) for a in ("SOL", "ETH", "BTC")}
+    ch.usdc = 5_000_000
+    ch.modes = {"SOL": ["siminsufficient"]}
+    clock = [10_000.0]
+
+    def step(dt):
+        clock[0] += dt
+        return D.run_swapper(ch.st("SOL", read_at=clock[0]), bots["SOL"].cfg, ch.jup, now=lambda: clock[0])
+    step(0)
+    step(30)
+    L = journal()["records"][0]["legs"]
+    assert L["SOL"]["status"] == "pending" and "slip_bps" not in L["SOL"]
+    step(D.RETRY_S + 1)
+    step(1)
+    step(1)
+    L = journal()["records"][0]["legs"]
+    assert all(L[a]["status"] == "landed" for a in ("SOL", "ETH", "BTC"))
+    assert [x["slippageBps"] for x in ch.swaps()] == [50] * 4 and ch.usdc == 0

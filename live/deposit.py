@@ -33,6 +33,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -52,6 +53,14 @@ USDC_MINT = bankmod.MINT["USDC"]
 ASSETS = ("SOL", "ETH", "BTC")                           # leg order; bot asset -> coin = bank.COIN
 OUT_MINT = {"SOL": bankmod.MINT["SOL"], "ETH": bankmod.MINT["ETH"], "BTC": bankmod.MINT["WBTC"]}
 RESOLVE_AFTER_S = 300                                    # a tx not landed by then never will (blockhash ~60-90 s)
+# A swap rejected by simulation never left the box (live/src/send.ts sendBuilt: own simulation before signing, "simulation
+# failed ..."; or the RPC preflight of the first send, web3 "Simulation failed. ... Transaction simulation failed", which
+# the RPC never forwards). No sig, not sent -> a clean failure: pending again, retried after RETRY_S (not the 300 s
+# unknown-outcome path). A Jupiter slippage rejection (6001 = 0x1771 SlippageToleranceExceeded) retries that leg with
+# twice the sweep slippage, capped at [withdraw] stake_max_slippage_bps (2026-10-26: deposit #1 WBTC leg, $1.67 ->
+# ~2095 WBTC atoms; the Manifest USDC/WBTC route fills ~0.5-0.9% below its quote at that size, 50 bps always fails).
+SIM_REJECT_RE = re.compile(r"^(?:Error: )?simulation failed \{|^(?:\w*Error: )?Simulation failed\.\s*\n?\s*Message: Transaction simulation failed")
+SLIPPAGE_RE = re.compile(r"""['"]Custom['"]\s*:\s*6001\b|0x1771\b|SlippageToleranceExceeded""")
 RETRY_S = 60                                             # a leg not sent (API error / quote rejected): retry after
 SCAN_LIMIT = 25                                          # recent USDC-account txs scanned for a sig-less leg
 KEEP = 50                                                # done records kept in the journal
@@ -200,7 +209,7 @@ def _landed(rid: int, a: str, sig: str, d: dict[str, Any], m: tuple[int, int], t
                     landed_at=t)
 
 
-def _resolve(j: dict[str, Any], rec: dict[str, Any], a: str, jup: Jup, t: float) -> dict[str, Any]:
+def _resolve(j: dict[str, Any], rec: dict[str, Any], a: str, jup: Jup, t: float, cfg: Any = None) -> dict[str, Any]:
     """Settle one leg whose send outcome is unknown. Never sends anything."""
     rid, leg = rec["id"], rec["legs"][a]
     age = t - float(leg.get("started") or 0.0)
@@ -209,10 +218,13 @@ def _resolve(j: dict[str, Any], rec: dict[str, Any], a: str, jup: Jup, t: float)
         if r.get("ok") and r.get("found"):
             d = r.get("deltas") or {}
             if d.get("err") is not None:
-                log.warning("DEPOSIT #%d %s leg tx %s failed on-chain (%s): not landed, USDC not spent; retry in %ds",
-                            rid, a, leg["sig"], d.get("err"), RETRY_S)
+                kw: dict[str, Any] = {}
+                if cfg is not None and SLIPPAGE_RE.search(str(d.get("err"))):   # on-chain slippage fail: same rule
+                    kw["slip_bps"] = retry_bps(cfg, leg.get("slip_bps"))
+                log.warning("DEPOSIT #%d %s leg tx %s failed on-chain (%s): not landed, USDC not spent; retry in %ds%s",
+                            rid, a, leg["sig"], d.get("err"), RETRY_S, f" at {kw['slip_bps']} bps slippage" if kw else "")
                 return _leg_set(rid, a, touch=t, status="pending", next_try=t + RETRY_S,
-                                errors=(leg.get("errors") or [])[-4:] + [f"{leg['sig']}: on-chain err {d.get('err')}"])
+                                errors=(leg.get("errors") or [])[-4:] + [f"{leg['sig']}: on-chain err {d.get('err')}"], **kw)
             m = leg_got(a, d)
             if m and m[0] > 0:
                 return _landed(rid, a, leg["sig"], d, m, t, int(leg["atoms"]))
@@ -273,7 +285,7 @@ def _run(st: dict[str, Any], cfg: Any, jup: Jup, killed: bool, now: Callable[[],
     if rec:
         for a in ASSETS:
             if rec["legs"][a]["status"] == "sending":
-                j = _resolve(j, rec, a, jup, now())
+                j = _resolve(j, rec, a, jup, now(), cfg)
         j = _finalize(j)
         rec = active(j)
         if rec and any(lg["status"] == "sending" for lg in rec["legs"].values()):
@@ -337,7 +349,7 @@ def _run(st: dict[str, Any], cfg: Any, jup: Jup, killed: bool, now: Callable[[],
         t0 = now()
         _leg_set(rid, a, touch=t0, status="sending", started=t0, sig=None, tries=int(leg.get("tries") or 0) + 1)
         res, kind, attempts = sweepmod.swap_with_backoff(cfg, {"mint": USDC_MINT, "atoms": int(leg["atoms"])}, jup,
-                                                         out_mint=OUT_MINT[a])
+                                                         out_mint=OUT_MINT[a], slippage_bps=leg.get("slip_bps"))
         t1 = now()
         sent.append(f"{a}:{kind}")
         if kind == "ok":
@@ -349,6 +361,16 @@ def _run(st: dict[str, Any], cfg: Any, jup: Jup, killed: bool, now: Callable[[],
             log.warning("DEPOSIT #%d %s leg sent (tx %s) but its result is not measured yet; resolved next tick", rid, a,
                         res.get("sig"))
             break
+        if kind == "unknown" and sim_rejected(res):
+            err = str(res.get("error") or res.get("err"))
+            kw: dict[str, Any] = {}
+            if SLIPPAGE_RE.search(err):
+                kw["slip_bps"] = retry_bps(cfg, leg.get("slip_bps"))
+            _leg_set(rid, a, touch=t1, status="pending", next_try=t1 + RETRY_S,
+                     errors=(leg.get("errors") or [])[-4:] + [f"simulation rejected: {err[:160]}"], **kw)
+            log.warning("DEPOSIT #%d %s leg rejected at simulation (%s; %s): nothing sent, retry in %ds%s", rid, a,
+                        err[:160], attempts, RETRY_S, f" at {kw['slip_bps']} bps slippage" if kw else "")
+            continue
         if kind == "unknown":
             _leg_set(rid, a, touch=t1, sig=res.get("sig"))
             log.warning("DEPOSIT #%d %s leg send outcome unknown (%s; %s): never re-sent before it is resolved", rid, a,
@@ -364,6 +386,20 @@ def _run(st: dict[str, Any], cfg: Any, jup: Jup, killed: bool, now: Callable[[],
     r = next(x for x in j["records"] if x["id"] == rid)
     return f"deposit #{rid} {r['status']}: legs " + " ".join(f"{a}={r['legs'][a]['status']}" for a in ASSETS) + \
         (f" (this run: {', '.join(sent)})" if sent else "")
+
+
+def sim_rejected(res: dict[str, Any]) -> bool:
+    """True only when the swap provably never left: no sig, not sent, and the CLI error is a simulation rejection."""
+    if res.get("sig") or res.get("sent") or res.get("ok"):
+        return False
+    return bool(SIM_REJECT_RE.search(str(res.get("error") or res.get("err") or "")))
+
+
+def retry_bps(cfg: Any, cur: int | None) -> int:
+    """Slippage for the retry after a slippage rejection: 2 x the sweep setting, capped at stake_max_slippage_bps."""
+    w = cfg.withdraw
+    base = int(w.unstake_slippage_bps)
+    return max(int(cur or base), min(int(w.stake_max_slippage_bps), 2 * base))
 
 
 # ------------------------------------------------------------------ crediting (every bot, its own share only)

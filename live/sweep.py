@@ -26,11 +26,14 @@ _RETRYABLE = re.compile(r"\b(429|5\d\d)\b|timeout|timed out|fetch failed|ECONNRE
                         r"socket hang up|aborted", re.I)
 
 
-def sweep_args(cfg: Any, mint: str, atoms: int, out_mint: str | None = None, swap_mode: str | None = None) -> dict[str, Any]:
+def sweep_args(cfg: Any, mint: str, atoms: int, out_mint: str | None = None, swap_mode: str | None = None,
+               slippage_bps: int | None = None) -> dict[str, Any]:
     """Swap args (slippage / impact caps from [withdraw]). out_mint None = old "sweep" to SOL; else the generic "swap"
-    direction (own-coin ledger: USDC -> the bot's own coin, coin -> JupSOL, SOL <-> coin; pairs allowlisted in stake.ts)."""
+    direction (own-coin ledger: USDC -> the bot's own coin, coin -> JupSOL, SOL <-> coin; pairs allowlisted in stake.ts).
+    slippage_bps None = [withdraw] unstake_slippage_bps (every caller except a USDC deposit leg retried after a
+    simulation slippage rejection, live/deposit.py); an override is still capped by stake_max_slippage_bps."""
     w = cfg.withdraw
-    bps = int(w.unstake_slippage_bps)
+    bps = int(w.unstake_slippage_bps if slippage_bps is None else slippage_bps)
     if not 1 <= bps <= w.stake_max_slippage_bps:
         raise ValueError("sweep slippage outside 1..withdraw.stake_max_slippage_bps")
     a = {"direction": "sweep", "inputMint": mint, "amountAtoms": str(int(atoms)), "slippageBps": bps,
@@ -71,7 +74,7 @@ def classify(res: dict[str, Any]) -> str:
 
 def swap_with_backoff(cfg: Any, plan: dict[str, Any], jup: Jup, sleep: Callable[[float], None] = time.sleep,
                       rounds: int = ROUNDS_PER_TICK, out_mint: str | None = None,
-                      swap_mode: str | None = None) -> tuple[dict[str, Any], str, list[str]]:
+                      swap_mode: str | None = None, slippage_bps: int | None = None) -> tuple[dict[str, Any], str, list[str]]:
     """One token -> SOL. Each attempt pins ONE API base (api.jup.ag, then lite-api.jup.ag); only 'retry' failures are
     asked again, with exponential backoff between rounds. Returns (last result, kind, attempt log)."""
     bases = list(cfg.withdraw.stake_api_bases)
@@ -84,7 +87,7 @@ def swap_with_backoff(cfg: Any, plan: dict[str, Any], jup: Jup, sleep: Callable[
             log_.append(f"wait {wait:.1f}s")
             sleep(wait)
         for base in bases:
-            args = {**sweep_args(cfg, plan["mint"], plan["atoms"], out_mint, swap_mode), "apiBases": [base], "send": True}
+            args = {**sweep_args(cfg, plan["mint"], plan["atoms"], out_mint, swap_mode, slippage_bps), "apiBases": [base], "send": True}
             os.environ["JUP_LIVE"] = "1"
             try:
                 res = jup("swap", args)
