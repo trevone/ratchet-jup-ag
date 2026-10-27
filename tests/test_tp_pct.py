@@ -8,8 +8,9 @@ from config import TakeProfitConfig, TpLevel, load_config
 from strategy import LONG, SHORT, DcaStrategy
 
 LIVE_FILES = ["configs/live_100.toml", "configs/live_eth.toml", "configs/live_btc.toml"]
-# Live TP percents (Trevor 2026-10-24: cut ~20% from 0.008 / 0.015). Expected prices below derive from these.
-TP1_PCT, TP2_PCT = 0.0064, 0.012
+# Live TP percents (Trevor 2026-10-24: cut ~20% from 0.008 / 0.015; 2026-10-27: TP1 0.64% -> 0.75% for SOL / ETH, BTC stays).
+TP1_PCT, TP2_PCT = 0.0075, 0.012
+TP1_BY_FILE = {"configs/live_100.toml": 0.0075, "configs/live_eth.toml": 0.0075, "configs/live_btc.toml": 0.0064}
 
 
 def pos(side, avg, size, tp_hits=0):
@@ -43,7 +44,7 @@ def test_validation():
 @pytest.mark.parametrize("f", LIVE_FILES)
 def test_live_files_set_pct(f):
     t = load_config(f).tp
-    assert (t.tp1_pct, t.tp2_pct) == (TP1_PCT, TP2_PCT)
+    assert (t.tp1_pct, t.tp2_pct) == (TP1_BY_FILE[f], TP2_PCT)
 
 
 def test_sol_mode_is_price_abs():
@@ -54,20 +55,20 @@ def test_sol_mode_is_price_abs():
 def test_sol_short_dry_run():
     avg = 104.3207
     assert prices(strat(), pos(SHORT, avg, 225.0), 104.30) == [round(avg * (1 - TP1_PCT), 2), round(avg * (1 - TP2_PCT), 2)]
-    assert prices(strat(), pos(SHORT, avg, 225.0), 104.30) == [103.65, 103.07]
+    assert prices(strat(), pos(SHORT, avg, 225.0), 104.30) == [103.54, 103.07]
 
 
 def test_eth_short_dry_run():
     s = strat("configs/live_eth.toml")
     avg = 2425.74
     assert prices(s, pos(SHORT, avg, 500.0), 2420.0) == [round(avg * (1 - TP1_PCT), 2), round(avg * (1 - TP2_PCT), 2)]
-    assert prices(s, pos(SHORT, avg, 500.0), 2420.0) == [2410.22, 2396.63]
+    assert prices(s, pos(SHORT, avg, 500.0), 2420.0) == [2407.55, 2396.63]
 
 
 def test_long_above_avg_and_bypasses_levels_and_levels_provider():
     s = strat()
     s.levels_provider = lambda now: (_ for _ in ()).throw(AssertionError("analyst levels must not be read"))
-    assert prices(s, pos(LONG, 100.0, 200.0), 100.0) == [round(100.0 * (1 + TP1_PCT), 2), round(100.0 * (1 + TP2_PCT), 2)]  # 100.64 / 101.2
+    assert prices(s, pos(LONG, 100.0, 200.0), 100.0) == [round(100.0 * (1 + TP1_PCT), 2), round(100.0 * (1 + TP2_PCT), 2)]  # 100.75 / 101.2
 
 
 def test_fee_floor_wins_when_pct_price_is_inside_it():
@@ -79,7 +80,7 @@ def test_fee_floor_wins_when_pct_price_is_inside_it():
 
 def test_market_clamp_and_min_gap_still_apply():
     s = strat()
-    t = s.tp_targets(pos(SHORT, 100.0, 200.0), price=99.0)   # TP1 99.36 / TP2 98.8 inside; push market below TP1
+    t = s.tp_targets(pos(SHORT, 100.0, 200.0), price=99.0)   # TP1 99.25 / TP2 98.8 inside; push market below TP1
     assert t[0].price < 99.0 - 0.02 + 1e-9 and any(s.last_tp.past_market)
     assert t[0].price - t[1].price >= 0.05 - 1e-9
 
@@ -93,3 +94,9 @@ def test_after_tp1_fill_tp2_only_pending():
 def test_unset_keeps_levels_ladder():
     s = strat(tp1_pct=None, tp2_pct=None)
     assert prices(s, pos(SHORT, 104.3207, 225.0), 104.30) == [103.87, 103.57]   # avg -0.45 / -0.75 (price_abs)
+
+
+def test_btc_keeps_064_tp1():
+    s = strat("configs/live_btc.toml")
+    avg = 80114.85
+    assert prices(s, pos(SHORT, avg, 125.0), 80100.0)[0] == round(avg * (1 - 0.0064), 2)

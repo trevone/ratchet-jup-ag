@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import math
 from typing import Any, Sequence
 
 
@@ -39,10 +40,33 @@ def lots_avg(lots: Sequence[dict[str, Any]]) -> float | None:
     return sum(float(l["size"]) for l in ls) / sum(float(l["size"]) / float(l["price"]) for l in ls)
 
 
+def far_size(side: int, adds: Sequence[dict[str, Any]]) -> float:
+    """USD size of the furthest (deepest) add lot (long: lowest entry, short: highest); several at that price: summed."""
+    far = min(float(a["price"]) for a in adds) if side > 0 else max(float(a["price"]) for a in adds)
+    return sum(float(a["size"]) for a in adds if float(a["price"]) == far)
+
+
+def tp3_px(side: int, avg: float, far: float, size: float, f: float, min_net_pct: float, open_fee: float, close_fee: float,
+           network_usd: float) -> float:
+    """TP3 price: avg + f x (far - avg) (2 dp), moved further into profit when needed so the furthest add lot (``far``,
+    ``size`` USD) nets >= min_net_pct x size after open + close fees and network (Trevor 2026-10-27; 0 = off).
+    lot net >= m x size  <=>  side x (px - far) / far >= m + open_fee + close_fee + network / size."""
+    px = round(avg + (far - avg) * f, 2)
+    if min_net_pct > 0 and size > 0:
+        k = min_net_pct + open_fee + close_fee + network_usd / size
+        cap = far * (1 + side * k)
+        cap = math.ceil(round(cap * 100, 6)) / 100 if side > 0 else math.floor(round(cap * 100, 6)) / 100
+        if side * (cap - px) > 0:
+            px = cap
+    return px
+
+
 def tp3_plan(side: int, avg: float, adds: Sequence[dict[str, Any]], max_rungs: int, f_first: float, f_deep: float, *,
-             open_fee: float, close_fee: float, network_usd: float) -> dict[str, Any] | None:
+             open_fee: float, close_fee: float, network_usd: float, min_net_pct: float = 0.0) -> dict[str, Any] | None:
     """The single TP3 (Trevor 2026-10-15). ``adds`` = the open add lots (price / size), rung = how many. D = |furthest add - avg|;
     target = avg + f x (furthest add - avg), f = zone_f(rung): a point between the trade avg and the furthest (deepest) add.
+    2026-10-27 (Trevor): min_net_pct > 0 -> the target is at least far enough that the furthest add lot nets
+    min_net_pct x its own notional after fees + network (tp3_px); f is unchanged and wins when it is already further.
     TP3 covers every add that nets > 0 after fees (open + close) and network at the target; size = their total. None = no add
     does (or no add lies beyond the avg): no TP3."""
     adds = [a for a in adds if float(a["size"]) > 0 and float(a["price"]) > 0]
@@ -54,7 +78,7 @@ def tp3_plan(side: int, avg: float, adds: Sequence[dict[str, Any]], max_rungs: i
         return None
     rung = len(adds)
     f = zone_f(rung, max_rungs, f_first, f_deep)
-    px = round(avg + (far - avg) * f, 2)
+    px = tp3_px(side, avg, far, far_size(side, adds), f, min_net_pct, open_fee, close_fee, network_usd)
     cov = [a for a in adds if lot_net_at(side, float(a["price"]), float(a["size"]), px, open_fee, close_fee, network_usd) > 0]
     if not cov:
         return None
@@ -66,7 +90,7 @@ def tp3_plan(side: int, avg: float, adds: Sequence[dict[str, Any]], max_rungs: i
 
 
 def tp3_skip_why(side: int, avg: float, adds: Sequence[dict[str, Any]], max_rungs: int, f_first: float, f_deep: float, *,
-                 open_fee: float, close_fee: float, network_usd: float) -> str:
+                 open_fee: float, close_fee: float, network_usd: float, min_net_pct: float = 0.0) -> str:
     """Why tp3_plan returned None (for the log): 'no lot nets positive ...' with the target and the best lot's net."""
     adds = [a for a in adds if float(a["size"]) > 0 and float(a["price"]) > 0]
     if not adds:
@@ -76,7 +100,7 @@ def tp3_skip_why(side: int, avg: float, adds: Sequence[dict[str, Any]], max_rung
         return f"furthest add {far} is not beyond avg {avg:.4f}"
     rung = len(adds)
     f = zone_f(rung, max_rungs, f_first, f_deep)
-    px = round(avg + (far - avg) * f, 2)
+    px = tp3_px(side, avg, far, far_size(side, adds), f, min_net_pct, open_fee, close_fee, network_usd)
     nets = [(lot_net_at(side, float(a["price"]), float(a["size"]), px, open_fee, close_fee, network_usd), a) for a in adds]
     best = max(nets, key=lambda t: t[0])
     return (f"no lot nets positive: target {px} (avg {avg:.4f}, furthest add {far}, rung {rung}, f {f:.3f}); best lot "

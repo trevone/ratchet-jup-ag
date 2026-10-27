@@ -34,7 +34,7 @@ levels = [{ dist = 0.0045, close_pct = 0.5 }, { dist = 0.0075, close_pct = 1.0 }
 close_remainder_after_min = 55.0
 # smart TP2 / TP1 sanity (Trevor 2026-10-07 20:14 MT): at open, after each add and every tp_check_min
 smart_tp2 = true
-tp1_pct = 0.0064             # Trevor 2026-10-24: -20% (was 0.008). TP1 = avg x (1 -/+ 0.64%), short below / long above avg
+tp1_pct = 0.0075             # Trevor 2026-10-27 09:19 MT: 0.64% -> 0.75% (SOL/ETH; BTC stays 0.64%). TP1 = avg x (1 -/+ 0.75%)
 tp2_pct = 0.012              # Trevor 2026-10-24: -20% (was 0.015). TP2 = avg x (1 -/+ 1.2%); fee floors / min gap / market clamp still apply; levels give close_pct only
 tp_min_net_usd = 0.05          # each TP's closing chunk nets >= $0.05 after 6 bps open + 6 bps close fees
 tp_min_gap_usd = 0.05          # TP1 at least $0.05 inside TP2
@@ -220,3 +220,7 @@ partials_enabled = true  # 2026-10-12 preset C/resting LIVE (Trevor 00:04 MT)
 last_partial_rule = true  # 2026-10-12 preset C/resting LIVE (Trevor 00:04 MT)
 partial_levels_min = 1
 partial_levels_max = 4
+partial_min_net_pct = 0.002   # Trevor 2026-10-27 09:19 MT: TP3 at least far enough that the furthest add lot nets 0.2% of its
+                              #   notional after open+close fees + network ($0.15 on a $75 add); f unchanged (0 = off)
+readd_gap_atr = 0.6           # Trevor 2026-10-27 09:19 MT: after a TP3 fill the re-add rests at the more adverse of the closed
+                              #   lot entry and last partial +/- 0.6 x ladder ATR, placed exactly there (no front-run creep; 0 = off)

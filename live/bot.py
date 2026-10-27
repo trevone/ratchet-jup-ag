@@ -1777,15 +1777,16 @@ class Bot:
                 self.bank_payout(usd, f"per-add partial ${closed:.2f}")
                 times = {x for p in gone_p for x in (p.get("lots") or [p.get("lot_time")])}
                 shut = [l for l in L.lots if l["time"] in times and not l.get("first")]
+                last = max(gone_p, key=lambda p: pos.side * float(p["px"]))
                 if shut:   # the resting add goes back to the closed lot's entry (long: highest, short: lowest), same size / lev
                     top = max(shut, key=lambda l: pos.side * float(l["price"]))
                     lev = float(top.get("lev") or L.last_leverage)
-                    L.rearm = {"px": float(top["price"]), "lev": lev, "margin": round(float(top["size"]) / lev, 4)}
+                    L.rearm = {"px": self.rearm_px(pos, float(top["price"]), float(last["px"])), "lev": lev,
+                               "margin": round(float(top["size"]) / lev, 4)}
                 L.lots = [l for l in L.lots if l["time"] not in times]
                 if L.lots:
                     L.n_entries = len(L.lots)
                     L.last_entry, L.last_leverage = L.lots[-1]["price"], L.lots[-1].get("lev") or L.last_leverage
-                last = max(gone_p, key=lambda p: pos.side * float(p["px"]))
                 if R.last_partial_rule or R.partials_enabled:
                     L.last_partial_px = float(last["px"])
                 L.partials_done += [{**p, "filled": str(pd.Timestamp.now(tz="UTC"))} for p in gone_p]
@@ -1822,6 +1823,24 @@ class Bot:
             return
         self.replan_add(pos, st, price, account, equity, ra)
 
+    def rearm_px(self, pos: ChainPosition, entry: float, partial_px: float) -> float:
+        """Re-arm price after a TP3 fill (set once, at fill time). readd_gap_atr = 0: the closed lot's entry (old rule; the
+        order then gets the usual add front-run). Trevor 2026-10-27, readd_gap_atr > 0: the more adverse of the closed lot's
+        entry and partial_px + readd_gap_atr x ladder ATR (short: higher / long: lower), rounded to the adverse cent, so the
+        re-add is never inside the closed lot's entry; it is placed exactly there (rest_add_args: no front-run, so the
+        re-arms no longer creep 0.1 ATR toward the market each cycle)."""
+        gap_atr = self.cfg.resting.readd_gap_atr
+        if gap_atr <= 0:
+            return entry
+        lv = self.strategy._levels
+        atr = float(lv.atr) if lv is not None and lv.atr else (self.front_atr() or 0.0)
+        lvl = partial_px - pos.side * gap_atr * atr
+        px = lvl if pos.side * (entry - lvl) > 0 else entry
+        px = math.floor(round(px * 100, 6)) / 100 if pos.side > 0 else math.ceil(round(px * 100, 6)) / 100
+        log.warning("RESTING ADD re-arm price %.2f = more adverse of closed lot entry %.4f and last partial %.4f %s %.2f x ATR "
+                    "%.4f (= %.4f)", px, entry, partial_px, "+" if pos.side < 0 else "-", gap_atr, atr, lvl)
+        return px
+
     def rearm_add(self, pos: ChainPosition, st: dict[str, Any], price: float, account: Any, equity: float,
                   ra: dict[str, Any]) -> bool:
         """2026-10-15: a TP3 partial closed add lot(s) -> the single resting add moves to the closed lot's entry. No in-place
@@ -1836,7 +1855,7 @@ class Bot:
         if blocked:
             self._rest_note("rearm", f"resting add stays at {ra['trigger']}: re-arm blocked: {blocked}")
             return False
-        log.warning("RESTING ADD re-arm: cancelling %s at %s to re-place at the closed lot's entry %.2f ($%.2f x%g)",
+        log.warning("RESTING ADD re-arm: cancelling %s at %s to re-place at the re-arm price %.2f ($%.2f x%g)",
                     ra["pubkey"], ra["trigger"], plan.trigger, plan.margin, plan.leverage)
         self._cancel_then_place(pos, st, price, acc, equity, ra, "re-arm")
         return True
@@ -1954,8 +1973,9 @@ class Bot:
         else:
             atoms = int(sol * LAMPORTS)
             nat, mint = atoms / LAMPORTS, bankmod.MINT["SOL"]
+        exact = getattr(plan, "source", "") == "rearm" and self.cfg.resting.readd_gap_atr > 0   # 2026-10-27: no front-run creep
         args = {"side": side, "inputMint": mint, "inputAtoms": str(atoms), "sizeUsd": round(plan.margin * plan.leverage, 2),
-                "triggerPriceUsd": self.add_px(pos, plan.trigger)}
+                "triggerPriceUsd": round(plan.trigger, 2) if exact else self.add_px(pos, plan.trigger)}
         return args, nat, sol
 
     def place_rest_add(self, pos: ChainPosition, st: dict[str, Any], price: float, account: Any, equity: float) -> None:
@@ -2046,7 +2066,8 @@ class Bot:
         R, t, c = self.cfg.resting, self.cfg.trim, self.cfg.costs
         adds = [l for i, l in enumerate(self.local.lots) if not (l.get("first") or i == 0)]
         tgt = restmod.tp3_plan(pos.side, self.tp3_ref_avg(pos), adds, self.cfg.dca.ladder_max_rungs, R.partial_zone_f_first,
-                               R.partial_zone_f_deep, open_fee=c.open_fee, close_fee=c.close_fee, network_usd=t.trim_network_usd)
+                               R.partial_zone_f_deep, open_fee=c.open_fee, close_fee=c.close_fee, network_usd=t.trim_network_usd,
+                               min_net_pct=R.partial_min_net_pct)
         if tgt is not None:
             tgt["size"] = round(min(tgt["size"], pos.size), 2)
         return tgt
@@ -2091,7 +2112,8 @@ class Bot:
             if adds:
                 self._rest_note("tp3_skip", "TP3 skipped: " + restmod.tp3_skip_why(
                     pos.side, self.tp3_ref_avg(pos), adds, self.cfg.dca.ladder_max_rungs, R.partial_zone_f_first, R.partial_zone_f_deep,
-                    open_fee=c.open_fee, close_fee=c.close_fee, network_usd=t.trim_network_usd), logging.WARNING)
+                    open_fee=c.open_fee, close_fee=c.close_fee, network_usd=t.trim_network_usd,
+                    min_net_pct=R.partial_min_net_pct), logging.WARNING)
         else:
             self.__dict__.setdefault("_rest_notes", {}).pop("tp3_skip", None)
         if old and tgt and abs(float(old["size"]) - tgt["size"]) < 0.01 and abs(float(old["px"]) - tgt["px"]) < max(0.005, 0.0003 * price):   # hysteresis: breakeven drifts with the coin / SOL price

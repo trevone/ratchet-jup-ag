@@ -464,10 +464,19 @@ class RestingConfig:
     partial_levels_max: int = 4
     partial_zone_f_first: float = 0.50   # TP3 target = avg + f x (furthest add - avg); f at rung 1
     partial_zone_f_deep: float = 0.27    # ... tapering linearly to this at rung >= ladder_max_rungs
+    # Trevor 2026-10-27: TP3 at least far enough that the furthest add lot nets this fraction of its own notional after
+    # open + close fees and network (0.002 = $0.15 on a $75 add); 0 = off (f alone)
+    partial_min_net_pct: float = 0.0
+    # Trevor 2026-10-27: after a TP3 fill the resting add re-arms at the more adverse of the closed lot's entry and the last
+    # partial price + this x ladder (analyst) ATR (short: above / long: below), placed there with no extra front-run;
+    # 0 = off (old re-arm: closed lot's entry, then the add front-run)
+    readd_gap_atr: float = 0.0
 
     def __post_init__(self) -> None:
         if not 1 <= self.partial_levels_min <= self.partial_levels_max:
             raise ValueError("resting: 1 <= partial_levels_min <= partial_levels_max")
+        if self.partial_min_net_pct < 0 or self.readd_gap_atr < 0:
+            raise ValueError("resting: partial_min_net_pct and readd_gap_atr must be >= 0")
 
     @property
     def any_on(self) -> bool:

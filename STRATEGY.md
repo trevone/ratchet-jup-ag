@@ -6,7 +6,7 @@ Owner reference for Trevor’s three live bots. Numbers from `configs/live_100.t
 
 ## TP rules (Trevor 2026-10-15, Option A; replaces the 2026-10-11 level rule)
 
-Applies identically to all three bots (SOL, ETH, BTC). Config: `[tp] tp1_pct = 0.008`, `tp2_pct = 0.015` (fractions, `0 < tp1_pct < tp2_pct`, set together, two-level ladder).
+Applies identically to all three bots (SOL, ETH, BTC). Config: `[tp] tp1_pct`, `tp2_pct` (fractions, `0 < tp1_pct < tp2_pct`, set together, two-level ladder). Live (Trevor 2026-10-27 09:19 MT): **TP1 0.75% on SOL and ETH, 0.64% on BTC; TP2 1.2% on all three** (was 0.8% / 1.5% at 2026-10-15, cut to 0.64% / 1.2% on 2026-10-24).
 
 - **TP1 = avg x (1 -/+ tp1_pct), TP2 = avg x (1 -/+ tp2_pct)** (shorts below, longs above the average entry), set at open / add / re-place. Analyst levels, ATR and the old 60% ratio play no part. `tp.levels` only supplies the 50% / 100% close split (its `dist` is unused while the pct keys are set; SOL's `tp.mode = "price_abs"` now says its dists are USD).
 - Safety kept: fee-floor minimums (`tp_min_net_usd` chunk floor, then `apply_tp_fee_min` 3.0x / 4.5x; the floor wins if the pct price is inside it), TP1 at least `tp_min_gap_usd` inside TP2, never a trigger at/through market (`tp_market_gap`).
@@ -295,6 +295,25 @@ cancelled + re-placed when its size or price change (new add, avg / rung change,
 TP3 fill), cancelled when no add nets a profit any more; a changed target not beyond the market leaves the old order alone. TP1 / TP2 and the
 profit-guard move after a TP3 fill are untouched. TP3_SET now only needs a price beyond the market (no fee clamp).
 Example (ETH, avg 2425.74, adds 75@2390.87 100@2409.51 125@2441.00 150@2462.79): rung 4, f 0.4233, target 2441.42, only the $150 add qualifies.
+
+### TP3 minimum net per partial ([resting] partial_min_net_pct = 0.002, Trevor 2026-10-27 09:19 MT, all three bots)
+The f target alone made rung-1 partials tiny: a $75 add closed ~0.2% below its entry, ~$0.13 of fees per add+partial cycle left
+$0.00-0.05 net (SOL 10-27: 3 cycles netted ~$0.05 on ~$0.53 gross). Now the target is at least far enough that the **furthest add lot nets
+>= partial_min_net_pct x its own notional after open + close fees and network**: `cap = far x (1 -/+ (pct + open_fee + close_fee +
+network / far_size))` (short below, long above; rounded to the cent in the profit direction), and TP3 = whichever of the f target and the cap is
+further from the add. 0.002 = **$0.15 on a $75 add** (~0.35% below a short's add, e.g. add 100.70 -> TP3 <= 100.35 instead of 100.49), scales with
+the lot. f (0.50 -> 0.27) is unchanged and still wins at deeper rungs where its target is already further. Coverage / size rule unchanged (adds
+netting > 0 at the target). 0 = off. Code: `live/resting.py` `tp3_px` / `far_size`, used by `tp3_plan` and `tp3_skip_why`.
+
+### Re-add spacing after a TP3 fill ([resting] readd_gap_atr = 0.6, Trevor 2026-10-27 09:19 MT, all three bots)
+Before: the re-arm went to the closed lot's entry and the order then got the 0.1 ATR add front-run again, so each re-add sat one front-run nearer the
+market (SOL 10-27: 100.70 -> 100.62 -> 100.55 -> 100.47, only 0.07-0.13 above the partial) and each cycle's net shrank toward zero. Now, set ONCE at
+TP3-fill time (`Bot.rearm_px`, stored in `L.rearm["px"]`): **re-arm price = the more adverse of the closed lot's entry and the last partial price
++/- readd_gap_atr x ladder (analyst) ATR** (short: higher, long: lower; own ATR if the analyst ATR is missing), rounded to the adverse cent so it
+is never inside the closed lot's entry, and the order is placed **exactly there (no front-run)** (`rest_add_args`). The resting tick's re-arm check
+compares the order with that same stored price, so the order is placed once and not cancelled / re-placed again. Everything else unchanged
+(re-arm only while the market is on the favourable side of it; otherwise the normal ladder plan from the more adverse of last fill and last partial).
+0 = off (old rule). A re-arm recorded before this deploy keeps its old price (its fronted order is left alone).
 
 ### TP1/TP2 re-size after a TP3 fill (Trevor 2026-10-12 06:07 MT)
 When a TP3 (per-add partial TP order) fills, the pending TP1/TP2 trigger orders are re-placed at the same prices, sized on the remaining position with the original % split (e.g. TP1 = 50% of remaining). Nothing else changes.

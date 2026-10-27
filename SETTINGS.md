@@ -29,11 +29,13 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 | [live] | max_collateral_usd / max_position_usd / max_daily_loss_usd | 1e12 | 1e12 | 1e12 | Caps effectively off |
 | [live] | kill_switch_path | live/KILL | live/eth/KILL | live/btc/KILL | Per-bot kill file (global: live/KILL_ALL) |
 | [tp] | levels (TP1 / TP2 dist) | $0.45 / $0.75 (mode price_abs) | 0.45% / 0.75% | 0.45% / 0.75% | Close split 50% / 100%; dist only used when tp1_pct / tp2_pct are unset |
-| [tp] | tp1_pct / tp2_pct | 0.0064 / 0.012 | 0.0064 / 0.012 | 0.0064 / 0.012 | Trevor 2026-10-24: both cut ~20% (was 0.008 / 0.015, Option A 2026-10-15): TP1 = avg x (1 -/+ 0.64%), TP2 = avg x (1 -/+ 1.2%); 0 < tp1_pct < tp2_pct, set together; fee floors / min gap / market clamp still apply; levels give only the close split. Unset = levels dist |
+| [tp] | tp1_pct / tp2_pct | 0.0075 / 0.012 | 0.0075 / 0.012 | 0.0064 / 0.012 | Trevor 2026-10-27 09:19 MT: TP1 0.64% -> 0.75% on SOL / ETH (BTC stays 0.64%: 0.75% is ~1.6x its 1h ATR). 2026-10-24: both cut ~20% (was 0.008 / 0.015, Option A 2026-10-15): TP1 = avg x (1 -/+ tp1_pct), TP2 = avg x (1 -/+ 1.2%); 0 < tp1_pct < tp2_pct, set together; fee floors / min gap / market clamp still apply; levels give only the close split. Unset = levels dist |
 | [tp] | smart_tp2 | true | true | true | Fee floors, TP1 inside TP2, never past market (resistance cap / fade removed 2026-10-15) |
 | [tp] | tp_periodic | false | false | false | TPs set only at open/add |
 | [tp] | tp1_fee_mult / tp2_fee_mult | 3.0 / 4.5 | same | same | Fee-minimum TP1 / TP2 floors (code defaults, config.py): a TP portion nets >= mult x its fees. 2026-10-15: was 2.0 / 3.0. tp3_fee_mult removed (TP3 = adds that net > 0 after fees) |
 | [resting] | partial_zone_f_first / partial_zone_f_deep | 0.50 / 0.27 | same | same | TP3 target = avg + f x (furthest open add - avg); f tapers linearly rung 1 (open adds) -> ladder_max_rungs; TP3 size = adds netting > 0 after fees + network at the target |
+| [resting] | partial_min_net_pct | 0.002 | 0.002 | 0.002 | Trevor 2026-10-27 09:19 MT: TP3 at least far enough that the furthest add lot nets this x its own notional after open + close fees + network ($0.15 on a $75 add); the f target wins when already further; 0 = off |
+| [resting] | readd_gap_atr | 0.6 | 0.6 | 0.6 | Trevor 2026-10-27 09:19 MT: after a TP3 fill the resting add re-arms at the more adverse of the closed lot entry and last partial +/- this x ladder ATR, set at fill time, placed exactly there (no front-run creep); 0 = off (closed lot entry + front-run) |
 | [tp] | close_remainder_after_min | 55 | 55 | 55 | After TP1, close remainder if net > 0 and equity >= HWM |
 | [trim] | trim_trigger | distance_level | distance_level | distance_level | Per-add trim mode |
 | [trim] | trim_arm_dist_pct | 0.0065 | 0.0065 | 0.0065 | Arm when price 0.65% against avg |
