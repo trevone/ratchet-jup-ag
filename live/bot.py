@@ -265,6 +265,7 @@ class Bot:
                 load_analyst_levels(cfg.dca.levels_path, cfg.dca.levels_max_age_min), self._own_atr, cfg.scale.own_atr_fallback)
         self.local = load_local(self.state_path)
         self._fee_rechecked = False
+        self._guard_drift_until = 0.0   # guard_drift_check cooldown (epoch s; per process)
         self.kill = ROOT / self.live.kill_switch_path
         self.kill_all = ROOT / cfg.bot.global_kill_path
         self._first_entry_logged = False
@@ -693,21 +694,68 @@ class Bot:
             lo, hi = (mid, hi) if self.hwm_equity(pos, st, mid) < tgt else (lo, mid)
         return hi
 
-    def guard_tp_targets(self, pos: ChainPosition, st: dict[str, Any], targets: tuple) -> tuple:
-        """guard_tps: TP1 = TP2 = the guard close price clamped by the stricter fee floor (no gap). Guard already met at market (None): both at market, i.e. clamped to the fee floors."""
-        from strategy import TpTarget
+    PRICE_TICK = 0.01   # trigger price precision the bot places at (place_tp / move_trigger: cents; same for SOL, ETH, BTC)
+
+    def guard_round(self, side: int, px: float) -> float:
+        """Trevor 2026-10-27 14:55 MT: the guard TP price rounded against itself to the price tick: short floor (lower),
+        long ceil (higher), so a fill at the placed price never lands below the guard target (plain round() could be 1 tick short)."""
+        n = px / self.PRICE_TICK
+        n = math.floor(n + 1e-6) if side == SHORT else math.ceil(n - 1e-6)
+        return round(n * self.PRICE_TICK, 2)
+
+    def guard_tp_px(self, pos: ChainPosition, st: dict[str, Any], verbose: bool = True) -> tuple[float, float | None]:
+        """(TP1 = TP2 price, raw guard price or None). Guard price rounded conservatively, then clamped by the stricter fee floor."""
         gp = self.guard_price(pos, st)
         px = st["oracle"]["price"] if gp is None else gp
-        log.info("TP at guard: close price %s", f"{gp:.2f}" if gp else "n/a (guard met at market) -> fee floors")
+        if verbose:
+            log.info("TP at guard: close price %s", f"{gp:.6f}" if gp else "n/a (guard met at market) -> fee floors")
         # Trevor 2026-10-16: TP1 and TP2 at the SAME price: guard price clamped by the stricter of the two fee floors
         # (long: higher, short: lower = beyond both); no tp_guard_gap_pct spacing, no tp_min_gap_usd.
         mins, _ = self.tp_fee_mins(pos, st)
         floor = max(mins[:2]) if pos.side == LONG else min(mins[:2])
-        px = round(px, 2)
+        px = self.guard_round(pos.side, px) if gp is not None else round(px, 2)
         if pos.side * (px - floor) < 0:
-            log.info("TP at guard: %.2f inside the stricter fee floor -> %.2f", px, floor)
+            if verbose:
+                log.info("TP at guard: %.2f inside the stricter fee floor -> %.2f", px, floor)
             px = round(floor, 2)
+        return px, gp
+
+    def guard_tp_targets(self, pos: ChainPosition, st: dict[str, Any], targets: tuple) -> tuple:
+        """guard_tps: TP1 = TP2 = the guard close price (rounded against itself) clamped by the stricter fee floor (no gap).
+        Guard already met at market (None): both at market, i.e. clamped to the fee floors."""
+        from strategy import TpTarget
+        px, _ = self.guard_tp_px(pos, st)
         return tuple(TpTarget(px, t.close_pct) if i < 2 else t for i, t in enumerate(targets))
+
+    GUARD_DRIFT_COOLDOWN_S = 600   # after a guard-drift re-place: no further drift re-place for 10 min (its own network fees move the guard)
+
+    def guard_drift_check(self, pos: ChainPosition, st: dict[str, Any]) -> bool:
+        """Trevor 2026-10-27 14:55 MT: guard_tps owns TP1/TP2 and fees accrue (borrow, network fees) after they were placed:
+        when a pending resting TP is now on the wrong side of the current conservative guard TP price (a fill there would
+        land below the guard target; short: TP above it, long: below), cancel and re-place TP1/TP2 via the normal
+        sync_tp_ladder path (guard_defer, cancel_failed, tp_retry all apply). A TP merely further out than needed is kept.
+        Hysteresis: compared on the rounded tick (>= 1 tick wrong), at most once per GUARD_DRIFT_COOLDOWN_S, skipped while a
+        tp_retry / guard deferral / pending cancel / un-credited payout is being handled. Returns True when it re-placed."""
+        L, n = self.local, len(self.cfg.tp.ladder)
+        if not self.guard_tps() or L.tp_retry or L.pending_cancels or (L.bank or {}).get("tp_defer"):
+            return False
+        pend = list(range(pos.tp_hits, n))
+        if not pend or len(L.tp_px) < n or any(not L.tp_px[i] for i in pend) or not self.tp_requests(st):
+            return False
+        now = time.time()
+        if now < self._guard_drift_until or self.guard_bank_stale(st):
+            return False
+        px, gp = self.guard_tp_px(pos, st, verbose=False)
+        if gp is None:   # guard met at market: the tick's market-close guard handles it
+            return False
+        wrong = [i for i in pend if pos.side * (px - L.tp_px[i]) > self.PRICE_TICK / 2]
+        if not wrong:
+            return False
+        self._guard_drift_until = now + self.GUARD_DRIFT_COOLDOWN_S
+        log.warning("TP at guard: guard price moved to %.6f (TP %.2f); resting %s on the wrong side -> re-placing TP1/TP2",
+                    gp, px, [L.tp_px[i] for i in wrong])
+        self.sync_tp_ladder(pos)
+        return True
 
     GUARD_DEFER_MAX = 20       # ticks the guard-price TP re-place may wait for a payout credit / a plausible price
     GUARD_FAR_PCT = 0.03       # TP1 more than this beyond max(market, TP2 fee floor) counts as implausible
@@ -3093,6 +3141,11 @@ class Bot:
                 self._fee_rechecked = True
                 if self.fee_min_recheck(pos, st):
                     return
+            try:   # guard_tps: re-place TP1/TP2 when the live guard price moved past them (Trevor 2026-10-27 14:55 MT)
+                if self.guard_drift_check(pos, st):
+                    return
+            except Exception as e:  # noqa: BLE001 - never halt; checked again next tick
+                log.error("guard drift check failed: %r (no halt)", e)
             for name, fn in (("TP2_SET", self.tp2_set), ("TP3_SET", self.tp3_set)):   # one-shot manual TP moves (Grok Bot)
                 tpf = self.dir / name
                 if tpf.exists():
