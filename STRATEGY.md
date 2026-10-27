@@ -335,7 +335,23 @@ attribution were removed (2026-10-14; on 2026-10-13 04:31 MT it had handed an ET
 - TP3 has no fee-minimum clamp any more (2026-10-15): it is sized to the adds that net a profit after fees at its target (see the TP3 section).
 
 
-### Cancelled resting add refunds its request rent too (2026-10-15, Trevor)
+### SOL flat true-up always applied; withdrawal blocked if it cannot be (2026-10-27, Trevor)
+The SOL bot's flat true-up (bank net of the trade -> the position's own on-chain SOL flows, `Bot._sol_trueup`, kind
+`flat_trueup`) is now ALWAYS applied, whatever its size; the old "skip if |adj| > 0.02 SOL" rule is gone. The SOL
+booking re-read of the flows (when the trade row is booked after its payout window, late refunds included; not on a forced booking at a new open) applies it once more, so the bank's
+net for every trade equals the chain's. If the flows cannot be read at flat, `bank.trueup_block` is set (trade = its
+open sig): that bot's daily withdrawal is BLOCKED (ERROR logged once a day, retried every tick) and its HWM is held,
+and the row's booking is held and re-read each tick until the flows are readable; the true-up is then applied and the
+block cleared. A block from an older trade is never cleared by a later one (resolve by hand). ETH / BTC banks are
+measured exactly from their own token and are unchanged.
+**Root cause of the 2026-10-26 08:24 MT over-booking (+0.022548071 SOL):** the 2026-10-15 rule below. A resting add's
+request rent is never debited from bal at placement (it is reserve float: recon_sol adds `rent_held` back), so
+crediting it back on cancel booked +0.0037236 of phantom trade income per cancel; that trade re-planned its resting add
+about six times. Earlier true-ups of -0.011462666 / -0.015223225 were the same pattern (under 0.02, so applied). Now
+`_rest_bank_refund` credits the rent only when the request was counted as gone by a true-up (`rent_out`: a cancel still
+pending at flat or a resting add still listed then), i.e. the 2026-10-14 late-refund case the rule was meant for.
+
+### Cancelled resting add refunds its request rent too (2026-10-15, Trevor) - SUPERSEDED 2026-10-27 (see above)
 Cancelling a resting add refunds the collateral AND the request-account rent (0.0037236 SOL). `_rest_bank_refund` now credits the rent to the SOL bot bank (`bank.REQ_RENT`, kind `refund_rent`) along with the collateral; ETH / BTC banks are other coins and are unchanged (their rent stays in the SOL reserve float). Before, a refund landing after the flat true-up left the rent in the reserve float (SOL 23:49 MT 2026-10-14 trade: row +0.007816 vs bank +0.004109). hwm / wd_mark are not edited; the HWM catches up when flat.
 
 ### Trade row waits for the cancelled resting add's refund (2026-10-14, Trevor)

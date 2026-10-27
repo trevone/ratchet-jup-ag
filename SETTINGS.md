@@ -44,7 +44,8 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 | [ledger] | enabled | true | true | true | Per-bot own-coin bank + HWM |
 | [ledger] | min_profit_native | 0.0015 SOL | 0.000066 ETH | 0.00000195 WBTC | Obsolete (guard is per trade: [profit_guard] min_profit_pct_trade 0.002, code default) |
 | [ledger] | ext_min_usd / window_ticks | 1.5 / 3 | same | same | External deposit/withdrawal detection |
-| [ledger] | withdraw_enabled / time / fraction / min_usd | true / 00:05 / 0.85 / 0.50 | same | same | Daily withdraw_fraction (0.85 since 2026-10-26; nudged nightly) of HWM gain -> JupSOL |
+| [ledger] | withdraw_enabled / time / fraction / min_usd | true / 00:05 / 0.90 / 0.50 | same | same | Daily withdraw_fraction (0.90 since 2026-10-27 00:32 MT, the cap; nudged nightly) of HWM gain -> JupSOL |
+| (code) bot.py | SOL flat true-up | always applied | n/a | n/a | 2026-10-27: no 0.02 SOL skip; re-applied at booking; if flows unreadable -> bank.trueup_block: SOL daily withdrawal blocked + HWM held until applied |
 | (code) live/deposit.py | MIN_USD / RESOLVE_AFTER_S / RETRY_S | $2 / 300 s / 60 s | same (one shared journal) | same | USDC deposit fold-in (2026-10-26): >= $2 USDC in the wallet -> SOL bot swaps equal thirds into SOL / ETH / WBTC (remainder SOL) with the sweep slippage settings (a leg that failed on Jupiter slippage 6001 retries at 2x, capped at stake_max_slippage_bps = 100 bps; simulation rejections retry after 60 s); each bot credits its measured leg to bal + hwm + wd_mark. Files: live/deposit_journal.json, live/deposits.jsonl, live/deposit*.lock (gitignored). Needs [bot] sweep_enabled on the SOL bot |
 | [ledger] | fee_settle_min_sol | 0.005 | 0.005 | 0.005 | ETH/BTC settle SOL fee debt above this |
 | [withdraw] | enabled | true | false | false | Legacy SOL daily stake job (SOL bot only) |

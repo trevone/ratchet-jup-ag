@@ -426,8 +426,22 @@ class Bot:
             a = {**a, "sol_px": sol_px or a["sol_px"]}
             if self.asset == "SOL":   # re-read: a late resting-add refund is one of the position's txs
                 f = self._position_flows({})
+                blk = b.get("trueup_block")
+                if f[0] is None and why == "payout settled" and blk and blk.get("trade") == self._open_sig():
+                    b["book_pend"] = a   # this trade's true-up is still blocked: keep the row, re-read next tick
+                    log.warning("LEDGER SOL booking held: position flows still unavailable (true-up blocked)")
+                    return
                 if f[0] is not None:
                     a.update(flows=f[0], rent=f[1], gross=f[2])
+                if f[0] is not None and why == "payout settled":
+                    # 2026-10-27: the settled flows (late refunds included) true the bank up once more; this also
+                    # applies a flat true-up that could not be applied at flat (block of THIS trade cleared). Not on a
+                    # forced booking at a new open: the shared position's flows may already hold the new deposit.
+                    self._sol_trueup(f[0], "at booking")
+                    blk = b.get("trueup_block")
+                    if blk and blk.get("trade") and blk.get("trade") == self._open_sig():
+                        b.pop("trueup_block", None)
+                        log.warning("BANK true-up applied at booking: SOL withdrawal / HWM block cleared")
                 self._book_row(a)
             else:
                 self._book_row(a, native={"coin": b["coin"], "deposited": b.get("trade_dep", 0.0),
@@ -1555,7 +1569,10 @@ class Bot:
         b["bal"] = round(b["bal"] + amt, 9)
         b["trade_dep"] = round(b.get("trade_dep", 0.0) - amt, 9)
         bankmod.note(b, "refund", amt, why)
-        if b.get("coin") == "SOL":   # 2026-10-15: the cancel also refunds the request account rent (SOL; ETH / BTC banks are other coins)
+        # 2026-10-27: the placement never debits the request rent from bal (it sits in rent_held, outside bal), so the
+        # cancel returns it to the reserve float, NOT to bal. Only when the SOL flat true-up already ran while this
+        # request was still open (its position flows then counted the rent as gone: rent_out) does the refund credit it.
+        if b.get("coin") == "SOL" and ra.get("rent_out"):
             bankmod.credit(b, bankmod.REQ_RENT, "refund_rent", why)
             amt = round(amt + bankmod.REQ_RENT, 9)
         b["window"] = max(b.get("window", 0), self.cfg.ledger.window_ticks)
@@ -2116,21 +2133,44 @@ class Bot:
             log.info("BANK payout event %s (~$%.4f): window %d ticks for the own-coin change", why, usd, b["window"])
         self.save()
 
+    @staticmethod
+    def _open_sig() -> str | None:
+        """Open tx sig of the trade in the ledger's open record (identifies the trade a true-up block belongs to)."""
+        try:
+            return json.loads(ledger.OPEN.read_text()).get("open_sig") if ledger.OPEN.exists() else None
+        except Exception:  # noqa: BLE001 - unreadable record: no id (the block then needs a manual check)
+            return None
+
+    def _sol_trueup(self, flows: float, why: str) -> float:
+        """SOL bot: book the difference between the position's own on-chain SOL flows and what the bank booked for this
+        trade (estimates). Always applied, whatever its size (2026-10-27, Trevor: the old 0.02 SOL skip let a +0.022548
+        over-booking reach bal / HWM / the 10-27 withdrawal). A resting-add request still open (pending cancel) is in these
+        flows as gone incl. its request rent -> marked rent_out so its refund credits the rent."""
+        b = self.local.bank
+        booked = round(b.get("trade_recv", 0.0) - b.get("trade_dep", 0.0), 9)
+        adj = round(flows - booked, 9)
+        bankmod.credit(b, adj, "flat_trueup", f"{why}: position flows {flows:+.9f} vs booked {booked:+.9f}")
+        if b.get("res_last") is not None:
+            b["res_last"] = round(b["res_last"] - adj, 9)   # moved between reserve float and bal
+        for ra in [self.local.rest_add] + [p.get("ra") for p in self.local.pending_cancels]:
+            if ra and ra.get("debited"):
+                ra["rent_out"] = True
+        log.info("BANK flat true-up %+.9f SOL (position flows %+.9f, %s)", adj, flows, why)
+        return adj
+
     def bank_flat(self, flows: float | None) -> None:
         """Trade over. SOL bot: true-up with the position's own on-chain SOL flows (exact). Reset the trade counters."""
         if not self.bank_on or self.live.dry_run:
             return
         b = self.local.bank
-        if self.asset == "SOL" and flows is not None:
-            adj = round(flows - (b.get("trade_recv", 0.0) - b.get("trade_dep", 0.0)), 9)
-            if abs(adj) <= 0.02:
-                bankmod.credit(b, adj, "flat_trueup", f"position flows {flows:+.9f} vs booked "
-                               f"{b.get('trade_recv', 0.0) - b.get('trade_dep', 0.0):+.9f}")
-                if b.get("res_last") is not None:
-                    b["res_last"] = round(b["res_last"] - adj, 9)   # moved between reserve float and bal
-                log.info("BANK flat true-up %+.9f SOL (position flows %+.9f)", adj, flows)
-            else:
-                log.warning("BANK flat true-up %+.9f SOL too large (> 0.02); not applied (estimate kept)", adj)
+        if self.asset == "SOL":
+            if flows is not None:
+                self._sol_trueup(flows, "flat")
+            else:   # 2026-10-27: no chain flows -> the true-up cannot be applied: block withdrawal + HWM until it is
+                b["trueup_block"] = {"since": str(pd.Timestamp.now(tz="UTC")), "trade": self._open_sig(),
+                                     "booked": round(b.get("trade_recv", 0.0) - b.get("trade_dep", 0.0), 9)}
+                log.error("BANK flat true-up NOT applied (position flows unavailable): SOL withdrawal and HWM blocked "
+                          "until it is (retried when the trade row is booked)")
         if b.get("book_pend"):   # ETH / BTC: counters kept until the deferred own-coin booking (bank_book_pending)
             b["window"] = max(b.get("window", 0), self.cfg.ledger.window_ticks)
             self.save()
@@ -2215,7 +2255,7 @@ class Bot:
                 self.ib_borrower_repay(sol_px, cpx)
             except Exception as e:  # noqa: BLE001 - retried next tick
                 log.error("INTER-BOT LOAN repay failed (retry next tick): %s", e)
-        if bankmod.update_hwm(b, flat, bankmod.fee_debt_native(b, sol_px, cpx)):
+        if not b.get("trueup_block") and bankmod.update_hwm(b, flat, bankmod.fee_debt_native(b, sol_px, cpx)):
             log.info("BANK HWM raised (flat): %s", bankmod.status_line(b, cpx, sol_px))
         self.save()
 
@@ -2605,6 +2645,14 @@ class Bot:
             return
         if self.live.dry_run or self._busy(st, self.asset == "SOL") or b.get("window", 0) > 0:
             return   # retried next tick
+        if b.get("trueup_block"):   # 2026-10-27: a confirmed correction is not applied yet -> no withdrawal (re-checked each tick)
+            day = str(now.astimezone(bankmod.MT).date())
+            if self.__dict__.get("_wd_block_day") != day:
+                self._wd_block_day = day
+                log.error("BANK daily withdrawal %s BLOCKED: true-up not applied since %s (booked %+.9f); bal %.9f hwm %.9f "
+                          "wd_mark %.9f kept", self.asset, b["trueup_block"].get("since"), b["trueup_block"].get("booked", 0.0),
+                          b["bal"], b["hwm"], b["wd_mark"])
+            return
         sol_px, cpx = self.sol_price(st), self.coin_px(st)
         coin, dec = b["coin"], bankmod.DECIMALS[b["coin"]]
         amt, gain = bankmod.withdraw_amount(b, lc.withdraw_fraction, bankmod.withdraw_min_native(lc.withdraw_cost_pct, lc.withdraw_network_sol, lc.withdraw_fee_factor, sol_px, cpx))

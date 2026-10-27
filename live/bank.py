@@ -18,7 +18,10 @@ Flows (how bal changes):
   * payouts: ETH / BTC bots own their token exclusively, so after a payout event (TP fill, trim, close, USDC -> native
     sweep) every change of their token balance during ``window_ticks`` ticks IS the payout (exact, incl. swap fees).
     The SOL bot shares native SOL with fees / rents / the reserve, so it credits an estimate (collateral returned + PnL -
-    close fee, at the SOL oracle) and trues the trade up on flat with the position's own on-chain SOL flows (ledger.py).
+    close fee, at the SOL oracle) and trues the trade up on flat with the position's own on-chain SOL flows (ledger.py),
+    again when the row is booked; ALWAYS applied, any size (2026-10-27). Flows unreadable -> bank["trueup_block"]:
+    the daily withdrawal is blocked and the HWM held until it is applied. Request rent (REQ_RENT) is reserve float,
+    never in bal: a cancelled resting add refunds only its collateral, unless a true-up already counted it as gone.
   * reconciliation (every tick, nothing in flight): ETH / BTC: wallet token - bal; SOL: implied reserve = native SOL -
     bal - other bots' unsettled shares of external events. A change that persists 2 ticks and is >= ext_min_usd is
     unexplained. ext_flow_mode = "alert" (live, Trevor 2026-10-11 19:08 MT): WARNING + live/EXT_FLOW_ALERT only, banks

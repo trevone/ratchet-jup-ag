@@ -300,7 +300,7 @@ def test_bank_debit_at_placement_refund_on_cancel_no_double_debit_on_fill(bot):
     st2 = state(reqs=[req("LIM1", 104.0, "increase")])
     bot.chain = lambda: st2
     assert bot.cancel_limit("LIM1") and bot.local.rest_add is None
-    assert b["bal"] == pytest.approx(1.0 + bankmod.REQ_RENT) and b["trade_dep"] == pytest.approx(0.0)   # + request rent (SOL)
+    assert b["bal"] == pytest.approx(1.0) and b["trade_dep"] == pytest.approx(0.0)   # rent never left bal (2026-10-27)
     assert bankmod  # (module used for the ledger maths)
     # fill: the placement debit stands, nothing debited again
     bot.local.rest_last_avg = AVG
@@ -352,10 +352,13 @@ def test_equity_includes_resting_add_collateral_not_double_counted(bot):
     st2 = state(reqs=[req("LIM1", 104.0, "increase")])
     bot.chain = lambda: st2
     assert bot.cancel_limit("LIM1")   # refund returns to bal, record cleared
-    assert bot.hwm_equity(pos, st, 106.6) == pytest.approx(base + 0.0037236)   # + request rent refunded to the SOL bank
+    assert bot.hwm_equity(pos, st, 106.6) == pytest.approx(base)   # request rent goes back to the reserve float (2026-10-27)
 
 
-def test_sol_cancel_refund_credits_request_rent_too_eth_does_not(bot):
+def test_sol_cancel_refund_rent_only_when_true_up_counted_it_eth_never(bot):
+    """2026-10-27: the request rent is never debited from bal at placement (rent_held / reserve float), so a cancel
+    mid-trade must not credit it (the 2026-10-15 credit added +0.0037236 per re-plan cancel: 6 on 10-26 = the +0.022548
+    over-booking). Only a request the flat true-up already counted as gone (rent_out) gets its rent back."""
     from live import bank as bankmod
     b = {"coin": "SOL", "asset": "SOL", "bal": 1.0, "hwm": 1.0, "wd_mark": 1.0, "totals": {}, "trade_dep": 0.0, "hist": []}
     bot.local.bank = b
@@ -365,8 +368,11 @@ def test_sol_cancel_refund_credits_request_rent_too_eth_does_not(bot):
     nat = bot.local.rest_add["nat"]
     bot.chain = lambda: state(reqs=[req("LIM1", 104.0, "increase")])
     assert bot.cancel_limit("LIM1")
-    assert b["bal"] == pytest.approx(1.0 + bankmod.REQ_RENT) and b["trade_dep"] == pytest.approx(0.0)
-    assert nat > 0
+    assert b["bal"] == pytest.approx(1.0) and b["trade_dep"] == pytest.approx(0.0)
+    assert nat > 0 and not [h for h in b["hist"] if h["kind"] == "refund_rent"]
+    b["trade_recv"] = 0.0
+    bot._rest_bank_refund({"debited": True, "nat": 0.1, "rent_out": True}, "late refund after the flat true-up")
+    assert b["bal"] == pytest.approx(1.1 + bankmod.REQ_RENT) and b["trade_recv"] == pytest.approx(bankmod.REQ_RENT)
     # ETH / BTC banks are own-coin: the SOL rent is not theirs
     ra = {"debited": True, "nat": 0.5}
     b2 = {"coin": "ETH", "bal": 1.0, "hwm": 1.0, "wd_mark": 1.0, "totals": {}, "trade_dep": 0.5, "hist": []}
