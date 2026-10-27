@@ -41,6 +41,7 @@ from live.flows import flow_extras, position_net_sol
 from live import sweep as sweepmod
 from live import trim as trimmod
 from live import bank as bankmod
+from live import deposit as depositmod
 from live import resting as restmod
 
 import urllib.request
@@ -437,8 +438,24 @@ class Bot:
         self.save()
 
     def sweep(self, st: dict[str, Any], side: int | None) -> None:
-        """Every short pays out in its own coin (2026-10-14), so nothing is swapped: stray USDC is only logged."""
-        if self.cfg.bot.sweep_enabled:
+        """Every short pays out in its own coin (2026-10-14): no proceeds are swapped. USDC >= $2 in the wallet is a deposit
+        from Trevor (2026-10-26, live/deposit.py): the SOL bot alone swaps it into SOL / ETH / WBTC thirds here, BEFORE
+        its ``sweep:`` log line; each bot credits its own share in bank_tick (deposit_tick). Less than $2 = dust, logged."""
+        if not self.cfg.bot.sweep_enabled:
+            return
+        note = ""
+        if self.asset == "SOL" and self.bank_on and not self.live.dry_run:
+            try:
+                note = depositmod.run_swapper(st, self.cfg, jup, killed=self.killed())
+            except Exception as e:  # noqa: BLE001 - journal / CLI trouble: nothing assumed, retried next tick
+                log.error("DEPOSIT swapper step failed (retried next tick): %s", e)
+                note = "deposit swapper step failed (see ERROR above)"
+        usdc = (depositmod.usdc_atoms(st) or 0) / depositmod.USDC_ATOMS
+        if note:
+            log.info("sweep: %s", note)
+        elif usdc >= depositmod.MIN_USD:
+            log.info("sweep: USDC $%.2f in the wallet: deposit (the SOL bot swaps it into SOL / ETH / WBTC thirds)", usdc)
+        else:
             sweepmod.stray_usdc(st, self.cfg.bot.sweep_min_usd)
 
     def cancel_all(self, st: dict[str, Any]) -> bool:
@@ -2136,8 +2153,9 @@ class Bot:
         if self.live.dry_run:
             return
         sol_px, cpx = self.sol_price(st), self.coin_px(st)
+        mid_dep = self.deposit_tick(st)   # USDC deposit share (live/deposit.py): True = own leg in flight / just credited
         mid_loan = self.ib_tick(st, pos)
-        if mid_loan:
+        if mid_loan or mid_dep:
             pass
         elif self.asset == "SOL":
             j = bankmod.load_journal()
@@ -2178,10 +2196,11 @@ class Bot:
                     log.info("BANK: unexplained %s change %+.9f; re-checking next tick", coin, r["diff"])
             if not self._busy(st, False) and lc.ext_flow_mode != "alert":   # alert mode: never swap for ext events
                 self.bank_settle_external(st, sol_px, cpx)
-        if b.get("window", 0) > 0:
-            b["window"] -= 1
-        if b.get("pay_wait", 0) > 0:
-            b["pay_wait"] = 0 if self.asset == "SOL" or pos is None else b["pay_wait"] - 1
+        if not mid_dep:   # deposit in flight / credited this tick: the reconcile was held, so the payout window is too
+            if b.get("window", 0) > 0:
+                b["window"] -= 1
+            if b.get("pay_wait", 0) > 0:
+                b["pay_wait"] = 0 if self.asset == "SOL" or pos is None else b["pay_wait"] - 1
         flat = pos is None and b.get("window", 0) == 0 and not self._busy(st, self.asset == "SOL")
         if pos is None and b.get("window", 0) == 0 and not self._busy(st, False) and b.get("book_pend") and not b.get("pend"):
             self.bank_book_pending(sol_px, cpx)
@@ -2199,6 +2218,58 @@ class Bot:
         if bankmod.update_hwm(b, flat, bankmod.fee_debt_native(b, sol_px, cpx)):
             log.info("BANK HWM raised (flat): %s", bankmod.status_line(b, cpx, sol_px))
         self.save()
+
+    def deposit_tick(self, st: dict[str, Any]) -> bool:
+        """USDC deposit fold-in (Trevor 2026-10-26, live/deposit.py): credit this bot's own landed share (the measured
+        on-chain amount of its own coin) to its own bank as capital: bal, hwm and wd_mark all rise by it
+        (bank.apply_external; never trade profit, no ext-flow alert). Applied atomically on this bot's own tick, keyed by
+        the leg's sig in bank["deposits"] (state.json saved first, then the journal marked). Deferred while an order
+        request is in flight. The per-trade guard baseline and the daily-loss baseline move by the same amount (capital,
+        not P&L). True = own leg in flight, landed-uncredited or credited this tick: hold the wallet reconcile."""
+        b = self.local.bank
+        try:
+            w = depositmod.own_work(self.asset, b)
+        except Exception as e:  # noqa: BLE001 - unreadable journal: never guess, hold the reconcile
+            log.error("DEPOSIT journal unreadable (%s): %s wallet reconcile held this tick", e, self.asset)
+            return True
+        for rid, crec in w["mark"]:   # credited in state.json, journal mark lost (crash): mark only, never re-credit
+            depositmod.mark_credited(rid, self.asset, crec)
+            log.info("deposit #%d: %s credit already in the bank (%s); journal marked", rid, self.asset, crec.get("sig"))
+        if w["credit"] and self._busy(st, self.asset == "SOL"):
+            log.info("deposit: %s credit deferred (an order request is in flight); next tick", self.asset)
+            return True
+        cpx = self.coin_px(st)
+        for rid, leg in w["credit"]:
+            got = float(leg["got"])
+            at = str(pd.Timestamp.now(tz="UTC"))
+            before = {k: b[k] for k in ("bal", "hwm", "wd_mark")}
+            # one in-memory step (nothing here can raise), then state.json, then the journal mark
+            bankmod.apply_external(b, got, f"USDC deposit #{rid}: {leg['atoms'] / depositmod.USDC_ATOMS:.6f} USDC -> "
+                                           f"{got:.9f} {b['coin']} (tx {leg['sig']})")
+            if b.get("trade_start_equity") is not None:   # per-trade guard baseline: capital in, not trade profit
+                b["trade_start_equity"] = round(b["trade_start_equity"] + got, 9)
+            crec = {"id": rid, "sig": leg["sig"], "coin": b["coin"], "got": got,
+                    "usdc": leg["atoms"] / depositmod.USDC_ATOMS, "coin_px": cpx, "before": before,
+                    "after": {k: b[k] for k in ("bal", "hwm", "wd_mark")}, "at": at}
+            b["deposits"] = (b.get("deposits") or [])[-19:] + [crec]
+            self.local.day_start_equity += got * cpx      # daily-loss baseline: a deposit is not a gain
+            self.save()
+            log.warning("BANK DEPOSIT credited #%d: +%.9f %s (~$%.2f, from %.6f USDC, tx %s) as capital, not profit: bal "
+                        "%.9f -> %.9f, hwm %.9f -> %.9f, wd_mark %.9f -> %.9f", rid, got, b["coin"], got * cpx,
+                        crec["usdc"], leg["sig"], before["bal"], b["bal"], before["hwm"], b["hwm"], before["wd_mark"],
+                        b["wd_mark"])
+            if self.asset == "SOL" and leg.get("net_sol"):
+                try:
+                    ledger.update(external_out_sol=-float(leg["net_sol"]))   # open trade only: not trade P&L
+                except Exception as e:  # noqa: BLE001 - trades.csv wallet-delta fallback note only
+                    log.warning("deposit #%d: open-trade ledger note failed: %s", rid, e)
+            depositmod.mark_credited(rid, self.asset, crec)
+        if w["mark"] or w["credit"] or w["ledger"]:
+            try:
+                depositmod.ledger_done()
+            except Exception as e:  # noqa: BLE001 - retried next tick (once per id)
+                log.error("DEPOSIT ledger write failed (retried next tick): %s", e)
+        return bool(w["inflight"] or w["credit"])
 
     def _ib_file(self) -> Path:
         return ROOT / bankmod.IB_FILE

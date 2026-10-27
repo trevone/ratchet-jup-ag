@@ -3,7 +3,8 @@ rescue): swap args with the [withdraw] slippage / impact caps, API-base fallback
 
 2026-10-14 (Trevor, minimalism): every short pays out in its own coin (SOL shorts: SOL; ETH / BTC shorts: desiredMint =
 ETH / WBTC, live/bot.py cmd), so the old USDC / ETH / WBTC -> SOL self-healing sweep and its cross-bot USDC attribution
-are gone. Stray USDC in the wallet is only logged (stray_usdc), never swapped.
+are gone. USDC < $2 in the wallet is dust, only logged (stray_usdc). USDC >= $2 is a deposit from Trevor (2026-10-26):
+the SOL bot swaps it into SOL / ETH / WBTC thirds and each bot credits its share (live/deposit.py).
 """
 from __future__ import annotations
 
@@ -97,7 +98,8 @@ def swap_with_backoff(cfg: Any, plan: dict[str, Any], jup: Jup, sleep: Callable[
 
 
 def stray_usdc(st: dict[str, Any], min_usd: float) -> float:
-    """USD of USDC sitting in the wallet (no short pays USDC any more): logged as a WARNING, never swapped."""
+    """USD of USDC dust in the wallet (no short pays USDC any more; >= $2 is a deposit, live/deposit.py): logged as a
+    WARNING, never swapped here."""
     usdc = int(((st.get("sweepTokens") or {}).get("USDC") or {}).get("atoms") or 0) / 1e6
     if usdc >= min_usd:
         log.warning("sweep: stray USDC $%.2f in the wallet (no bot expects USDC; not swapped, not booked)", usdc)

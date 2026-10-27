@@ -24,3 +24,5 @@ def _no_chain(monkeypatch, tmp_path):
     monkeypatch.setattr(sweep, "ROOT", tmp_path)
     from live import bank   # per-bot ledger: shared external-event journal / lock -> temp dir
     monkeypatch.setattr(bank, "ROOT", tmp_path)
+    from live import deposit   # USDC deposit journal / locks / deposits.jsonl -> temp dir
+    monkeypatch.setattr(deposit, "ROOT", tmp_path)

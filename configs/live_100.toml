@@ -194,7 +194,7 @@ ext_flow_mode = "alert"       # Trevor 2026-10-11 19:08 MT: unexplained wallet c
 window_ticks = 3
 withdraw_enabled = true         # daily: withdraw_fraction x HWM gain since last withdrawal -> JupSOL (replaces old SOL nightly stake)
 withdraw_time_mt = "00:05"
-withdraw_fraction = 0.80
+withdraw_fraction = 0.85
 # Trevor 2026-10-11 06:53 MT: no $0.50 minimum; withdraw when amount_usd > withdraw_fee_factor x est. cost (SOL->JupSOL stake: ~0.1% route/stake fee, ~0.00005 SOL network)
 withdraw_cost_pct = 0.001
 withdraw_network_sol = 0.00005

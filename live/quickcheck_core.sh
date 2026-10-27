@@ -4,7 +4,7 @@ cd /workspace/sol-bot/live || exit 1
 MARK=.quickcheck_last
 LAST=$(cat $MARK 2>/dev/null || date -d '-65 min' '+%Y-%m-%d %H:%M:%S')
 NOW=$(date '+%Y-%m-%d %H:%M:%S')
-PAT='increase |TRIM|TP fill|LEDGER|CLOSE |position gone|HALT|ERROR|KILL present|SWEEP|STAKE|manual TP|withdraw'
+PAT='increase |TRIM|TP fill|LEDGER|CLOSE |position gone|HALT|ERROR|KILL present|SWEEP|STAKE|manual TP|withdraw|DEPOSIT'
 ev=0
 for b in sol:logs/bot.log eth:eth/logs/bot.log btc:btc/logs/bot.log; do
   n=${b%%:*}; f=${b#*:}

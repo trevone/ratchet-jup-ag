@@ -56,3 +56,7 @@ market-analysis/outputs/
 **/.quickcheck_last
 EXT_FLOW_ALERT*
 **/EXT_FLOW_ALERT*
+# USDC deposit fold-in (2026-10-26, live/deposit.py): journal / locks / ledger are runtime state
+live/deposits.jsonl
+live/deposit_journal.json*
+live/deposit*.lock

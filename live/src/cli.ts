@@ -88,6 +88,13 @@ async function main() {
     const b = await buildCloseEmptyAtas(conn, OWNER, a.names ?? []);
     if (!b.instructions.length) out = { ok: true, nothing: true, ...b.info };
     else out = { ...b.info, ...(await run(conn, b, a, false, false)) };
+  } else if (cmd === "tx-deltas") {   // read-only: one tx's owner deltas (USDC deposit fold-in, live/deposit.py)
+    const d = await txDeltas(conn, String(a.sig), OWNER);
+    out = { ok: true, sig: a.sig, found: !!d, deltas: d };
+  } else if (cmd === "usdc-sigs") {   // read-only: recent txs on the owner's USDC account (deposit leg resolution)
+    const ata = new PublicKey(ownerTokenAccounts(OWNER).USDC);
+    const sigs = await conn.getSignaturesForAddress(ata, { limit: Math.min(Number(a.limit ?? 25), 100) }, "confirmed");
+    out = { ok: true, account: ata.toBase58(), sigs: sigs.map((x: any) => ({ signature: x.signature, blockTime: x.blockTime ?? null, err: x.err ?? null })) };
   } else if (cmd === "transfer") {
     const ALLOWED = "59su4N4uaKcN8YZtYYgBj9kdUGytJgAF6HBTiyxzjGzp";   // only allowed destination
     if (a.to !== ALLOWED) throw new Error("transfer destination not allowed");

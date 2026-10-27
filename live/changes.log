@@ -987,3 +987,23 @@ Files: config.py, live/bot.py, live/trim.py, configs/live_100.toml, live_eth.tom
 2026-10-25 06:13 MT DEPLOY bee27bc (no-cap): restarted ratchet-sol 06:12:59, ratchet-eth 06:13:32, ratchet-btc 06:13:34 (each right after a sweep: line). All active, no tracebacks / ERROR lines to 06:16. SOL short: TPs 100.51 / 99.95 kept; add re-planned 101.63 -> 101.35 (first cancel not confirmed in 60 s at 06:15:42, nothing re-placed; next tick cancel ok + refund, new add B9vp8B6A.. placed 06:16:26). BTC short: TPs 79917.83 / 79467.41 kept; add re-planned 80718.09 -> 80626.02 (cancel ok + refund, new add 9bueugdo.. 06:14:23). ETH flat (PAUSE_UNTIL untouched). ib_loan.json settled, no requests.
 2026-10-25 06:3x MT CHANGE (Trevor approved "Yes raise it"): [dca] min_gap_atr 0.3 -> 0.6 in configs/live_100/eth/btc.toml (config only, no code change). max_gap_atr 1.2, add_frontrun_atr 0.1, trigger_dist fallback, re-place rule, sizes, TPs, loans unchanged. Pre-deploy check with current analyst levels: BTC short last entry 80432.60, ATR 296.56: nearest level 80655.20 is 0.75 ATR (qualifies under 0.3 and 0.6, same rung). SOL short last entry 101.1617, ATR 0.652: 101.41 is 0.38 ATR (no longer qualifies), next 102.00 is 1.29 ATR (> 1.2) -> no level in 0.6-1.2 -> existing fixed fallback 101.16 + 0.85 = 102.01 (source fixed); the re-place rule only moves levels-source plans, so the existing SOL add is not re-planned by this change. tests/test_add_gap.py (new). Suite 378 pass. STRATEGY.md, SETTINGS.md.
 2026-10-25 06:28 MT DEPLOY 81c3938 (min_gap_atr 0.6): restarted ratchet-sol 06:27:47, ratchet-eth 06:27:58, ratchet-btc 06:28:08 (each right after a sweep: line). All active, no tracebacks / ERROR lines to 06:31. Analyst levels refreshed 06:28:17 (SOL) / 06:28:21 (BTC). SOL short (last entry 101.1617, analyst ATR 0.652): add re-planned 101.35 (0.29 ATR, 0.19%) -> 101.76 (level 101.82 h1 at 1.01 ATR, front 0.06; add 0.92 ATR / 0.59% from entry), cancel ok + refund, new req 48kRYWbX.. 06:28:31. BTC short (last entry 80432.60, analyst ATR 296.561): levels 80541.20 (0.37 ATR) and 80813.70 (1.29 ATR) -> no level in 0.6-1.2 -> plan = fixed fallback 80766.11 (1.15 x own ATR 290.008 = 333.51); re-place rule only moves levels plans, so the add stays at 80626.02 (0.65 ATR / 0.24% from entry). TPs unchanged: SOL 100.51 / 99.95, BTC 79917.83 / 79467.41. ETH flat.
+2026-10-25 07:44 MT quickcheck: quiet
+2026-10-25 11:37 MT quickcheck: quiet
+2026-10-25 12:42 MT quickcheck: quiet
+2026-10-25 15:43 MT quickcheck: quiet
+2026-10-25 18:43 MT quickcheck: quiet
+2026-10-25 21:41 MT quickcheck: quiet
+2026-10-25 22:40 MT quickcheck: quiet
+2026-10-26 00:3x MT WITHDRAW NUDGE (routine): JupSOL still a few dollars (~0.036 JupSOL) < largest bot (~$60+ each, equal thirds in line) -> withdraw_fraction 0.80 -> 0.85 in live_100/eth/btc.toml (backups *.bak-20261026-wd, uncommitted). Tonight 00:05 withdrawals ran (wd_last_date 2026-10-26 on all three). Restarted ratchet-sol/eth/btc: active, no errors.
+2026-10-26 01:39 MT quickcheck: quiet
+2026-10-26 03:42 MT quickcheck: quiet
+2026-10-26 05:40 MT quickcheck: quiet
+2026-10-26 06:44 MT quickcheck: quiet
+2026-10-26 09:48 MT quickcheck: quiet
+2026-10-26 11:58 MT quickcheck: quiet
+2026-10-26 13:43 MT quickcheck: quiet
+2026-10-26 15:43 MT quickcheck: quiet
+2026-10-26 16:46 MT quickcheck: quiet
+2026-10-26 19:42 MT quickcheck: quiet
+2026-10-26 20:44 MT quickcheck: quiet
+2026-10-26 21:09 MT USDC deposit fold-in (Trevor): >= $2 USDC in the wallet -> SOL bot swaps equal thirds into SOL/ETH/WBTC (remainder SOL), journal live/deposit_journal.json with lock + crash resume; each bot credits its measured leg to bal/hwm/wd_mark (+trade_start/day_start equity), recon held while its leg is pending (no EXT_FLOW alert); ledger live/deposits.jsonl. Also withdraw_fraction 0.80 -> 0.85 in all three configs. 394 tests pass.
