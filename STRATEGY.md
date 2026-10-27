@@ -354,6 +354,27 @@ attribution were removed (2026-10-14; on 2026-10-13 04:31 MT it had handed an ET
 - TP3 has no fee-minimum clamp any more (2026-10-15): it is sized to the adds that net a profit after fees at its target (see the TP3 section).
 
 
+### SOL guard equity uses the real payouts and the network fees paid so far (2026-10-27, Trevor)
+Why: 10-27 08:01 SOL closed at its TP@guard price 0.00126 SOL below the guard target. Each partial payout was booked as an
+estimate (~0.0002-0.00025 SOL high) and the trade's network fees (~0.00055 SOL over 51 txs) reached bal only at the flat
+true-up, so the guard equity (and the TP@guard price found from it) ran high.
+Now (SOL bot only; ETH / BTC already book the real own-coin change after a payout window and carry their network fees as
+`fee_sol` debt):
+- A payout booked as an estimate while the position stays open (TP fill, TP3 partial, trim; `bank_payout`) sets
+  `local.pay_check`. In the same tick, before the TP@guard re-place and the guard check, `sol_pay_trueup` reads this
+  trade's own position flows (position txs since the open, the same `position-flows` read as the flat true-up) and
+  credits `flows + open request rent - booked` to bal (`payout_trueup`; the reserve float moves the other way as in the
+  flat true-up). Request rent of the still-open requests is in the flows as gone but never left bal (`rent_held`), so it is
+  added back (REQ_RENT x open requests). It only measures a consistent snapshot: every known decrease (TP fills + TP3
+  partials + trims) is in the flows with no event errors, no cancel pending, and the open requests and size are the same
+  after the read; otherwise it is retried next tick (estimate kept meanwhile). The flat true-up then only has the rest.
+- `hwm_equity` (guard check, TP@guard price, BANK line) deducts the network fees this trade has paid (ledger_open.json
+  `network_fee_lamports`) that are not in bal yet: all of them before the first payout true-up, only those since
+  (`local.fee_mark_sol`) after it. The closing tx's own fee stays in the close value (`close_network_native`).
+- 'Position gone' payout estimate: uses the last seen on-chain avg of the whole position (`local.pg_avg`), not the
+  average of the lots left (after partials only the first lot, which understated a short's profit). Only the estimate
+  between flat and the flat true-up changes.
+
 ### SOL flat true-up always applied; withdrawal blocked if it cannot be (2026-10-27, Trevor)
 The SOL bot's flat true-up (bank net of the trade -> the position's own on-chain SOL flows, `Bot._sol_trueup`, kind
 `flat_trueup`) is now ALWAYS applied, whatever its size; the old "skip if |adj| > 0.02 SOL" rule is gone. The SOL

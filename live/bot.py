@@ -121,6 +121,12 @@ class Local:
     # cleared until flat (a new Local on flat / open resets it), so a partial that leaves lots=1, n_entries=1 no longer
     # disarms the guard. Persisted in state.json; a state without the key derives it (trade_guard_armed).
     guard_armed: bool = False
+    # Trevor 2026-10-27 (SOL bot): a payout this trade was booked as an estimate -> re-measure the trade's real on-chain
+    # flows (position txs, as the flat true-up) and true up bal mid-trade (sol_pay_trueup); fee_mark_sol = this trade's
+    # network fees (ledger_open.json) already inside bal after that true-up (hwm_equity deducts only the fees since)
+    pay_check: bool = False
+    fee_mark_sol: float = 0.0
+    pg_avg: float = 0.0   # 2026-10-27: last seen on-chain avg entry of the whole position (the 'position gone' estimate)
 
 
 def load_local(path: Path) -> Local:
@@ -2171,6 +2177,7 @@ class Bot:
             amt = max(usd, 0.0) / self._sol_px
             bankmod.credit(b, amt, "payout_est", f"{why}: ${usd:.4f} at SOL {self._sol_px:.3f}")
             log.info("BANK payout (est) %s: %+.9f SOL (bal %.9f)", why, amt, b["bal"])
+            self.local.pay_check = True   # 2026-10-27: replaced by the real on-chain amount (sol_pay_trueup) while open
         else:
             b["pay_wait"] = self.GUARD_DEFER_MAX   # guard_tps: no guard-price TP re-place until the credit lands
             log.info("BANK payout event %s (~$%.4f): window %d ticks for the own-coin change", why, usd, b["window"])
@@ -2779,7 +2786,59 @@ class Bot:
             cv = bankmod.close_value_native(pos.side, pos.size, pos.avg_entry, pos.margin, fill, c.close_fee, cpx, swap, net)
         ra = self.local.rest_add   # a resting add's collateral left bal at placement and is neither refunded nor margin yet
         rest = float(ra.get("nat") or 0.0) if ra and ra.get("debited") else 0.0
-        return bankmod.equity(b, cv, bankmod.fee_debt_native(b, sol_px, cpx)) + rest
+        return bankmod.equity(b, cv, bankmod.fee_debt_native(b, sol_px, cpx)) + rest - self.sol_fees_unbooked(pos)
+
+    def sol_fees_unbooked(self, pos: ChainPosition | None) -> float:
+        """Trevor 2026-10-27 (SOL bot, open position): network fees this trade has paid so far (ledger_open.json, every tx
+        the bot sent) that are not in bal yet (bal gets them at the flat true-up or a mid-trade sol_pay_trueup). ETH / BTC
+        already carry theirs as fee_sol debt; flat: 0 (the true-up has them)."""
+        if pos is None or self.asset != "SOL" or not self.bank_on or self.live.dry_run:
+            return 0.0
+        return max(self._net_fee_sol() - self.local.fee_mark_sol, 0.0)
+
+    def sol_pay_trueup(self, st: dict[str, Any], pos: ChainPosition | None) -> None:
+        """Trevor 2026-10-27 (SOL bot): after a payout booked as an estimate (TP / TP3 partial / trim) while the position
+        stays open, re-measure this trade's own on-chain SOL flows (position txs since the open, exactly as the flat true-up)
+        and credit the difference to bal now, so the guard equity and the TP@guard price use the amount really received
+        and the network fees paid so far. Open request accounts' rent is in the flows as gone but never left bal (it sits
+        in rent_held), so it is added back. Measured only on a consistent snapshot (every known decrease in the flows, no
+        pending cancel, same open requests and size after the read); otherwise retried next tick."""
+        L = self.local
+        if not (L.pay_check and pos is not None and self.asset == "SOL" and self.bank_on and not self.live.dry_run):
+            return
+        if L.pending_cancels:
+            return
+        try:
+            o = json.loads(ledger.OPEN.read_text()) if ledger.OPEN.exists() else {}
+            reqs = sorted(str(r.get("pubkey")) for r in st["openRequests"])
+            flows, fres = position_net_sol(o.get("position"), o.get("open_sig"))
+            need = len(L.partials_done) + L.tp_hits + len(L.trims)
+            if flows is None or fres.get("eventErrors") or int(fres.get("decreases") or 0) < need:
+                log.warning("BANK payout true-up deferred: position flows %s, decreases %s of %d, errors %s", flows,
+                            fres.get("decreases"), need, fres.get("eventErrors"))
+                return
+            st2 = self.chain()
+            pos2 = self.chain_position(st2)
+            if (sorted(str(r.get("pubkey")) for r in st2["openRequests"]) != reqs or pos2 is None
+                    or abs(pos2.size - pos.size) > 0.01):
+                log.warning("BANK payout true-up deferred: requests / size changed during the read")
+                return
+        except Exception as e:  # noqa: BLE001 - accounting must never stop the trading loop; retried next tick
+            log.warning("BANK payout true-up failed: %s", e)
+            return
+        b = L.bank
+        booked = round(b.get("trade_recv", 0.0) - b.get("trade_dep", 0.0), 9)
+        rent = round(bankmod.REQ_RENT * len(reqs), 9)
+        adj = round(flows + rent - booked, 9)
+        bankmod.credit(b, adj, "payout_trueup", f"position flows {flows:+.9f} + open request rent {rent:.9f} vs booked {booked:+.9f}")
+        if b.get("res_last") is not None:
+            b["res_last"] = round(b["res_last"] - adj, 9)   # moved between reserve float and bal
+        L.fee_mark_sol = float(o.get("network_fee_lamports") or 0) / LAMPORTS
+        L.pay_check = False
+        log.warning("BANK payout true-up %+.9f SOL (position flows %+.9f, %d txs, + %d open request rent %.9f, booked %+.9f; "
+                    "network fees %.9f now in bal) bal %.9f", adj, flows, fres.get("nTx", 0), len(reqs), rent, booked,
+                    L.fee_mark_sol, b["bal"])
+        self.save()
 
     def bank_equity_flat(self, st: dict[str, Any]) -> float:
         """Own-coin equity with nothing in a position (= the hwm_equity formula without the close value)."""
@@ -2855,8 +2914,9 @@ class Bot:
                 if not self.cancel_all(st):
                     self.cancel_failed(st["openRequests"], None, "leftover orders after the position closed")
             ledger.update(exit=f"{'TP2' if L.tp_hits else 'external/TP/liq'}@{pd.Timestamp.now(tz='UTC'):%H:%M}")
-            if self.bank_on and L.pg_m_size > 0:   # last seen size / collateral; avg from the lots
-                avg = (sum(l["size"] for l in L.lots) / sum(l["size"] / l["price"] for l in L.lots)) if L.lots else price
+            if self.bank_on and L.pg_m_size > 0:   # last seen size / collateral / whole-position avg (2026-10-27; lots: old state)
+                avg = L.pg_avg if L.pg_avg > 0 else \
+                    (sum(l["size"] for l in L.lots) / sum(l["size"] / l["price"] for l in L.lots)) if L.lots else price
                 tpx = next((p for p in (L.tp_px or [])[L.tp_hits:] if p), price)
                 self.bank_payout(L.pg_margin + L.side * L.pg_m_size * (tpx - avg) / avg - self.cfg.costs.close_fee * L.pg_m_size,
                                  "position gone (TP2 / external)")
@@ -2907,9 +2967,11 @@ class Bot:
             ledger.update(exit=f"TP{L.tp_hits}@{pd.Timestamp.now(tz='UTC'):%H:%M}")
             pos = self.chain_position(st)
 
+        if pos is not None and L.pay_check:   # 2026-10-27: real payout before any TP@guard re-place / guard check
+            self.sol_pay_trueup(st, pos)
         if pos is not None:   # baseline guard: remember size / collateral / realised PnL for the next TP fill
             rp = st["positions"]["long" if pos.side == LONG else "short"].get("realisedPnlUsd")
-            L.pg_m_size, L.pg_margin = pos.size, pos.margin
+            L.pg_m_size, L.pg_margin, L.pg_avg = pos.size, pos.margin, pos.avg_entry
             L.pg_rpnl = float(rp) if rp is not None else None
             if self.cfg.resting.any_on:
                 L.rest_last_avg = pos.avg_entry
