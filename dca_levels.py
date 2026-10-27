@@ -117,13 +117,17 @@ def liq_price(side: int, size: float, qty: float, margin: float, borrow: float, 
 
 
 def next_add_level(side: int, ref: float, lv: Levels | None, min_gap: float, max_gap: float,
-                   fixed_dist: float) -> tuple[float, str]:
-    """Next add price beyond ``ref`` (below for longs): nearest qualifying level, else fixed spacing."""
+                   fixed_dist: float, fixed_floor_atr: float = 0.0) -> tuple[float, str]:
+    """Next add price beyond ``ref`` (below for longs): nearest qualifying level, else fixed spacing.
+    Trevor 2026-10-27: ``fixed_floor_atr`` > 0 (with levels) floors the fixed spacing at that many ladder ATR, so the
+    fallback rung is never closer than a level rung could be (uniform spacing)."""
     if lv is not None:
         pool = lv.supports if side == LONG else lv.resistances
         cands = [x for x in pool if min_gap * lv.atr <= side * (ref - x) <= max_gap * lv.atr]
         if cands:
             return (max(cands) if side == LONG else min(cands)), "levels"
+        if fixed_floor_atr > 0 and lv.atr:
+            fixed_dist = max(fixed_dist, fixed_floor_atr * lv.atr)
     return ref - side * fixed_dist, "fixed"
 
 
@@ -220,7 +224,7 @@ def _deep_level(side: int, anchor: float, lv: Levels | None, atr: float, lp: Lad
 
 def ladder_rungs(side: int, ref: float, lv: Levels | None, *, last_leverage: float, lev_step: float, lev_cap: float,
                  min_gap_atr: float, max_gap_atr: float, fixed_dist: float, lp: LadderParams,
-                 first_entry: float | None = None) -> list[Rung]:
+                 first_entry: float | None = None, fixed_floor_atr: float = 0.0) -> list[Rung]:
     """Remaining planned add prices beyond ``ref`` (the last fill).
 
     Deep level is anchored (first entry by default): deepest analyst support deep_min_atr..deep_max_atr ATR below
@@ -238,7 +242,7 @@ def ladder_rungs(side: int, ref: float, lv: Levels | None, *, last_leverage: flo
     main: list[tuple[float, str]] = []
     p = ref
     while len(main) < max(lp.max_rungs, nmin):
-        nxt, src = next_add_level(side, p, lv, min_gap_atr, max_gap_atr, fixed_dist)
+        nxt, src = next_add_level(side, p, lv, min_gap_atr, max_gap_atr, fixed_dist, fixed_floor_atr)
         if deep is not None and side * (nxt - deep) < min_gap_atr * atr:   # reached the deep level
             break
         if deep is None and len(main) >= nmin:
@@ -282,7 +286,7 @@ def plan_add(pos: PosLike, lv: Levels | None, *, available_usd: float, lev_step:
              fixed_dist: float, maint: float, max_add_frac: float = 1.0, min_target_gap_atr: float = 0.5,
              min_avg_gap_atr: float = 0.25, fallback_avg_frac: float = 0.5, open_fee: float = 0.0,
              target_flipped_supports: bool = False, liq_buffer_atr: float = 0.0,
-             ladder: LadderParams | None = None) -> AddPlan | None:
+             ladder: LadderParams | None = None, fixed_floor_atr: float = 0.0) -> AddPlan | None:
     """Next add. Collateral = min(formula, ladder budget[, available * max_add_frac]), >= min_add_usd, <= available,
     then shrunk until the post-add liquidation (collateral net of the open fee) sits beyond the next rung.
     Notional = collateral * leverage; avg and liq are computed from that notional."""
@@ -294,11 +298,12 @@ def plan_add(pos: PosLike, lv: Levels | None, *, available_usd: float, lev_step:
         rungs = ladder_budgets(ladder_rungs(s, pos.last_entry, lv, last_leverage=pos.last_leverage,
                                             lev_step=lev_step, lev_cap=lev_cap, min_gap_atr=min_gap_atr,
                                             max_gap_atr=max_gap_atr, fixed_dist=fixed_dist, lp=ladder,
-                                            first_entry=getattr(pos, "first_entry", None)), available_usd, ladder)
+                                            first_entry=getattr(pos, "first_entry", None),
+                                            fixed_floor_atr=fixed_floor_atr), available_usd, ladder)
     if rungs:
         trig, src = rungs[0].price, rungs[0].source
     else:
-        trig, src = next_add_level(s, pos.last_entry, lv, min_gap_atr, max_gap_atr, fixed_dist)
+        trig, src = next_add_level(s, pos.last_entry, lv, min_gap_atr, max_gap_atr, fixed_dist, fixed_floor_atr)
     target = opposing_level(s, trig, lv, max_gap_atr, min_target_gap_atr, target_flipped_supports)
     want_avg = target - s * target_avg_atr * atr
     avg = pos.size / pos.qty
@@ -321,7 +326,7 @@ def plan_add(pos: PosLike, lv: Levels | None, *, available_usd: float, lev_step:
     if margin < min_add_usd:
         return None
     if nxt is None:
-        nxt, _ = next_add_level(s, trig, lv, min_gap_atr, max_gap_atr, fixed_dist)
+        nxt, _ = next_add_level(s, trig, lv, min_gap_atr, max_gap_atr, fixed_dist, fixed_floor_atr)
     for _ in range(60):  # shrink until liquidation sits beyond the next add level
         notional = margin * lev
         size = pos.size + notional

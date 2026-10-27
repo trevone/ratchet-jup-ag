@@ -327,7 +327,8 @@ class DcaStrategy:
                     maint=self.cfg.risk.maintenance_ratio, max_add_frac=d.max_add_frac,
                     min_target_gap_atr=d.min_target_gap_atr, min_avg_gap_atr=d.min_avg_gap_atr,
                     fallback_avg_frac=d.fallback_avg_frac, open_fee=self.cfg.costs.open_fee,
-                    target_flipped_supports=d.target_flipped_supports, liq_buffer_atr=d.liq_buffer_atr, ladder=lp)
+                    target_flipped_supports=d.target_flipped_supports, liq_buffer_atr=d.liq_buffer_atr, ladder=lp,
+                    fixed_floor_atr=d.min_gap_atr if d.min_place_gap_atr > 0 else 0.0)   # 2026-10-27 uniform rungs
 
     def plan_next_add(self, pos: PositionView, available_usd: float, now: pd.Timestamp) -> AddPlan | None:
         self._levels = self.levels_provider(now) if self.levels_provider else None

@@ -106,6 +106,8 @@ class DcaConfig:
     target_avg_atr: float = 1.0          # size adds so avg lands this many ATR short of the next opposing level
     min_add_usd: float = 3.0
     add_frontrun_atr: float = 0.1        # Trevor 2026-10-15: resting add placed this many own-1h-ATR before the level (live bots only); 0 = at the level
+    min_place_gap_atr: float = 0.0       # Trevor 2026-10-27: resting ladder add PLACED >= this many ladder ATR beyond the add ref (after the
+                                         # front-run); > 0 also floors the fixed fallback at min_gap_atr x ladder ATR. 0 = off
     max_add_frac: float = 1.0           # levels mode: cap one add's collateral at this fraction of available
     # --- levels mode: target-resistance guard (root-cause fix 2026-10-07 16:30) ---
     min_target_gap_atr: float = 0.5      # opposing level must sit >= this many ATR beyond the add price (else ignored)

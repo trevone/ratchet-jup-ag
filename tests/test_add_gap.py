@@ -9,7 +9,7 @@ from strategy import LONG, SHORT
 @pytest.mark.parametrize("path", ["configs/live_100.toml", "configs/live_eth.toml", "configs/live_btc.toml"])
 def test_live_add_gap_bounds(path):
     d = load_config(path).dca
-    assert (d.min_gap_atr, d.max_gap_atr, d.add_frontrun_atr) == (0.6, 1.2, 0.1)
+    assert (d.min_gap_atr, d.max_gap_atr, d.add_frontrun_atr) == (0.95, 1.2, 0.1)   # 2026-10-27: 0.6 -> 0.95 (test_place_gap.py)
 
 
 def test_level_inside_0p6_1p2_else_unchanged_fixed_fallback():

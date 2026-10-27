@@ -1965,8 +1965,23 @@ class Bot:
         return max(self.cfg.dca.add_frontrun_atr, 0.0) * (self.front_atr() or 0.0)
 
     def add_px(self, pos: ChainPosition, trigger: float) -> float:
-        """Resting add price: the level moved add_front() toward the market (long up, short down)."""
-        return round(trigger + pos.side * self.add_front(), 2)
+        """Resting add price: the level moved add_front() toward the market (long up, short down).
+        Trevor 2026-10-27: dca.min_place_gap_atr > 0 -> the front-run never pulls the placed price inside min_place_gap_atr x
+        ladder (analyst) ATR beyond the add ref (the more adverse of the last entry and the last partial, as the plan uses);
+        clamped to that distance, rounded to the adverse cent. Re-arms (TP3 refill at their own price) do not come here."""
+        px = round(trigger + pos.side * self.add_front(), 2)
+        gap = self.cfg.dca.min_place_gap_atr
+        lv = self.strategy._levels
+        atr = float(lv.atr) if lv is not None and lv.atr else 0.0
+        if gap <= 0 or atr <= 0:
+            return px
+        ref = pos.last_entry
+        if self.cfg.resting.last_partial_rule and self.local.last_partial_px:
+            ref = restmod.add_ref(pos.side, pos.last_entry, self.local.last_partial_px)
+        floor = ref - pos.side * gap * atr
+        if pos.side * (px - floor) > 0:   # inside the minimum (short: below it / long: above it)
+            px = math.floor(round(floor * 100, 6)) / 100 if pos.side > 0 else math.ceil(round(floor * 100, 6)) / 100
+        return px
 
     def rest_add_args(self, pos: ChainPosition, st: dict[str, Any], plan: Any) -> tuple[dict[str, Any], float, float]:
         """CLI args for the limit add (same collateral funding as a market add) + (native units debited, SOL deposited)."""
