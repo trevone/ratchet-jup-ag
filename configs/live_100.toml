@@ -177,6 +177,7 @@ close_requires = "adds_or_trims"   # only positions with >= 1 add or trim; "any"
 min_trade_profit_sol = 0.001
 min_trade_profit_pct = 0.0
 close_network_sol = 0.00002
+min_profit_pct_trade = 0.003   # Trevor 2026-10-27 08:56 MT: live per-trade guard base 0.2% -> 0.3% (target = trade_start_equity x 1.003; code default 0.002)
 
 [ledger]
 guard_only_underwater = true   # Trevor 2026-10-11 06:31 MT: profit guard close only while underwater (long px<avg, short px>avg); TP timer unchanged

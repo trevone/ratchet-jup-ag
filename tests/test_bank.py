@@ -314,7 +314,7 @@ def test_trade_guard_fires_on_equity_vs_baseline_not_price_vs_avg(ebot):
     b = ebot.local.bank
     _arm(ebot)
     b["bal"], b["hwm"], b["trade_start_equity"] = 0.0100, 0.0155, 0.0150     # hwm must not matter
-    assert ebot.guard_target(_st()) == pytest.approx(0.0150 * 1.002)
+    assert ebot.guard_target(_st()) == pytest.approx(0.0150 * 1.003)
     lo = _st(side="long", price=2400.0)
     assert not ebot.guard_check(ebot.chain_position(lo), lo, 2400.0)[0]
     hi = _st(side="long", price=2600.0)                                          # far above avg: still fires
@@ -330,9 +330,9 @@ def test_trade_guard_target_boundary(ebot):
     st = _st(side="long", price=2500.0)
     pos = ebot.chain_position(st)
     eq = ebot.hwm_equity(pos, st, 2500.0)
-    b["trade_start_equity"] = eq / 1.002 + 1e-9
+    b["trade_start_equity"] = eq / 1.003 + 1e-9
     assert not ebot.guard_check(pos, st, 2500.0)[0]
-    b["trade_start_equity"] = eq / 1.002 - 1e-9
+    b["trade_start_equity"] = eq / 1.003 - 1e-9
     assert ebot.guard_check(pos, st, 2500.0)[0]
 
 
@@ -352,7 +352,7 @@ def test_missing_baseline_migrates_once_to_hwm_without_touching_hwm(ebot):
     b = ebot.local.bank
     b.pop("trade_start_equity", None)
     wd = b["wd_mark"]
-    assert ebot.guard_target(_st()) == pytest.approx(b["hwm"] * 1.002) and b["trade_start_equity"] == b["hwm"] and b["wd_mark"] == wd
+    assert ebot.guard_target(_st()) == pytest.approx(b["hwm"] * 1.003) and b["trade_start_equity"] == b["hwm"] and b["wd_mark"] == wd
 
 
 def test_sol_rent_churn_across_bots_does_not_alert_real_outflow_does():
@@ -405,7 +405,7 @@ def _with_oracle(st, px):
 @pytest.mark.parametrize("side", ["long", "short"])
 def test_guard_price_independent_of_oracle(ebot, side):
     st, pos = _gp_setup(ebot, side)
-    ebot.local.bank["trade_start_equity"] = ebot.hwm_equity(pos, st, st["oracle"]["price"]) * (1.03 if side == "long" else 1.03) / 1.002
+    ebot.local.bank["trade_start_equity"] = ebot.hwm_equity(pos, st, st["oracle"]["price"]) * (1.03 if side == "long" else 1.03) / 1.003
     base = ebot.guard_price(pos, st)
     assert base is not None
     for f in (0.98, 0.99, 1.01, 1.02):
@@ -417,7 +417,7 @@ def test_guard_price_independent_of_oracle(ebot, side):
 @pytest.mark.parametrize("side", ["long", "short"])
 def test_guard_price_sol_oracle_bounded_sensitivity(ebot, side):
     st, pos = _gp_setup(ebot, side)
-    ebot.local.bank["trade_start_equity"] = ebot.hwm_equity(pos, st, st["oracle"]["price"]) * 1.03 / 1.002
+    ebot.local.bank["trade_start_equity"] = ebot.hwm_equity(pos, st, st["oracle"]["price"]) * 1.03 / 1.003
     base = ebot.guard_price(pos, st)
     s2 = dict(st, solOracle={"price": 110.0 * 1.02})
     g2 = ebot.guard_price(pos, s2)
@@ -439,7 +439,7 @@ def test_hwm_equity_closed_form(ebot, side):
 @pytest.mark.parametrize("side", ["long", "short"])
 def test_guard_check_flips_at_guard_price_with_other_oracle(ebot, side):
     st, pos = _gp_setup(ebot, side)
-    ebot.local.bank["trade_start_equity"] = ebot.hwm_equity(pos, st, st["oracle"]["price"]) * 1.03 / 1.002
+    ebot.local.bank["trade_start_equity"] = ebot.hwm_equity(pos, st, st["oracle"]["price"]) * 1.03 / 1.003
     gp = ebot.guard_price(pos, st)
     other = _with_oracle(st, st["oracle"]["price"] * 1.015)
     eps = gp * 1e-6
@@ -451,7 +451,7 @@ def test_guard_check_flips_at_guard_price_with_other_oracle(ebot, side):
 def test_regression_btc_0815_guard_price_no_longer_follows_oracle(ebot):
     # synthetic BTC-like short (coin price = candidate price): old code held cpx at the oracle -> a different guard price
     st, pos = _gp_setup(ebot, "short")
-    ebot.local.bank["trade_start_equity"] = ebot.hwm_equity(pos, st, 2450.0) * 1.03 / 1.002
+    ebot.local.bank["trade_start_equity"] = ebot.hwm_equity(pos, st, 2450.0) * 1.03 / 1.003
     gp_a = ebot.guard_price(pos, st)
     gp_b = ebot.guard_price(pos, _with_oracle(st, 2450.0 * 1.02))
     assert gp_a == pytest.approx(gp_b, rel=1e-9)

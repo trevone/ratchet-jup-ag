@@ -39,10 +39,11 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 | [trim] | trim_arm_dist_pct | 0.0065 | 0.0065 | 0.0065 | Arm when price 0.65% against avg |
 | [trim] | trim_level_front_run_atr / tol_atr | 0.15 / 0.1 | same | same | Fire 0.25 ATR before next S/R level |
 | [trim] | trim_min_gain_pct / trim_min_net_usd | 0.005 / 0.25 | same | same | Only adds with >= 0.5% gain and >= $0.25 net |
-| [profit_guard] | enabled / close_when_met / close_requires | true / true / adds_or_trims | same | same | Market-close whole position when equity >= HWM + min profit |
+| [profit_guard] | enabled / close_when_met / close_requires | true / true / adds_or_trims | same | same | Market-close whole position when equity >= trade_start_equity x (1 + min_profit_pct_trade); adds_or_trims = armed once the trade had any add fill or partial (TP3 / trim), latched until flat (state guard_armed, 2026-10-27) |
+| [profit_guard] | min_profit_pct_trade | 0.003 | 0.003 | 0.003 | Trevor 2026-10-27 08:56 MT: live per-trade guard base 0.2% -> 0.3% (target = trade_start_equity x 1.003; code default 0.002; no per-partial uplift) |
 | [profit_guard] | min_trade_profit_sol | 0.001 | 0.001 | 0.001 | **Legacy field, not used by the live guard** (see [ledger] min_profit_native) |
 | [ledger] | enabled | true | true | true | Per-bot own-coin bank + HWM |
-| [ledger] | min_profit_native | 0.0015 SOL | 0.000066 ETH | 0.00000195 WBTC | Obsolete (guard is per trade: [profit_guard] min_profit_pct_trade 0.002, code default) |
+| [ledger] | min_profit_native | 0.0015 SOL | 0.000066 ETH | 0.00000195 WBTC | Obsolete (guard is per trade: [profit_guard] min_profit_pct_trade 0.003 in the live tomls since 2026-10-27) |
 | [ledger] | ext_min_usd / window_ticks | 1.5 / 3 | same | same | External deposit/withdrawal detection |
 | [ledger] | withdraw_enabled / time / fraction / min_usd | true / 00:05 / 0.90 / 0.50 | same | same | Daily withdraw_fraction (0.90 since 2026-10-27 00:32 MT, the cap; nudged nightly) of HWM gain -> JupSOL |
 | (code) bot.py | SOL flat true-up | always applied | n/a | n/a | 2026-10-27: no 0.02 SOL skip; re-applied at booking; if flows unreadable -> bank.trueup_block: SOL daily withdrawal blocked + HWM held until applied |

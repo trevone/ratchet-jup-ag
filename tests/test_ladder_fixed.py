@@ -43,3 +43,4 @@ def test_live_configs_run_preset_c_resting_and_pct_guard(path):   # Trevor 2026-
     r = c.resting
     assert r.adds_enabled and r.partials_enabled and r.last_partial_rule
     assert (c.ledger.min_profit_pct_hwm, c.ledger.min_profit_pct_per_partial) == (0.002, 0.0005)
+    assert c.profit_guard.min_profit_pct_trade == 0.003   # Trevor 2026-10-27 08:56 MT: live guard base 0.2% -> 0.3%

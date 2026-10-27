@@ -117,6 +117,10 @@ class Local:
     add_pending: dict | None = None   # market add sent, fill not saved yet (cleared once its lot is saved)
     rearm: dict | None = None   # 2026-10-15: entry / margin / lev of the add lot a TP3 partial closed; the resting add returns to it
     tp2_override: float | None = None   # TP2_SET (Trevor 2026-10-13 20:57 MT): manual TP2 price, kept until the next add
+    # Trevor 2026-10-27: per-trade guard arm latch. Set by the first add fill / partial (TP3) / trim of this trade and never
+    # cleared until flat (a new Local on flat / open resets it), so a partial that leaves lots=1, n_entries=1 no longer
+    # disarms the guard. Persisted in state.json; a state without the key derives it (trade_guard_armed).
+    guard_armed: bool = False
 
 
 def load_local(path: Path) -> Local:
@@ -1166,13 +1170,25 @@ class Bot:
                 self._pg_note = note
         return targets
 
+    def trade_guard_armed(self) -> bool:
+        """Trevor 2026-10-27: this trade had an add fill or a partial (TP3 / trim) since it opened -> the guard stays armed
+        until flat. Latched in local.guard_armed; derived from the trade's state (n_entries > 1, > 1 lot, trims, partials_done:
+        all reset only at a new trade) so a state written before the latch existed (restart) arms correctly."""
+        L = self.local
+        if not L.guard_armed and (L.n_entries > 1 or len(L.lots) > 1 or bool(L.trims) or bool(L.partials_done)):
+            L.guard_armed = True
+            log.warning("GUARD ARMED for the rest of this trade (adds %d, lots %d, trims %d, partials done %d); stays armed until flat",
+                        max(L.n_entries - 1, 0), len(L.lots), len(L.trims), len(L.partials_done))
+            self.save()
+        return L.guard_armed
+
     def pg_close_armed(self) -> bool:
         """Profit-guard market close applies: guard active, close_when_met, and (close_requires "adds_or_trims") the
         position had at least one add or trim."""
         g, L = self.cfg.profit_guard, self.local
         if not (self.pg_active() and g.close_when_met):
             return False
-        return g.close_requires == "any" or L.n_entries > 1 or len(L.lots) > 1 or bool(L.trims)
+        return g.close_requires == "any" or self.trade_guard_armed()
 
     def pg_close_ok(self, pos: ChainPosition, price: float) -> tuple[bool, str]:
         """Early close (TP timer) allowed only when closing now ends the trade >= baseline + min profit (SOL)."""
@@ -1352,6 +1368,7 @@ class Bot:
                  "avg": round(pos.avg_entry, 4), "onchain_pnl_usd": round(onchain, 4), "onchain_net_usd": round(onchain_net, 4),
                  "lot_gain_usd": round(lot_gain, 4), "fees_usd": round(fees, 4), "sig": res.get("sig")}
         L.trims.append(rec_t)
+        L.guard_armed = True   # 2026-10-27: a trim arms the guard until flat
         if self.cfg.resting.last_partial_rule:   # [resting] rule 3: a trim is a partial -> its exit is the last partial price
             L.last_partial_px = round(exit_px, 6)
         if L.pg_base_sol is not None:   # paid out = collateral returned + PnL - fee (a loss off collateral nets to ~0)
@@ -1537,6 +1554,7 @@ class Bot:
         else:
             L.pg_dep_sol = round(L.pg_dep_sol + sol, 9)
             L.n_entries += 1
+            L.guard_armed = True   # 2026-10-27: an add fill arms the guard until flat
             L.last_leverage, L.last_entry, L.last_size = it.leverage, price, new.size
             L.tp_hits, L.first_tp_time = 0, None   # fresh TP1 50% / TP2 100% ladder on the whole position
             L.lots.append(lot)
@@ -1670,6 +1688,7 @@ class Bot:
         L.lots.sort(key=lambda x: pd.Timestamp(x["time"]))
         L.rearm = None
         L.n_entries += 1
+        L.guard_armed = True   # 2026-10-27: an add fill (recovered) arms the guard until flat
         L.trade_opened_usd += lot["size"]
         L.tp2_override = None   # a new add re-places TPs normally (TP2_SET dropped)
         if newest:
@@ -1725,6 +1744,7 @@ class Bot:
                 if L.pg_base_sol is not None:
                     L.pg_dep_sol = round(L.pg_dep_sol + float(ra.get("sol") or 0.0), 9)
                 L.n_entries += 1
+                L.guard_armed = True   # 2026-10-27: a resting add fill arms the guard until flat
                 L.last_leverage, L.last_entry = ra["lev"], round(fill, 6)
                 L.last_size = round(L.last_size + add_size, 2)
                 L.tp_hits, L.first_tp_time = 0, None   # fresh TP1 / TP2 ladder on the whole position (as after a market add)
@@ -1769,6 +1789,7 @@ class Bot:
                 if R.last_partial_rule or R.partials_enabled:
                     L.last_partial_px = float(last["px"])
                 L.partials_done += [{**p, "filled": str(pd.Timestamp.now(tz="UTC"))} for p in gone_p]
+                L.guard_armed = True   # 2026-10-27: a partial (TP3) arms the guard until flat, even with lots / n_entries back to 1
                 L.last_size = pos.size
                 self._tp_resize = True   # Trevor 2026-10-12 06:07 MT: re-size TP1/TP2 to the remaining position
                 ledger.update(exit=f"P{len(L.partials_done)}@{pd.Timestamp.now(tz='UTC'):%H:%M}")
@@ -2721,7 +2742,7 @@ class Bot:
         g, L = self.cfg.profit_guard, self.local
         if not (g.enabled and g.close_when_met and self.bank_on):
             return False
-        return g.close_requires == "any" or L.n_entries > 1 or len(L.lots) > 1 or bool(L.trims)
+        return g.close_requires == "any" or self.trade_guard_armed()
 
     def hwm_equity(self, pos: ChainPosition | None, st: dict[str, Any], price: float) -> float:
         b, c, lc = self.local.bank, self.cfg.costs, self.cfg.ledger
@@ -2781,7 +2802,7 @@ class Bot:
         b = self.local.bank
         eq = self.hwm_equity(pos, st, price)
         tgt = self.guard_target(st) if pos is not None else None
-        arm = (" | guard " + ("ARMED (adds/trims)" if self.hwm_close_armed() else "not armed (first entry: TPs only)")) if pos else ""
+        arm = (" | guard " + ("ARMED (adds/partials this trade)" if self.hwm_close_armed() else "not armed (first entry: TPs only)")) if pos else ""
         sole = self.guard_sole_note(pos, st, price, eq, tgt) if (pos is not None and self.hwm_close_armed()) else ""
         return bankmod.status_line(b, self.coin_px(st), self.sol_price(st), eq, tgt) + arm + sole
 
