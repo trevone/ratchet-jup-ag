@@ -1787,7 +1787,9 @@ class Bot:
                 if shut:   # the resting add goes back to the closed lot's entry (long: highest, short: lowest), same size / lev
                     top = max(shut, key=lambda l: pos.side * float(l["price"]))
                     lev = float(top.get("lev") or L.last_leverage)
-                    L.rearm = {"px": self.rearm_px(pos, float(top["price"]), float(last["px"])), "lev": lev,
+                    left = [l for l in L.lots if l["time"] not in times]
+                    L.rearm = {"px": self.rearm_px(pos, float(top["price"]), float(last["px"]),
+                                                   float(left[-1]["price"]) if left else None), "lev": lev,
                                "margin": round(float(top["size"]) / lev, 4)}
                 L.lots = [l for l in L.lots if l["time"] not in times]
                 if L.lots:
@@ -1829,12 +1831,13 @@ class Bot:
             return
         self.replan_add(pos, st, price, account, equity, ra)
 
-    def rearm_px(self, pos: ChainPosition, entry: float, partial_px: float) -> float:
+    def rearm_px(self, pos: ChainPosition, entry: float, partial_px: float, rest_last: float | None = None) -> float:
         """Re-arm price after a TP3 fill (set once, at fill time). readd_gap_atr = 0: the closed lot's entry (old rule; the
         order then gets the usual add front-run). Trevor 2026-10-27, readd_gap_atr > 0: the more adverse of the closed lot's
         entry and partial_px + readd_gap_atr x ladder ATR (short: higher / long: lower), rounded to the adverse cent, so the
         re-add is never inside the closed lot's entry; it is placed exactly there (rest_add_args: no front-run, so the
-        re-arms no longer creep 0.1 ATR toward the market each cycle)."""
+        re-arms no longer creep 0.1 ATR toward the market each cycle). 2026-10-27 13:50 MT: with dca.min_place_gap_atr > 0
+        it is also never inside min_place_gap_atr x ladder ATR beyond rest_last (the remaining lots' last entry)."""
         gap_atr = self.cfg.resting.readd_gap_atr
         if gap_atr <= 0:
             return entry
@@ -1842,9 +1845,16 @@ class Bot:
         atr = float(lv.atr) if lv is not None and lv.atr else (self.front_atr() or 0.0)
         lvl = partial_px - pos.side * gap_atr * atr
         px = lvl if pos.side * (entry - lvl) > 0 else entry
+        # Trevor 2026-10-27 13:50 MT: also >= dca.min_place_gap_atr x ATR beyond the REMAINING last entry (rest_last)
+        mgap = self.cfg.dca.min_place_gap_atr
+        mlvl = rest_last - pos.side * mgap * atr if (mgap > 0 and rest_last is not None and atr > 0) else None
+        if mlvl is not None and pos.side * (px - mlvl) > 0:
+            px = mlvl
         px = math.floor(round(px * 100, 6)) / 100 if pos.side > 0 else math.ceil(round(px * 100, 6)) / 100
-        log.warning("RESTING ADD re-arm price %.2f = more adverse of closed lot entry %.4f and last partial %.4f %s %.2f x ATR "
-                    "%.4f (= %.4f)", px, entry, partial_px, "+" if pos.side < 0 else "-", gap_atr, atr, lvl)
+        log.warning("RESTING ADD re-arm price %.2f = most adverse of closed lot entry %.4f, last partial %.4f %s %.2f x ATR "
+                    "%.4f (= %.4f)%s", px, entry, partial_px, "+" if pos.side < 0 else "-", gap_atr, atr, lvl,
+                    "" if mlvl is None else " and remaining last entry %.4f %s %.2f x ATR (= %.4f)" % (
+                        rest_last, "+" if pos.side < 0 else "-", mgap, mlvl))
         return px
 
     def rearm_add(self, pos: ChainPosition, st: dict[str, Any], price: float, account: Any, equity: float,

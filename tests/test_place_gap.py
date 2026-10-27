@@ -133,3 +133,56 @@ def test_rearm_is_placed_exactly_not_clamped(monkeypatch, tmp_path):
     plan = types.SimpleNamespace(trigger=106.2, margin=5.0, leverage=10.0, source="rearm")   # 0.27 ATR from the last entry
     args, _, _ = b.rest_add_args(pos, state(), plan)
     assert args["triggerPriceUsd"] == 106.2
+
+
+# ------------------------------------------------------------------ 13:50 MT: re-adds after a partial keep the minimum too
+from tests.test_resting import rearm_setup   # noqa: E402
+
+RE = [*FLAGS, "resting.readd_gap_atr=0.6"]
+
+
+@pytest.fixture
+def rbot(monkeypatch, tmp_path):
+    b = mkbot(monkeypatch, tmp_path, RE)
+    b.strategy._levels = types.SimpleNamespace(atr=0.75)
+    return b
+
+
+def test_rearm_px_also_min_gap_beyond_the_remaining_last_entry(rbot):
+    s, l = types.SimpleNamespace(side=SHORT), types.SimpleNamespace(side=LONG)
+    # short: closed 100.70, partial 100.35 (+0.45 = 100.80), remaining last entry 100.20 (+0.6375 = 100.8375) -> 100.84
+    assert rbot.rearm_px(s, 100.70, 100.35, 100.20) == 100.84
+    assert rbot.rearm_px(s, 100.70, 100.35, 99.50) == 100.80      # min not binding: the readd rule as before
+    assert rbot.rearm_px(s, 100.70, 100.35) == 100.80             # no remaining entry given: as before
+    assert rbot.rearm_px(s, 101.40, 100.35, 100.20) == 101.40     # closed entry furthest: kept
+    # long mirror: remaining last entry 106.9 - 0.6375 = 106.2625 -> floored 106.26 (lower than 106.35 / 106.44)
+    assert rbot.rearm_px(l, 106.44, 106.8, 106.9) == 106.26
+    assert rbot.rearm_px(l, 106.44, 106.8, 107.5) == 106.35
+
+
+def test_rearm_min_off_is_the_old_readd_rule(monkeypatch, tmp_path):
+    b = mkbot(monkeypatch, tmp_path, [*ON, "resting.readd_gap_atr=0.6"])
+    b.strategy._levels = types.SimpleNamespace(atr=0.75)
+    assert b.rearm_px(types.SimpleNamespace(side=SHORT), 100.70, 100.35, 100.20) == 100.80
+
+
+def test_fill_passes_the_remaining_last_entry_and_places_exactly_once(monkeypatch, tmp_path):
+    b = mkbot(monkeypatch, tmp_path, [*ON, "dca.min_gap_atr=0.95", "dca.min_place_gap_atr=0.85", "resting.readd_gap_atr=0.6"])
+    seen = []
+    orig = b.rearm_px
+    b.rearm_px = lambda pos, entry, ppx, rest_last=None: seen.append((entry, ppx, rest_last)) or orig(pos, entry, ppx, rest_last)
+    st2, pos, lot_ = rearm_setup(b)              # long fixture: closes the deepest add 106.439585, partial 106.8, ATR 0.9
+    assert seen == [(lot_["price"], 106.8, 107.516917)]          # remaining lots' last entry
+    L = b.local
+    assert L.rearm["px"] == min(round(lot_["price"], 2), round(106.8 - 0.6 * 0.9, 2), round(107.516917 - 0.85 * 0.9, 2))
+    assert 107.516917 - L.rearm["px"] >= 0.85 * 0.9
+    b.calls.clear()
+    b.resting_tick(pos, st2, 106.7, ACC, 100.0)
+    calls = [c for c in b.calls if c[0] in ("cancel-limit-order", "create-limit-order")]
+    assert [n for n, _ in calls] == ["cancel-limit-order", "create-limit-order"]
+    assert calls[1][1]["triggerPriceUsd"] == L.rearm["px"]      # exact, no front-run, no clamp on top
+    st3 = dict(st2, openRequests=[r for r in st2["openRequests"] if r["pubkey"] != "LIM1"] + [req("LIM2", L.rearm["px"], "increase")])
+    for px in (106.7, 106.65, 106.9):
+        b.calls.clear()
+        b.resting_tick(pos, st3, px, ACC, 100.0)
+        assert not [c for c in b.calls if c[0] in ("cancel-limit-order", "create-limit-order")]
