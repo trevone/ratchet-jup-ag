@@ -8,7 +8,7 @@ def gbot(monkeypatch, tmp_path, gp=107.125, mins=(100.0, 100.0)):
     b = mkbot(monkeypatch, tmp_path, ON)
     b.gp = gp
     monkeypatch.setattr(b, "guard_tps", lambda: True)
-    monkeypatch.setattr(b, "guard_price", lambda pos, st: b.gp)
+    monkeypatch.setattr(b, "guard_price", lambda pos, st, extra=0.0: b.gp)
     monkeypatch.setattr(b, "tp_fee_mins", lambda pos, st: (list(mins), 0.0))
     monkeypatch.setattr(b, "guard_bank_stale", lambda st: False)
     b.synced = []

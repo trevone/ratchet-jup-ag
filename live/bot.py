@@ -679,10 +679,11 @@ class Bot:
         trade (partials_done is reset on flat); before that tp1_pct / tp2_pct from the average."""
         return bool(self.local.partials_done and self.bank_on and self.local.bank)
 
-    def guard_price(self, pos: ChainPosition, st: dict[str, Any]) -> float | None:
+    def guard_price(self, pos: ChainPosition, st: dict[str, Any], extra: float = 0.0) -> float | None:
         """Trevor 2026-10-15: price at which hwm_equity() == guard_target() (bisection on the existing functions; equity is
-        monotone in price: up for a long, down for a short). None when already met at market or unreachable."""
-        price, tgt = st["oracle"]["price"], self.guard_target(st)
+        monotone in price: up for a long, down for a short). None when already met at market or unreachable.
+        ``extra`` (own coin, >= 0; 2026-10-28) raises the target: used for the guard TP fee buffer."""
+        price, tgt = st["oracle"]["price"], self.guard_target(st) + max(extra, 0.0)
         if self.hwm_equity(pos, st, price) >= tgt:
             return None
         far = price * (2.0 if pos.side == LONG else 0.01)
@@ -703,12 +704,31 @@ class Bot:
         n = math.floor(n + 1e-6) if side == SHORT else math.ceil(n - 1e-6)
         return round(n * self.PRICE_TICK, 2)
 
+    # Trevor 2026-10-28 09:36 MT: guard TPs sit this much SOL of network fees beyond the guard target (own coin = this x SOL px /
+    # coin px; SOL bot: as is). One guard re-place (2 cancels + 2 places) costs ~0.000024 SOL (ETH 2026-10-28 03:35-06:35 MT),
+    # which moved the ETH guard price ~1.4-1.7 cents and left the just-placed TPs 1 tick on the wrong side -> re-place loop every
+    # 10 min. 0.0001 SOL ~ 4 re-places: a re-place's own fees no longer cross the resting TPs; a real drift past them still does.
+    GUARD_TP_BUFFER_SOL = 0.0001
+
+    def guard_tp_buffer(self, st: dict[str, Any]) -> float:
+        """GUARD_TP_BUFFER_SOL in the bot's own coin (the unit of hwm_equity / guard_target)."""
+        if self.asset == "SOL":
+            return self.GUARD_TP_BUFFER_SOL
+        cpx = self.coin_px(st)
+        return self.GUARD_TP_BUFFER_SOL * self.sol_price(st) / cpx if cpx > 0 else 0.0
+
     def guard_tp_px(self, pos: ChainPosition, st: dict[str, Any], verbose: bool = True) -> tuple[float, float | None]:
-        """(TP1 = TP2 price, raw guard price or None). Guard price rounded conservatively, then clamped by the stricter fee floor."""
+        """(TP1 = TP2 price, raw guard price or None). Guard price + fee buffer (target raised by guard_tp_buffer, i.e. further
+        on the safe side), rounded conservatively, then clamped by the stricter fee floor. Raw guard None (met at market):
+        fee floors as before; buffered price unreachable: the raw guard price."""
         gp = self.guard_price(pos, st)
-        px = st["oracle"]["price"] if gp is None else gp
+        gpb = self.guard_price(pos, st, self.guard_tp_buffer(st)) if gp is not None else None
+        if gpb is None or pos.side * (gpb - gp) < 0:
+            gpb = gp
+        px = st["oracle"]["price"] if gp is None else gpb
         if verbose:
-            log.info("TP at guard: close price %s", f"{gp:.6f}" if gp else "n/a (guard met at market) -> fee floors")
+            log.info("TP at guard: close price %s", f"{gp:.6f} (+ fee buffer {self.GUARD_TP_BUFFER_SOL:g} SOL -> {gpb:.6f})"
+                     if gp else "n/a (guard met at market) -> fee floors")
         # Trevor 2026-10-16: TP1 and TP2 at the SAME price: guard price clamped by the stricter of the two fee floors
         # (long: higher, short: lower = beyond both); no tp_guard_gap_pct spacing, no tp_min_gap_usd.
         mins, _ = self.tp_fee_mins(pos, st)
@@ -735,7 +755,9 @@ class Bot:
         land below the guard target; short: TP above it, long: below), cancel and re-place TP1/TP2 via the normal
         sync_tp_ladder path (guard_defer, cancel_failed, tp_retry all apply). A TP merely further out than needed is kept.
         Hysteresis: compared on the rounded tick (>= 1 tick wrong), at most once per GUARD_DRIFT_COOLDOWN_S, skipped while a
-        tp_retry / guard deferral / pending cancel / un-credited payout is being handled. Returns True when it re-placed."""
+        tp_retry / guard deferral / pending cancel / un-credited payout is being handled. Returns True when it re-placed.
+        2026-10-28: compared with the UN-buffered guard price while placement adds GUARD_TP_BUFFER_SOL, so a drift smaller
+        than the buffer (e.g. a re-place's own network fees) never re-places; a drift past the resting TPs still does."""
         L, n = self.local, len(self.cfg.tp.ladder)
         if not self.guard_tps() or L.tp_retry or L.pending_cancels or (L.bank or {}).get("tp_defer"):
             return False
@@ -2940,9 +2962,9 @@ class Bot:
         if not self.guard_tps():
             return ""
         try:
-            gp = self.guard_price(pos, st)
+            px, gp = self.guard_tp_px(pos, st, verbose=False)
             return (f" | TP@GUARD target {tgt:.9f} {self.local.bank['coin']} = ${tgt * self.coin_px(st):.2f}, TP price "
-                    + (f"{gp:.2f}" if gp else "n/a (met at market)") + f", placed {self.local.tp_px}")
+                    + (f"{px:.2f} (guard {gp:.2f} + fee buffer)" if gp else "n/a (met at market)") + f", placed {self.local.tp_px}")
         except Exception as e:  # noqa: BLE001 - log text only
             return f" | TP@GUARD (estimate failed: {e!r})"
 
