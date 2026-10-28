@@ -202,7 +202,7 @@ withdraw_cost_pct = 0.001
 withdraw_network_sol = 0.00005
 withdraw_fee_factor = 2.0
 fee_settle_min_sol = 0.005      # ETH/BTC: settle SOL network-fee debt (coin -> SOL) above this
-jupsol_loans = "observe"          # Trevor 2026-10-27: automatic JupSOL loans off | observe | on (live/jupsol_loans.py); off = manual rescue.sh only
+jupsol_loans = "on"               # Trevor 2026-10-27: automatic JupSOL loans off | observe | on (live/jupsol_loans.py); off = manual rescue.sh only
 
 [resting]
 # Resting on-chain orders (Trevor spec 2026-10-11, approved 23:00 MT). NOT LIVE: every flag OFF until Trevor enables it.
