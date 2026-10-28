@@ -25,3 +25,5 @@ Reserved for Trevor (propose only): pausing adds, closing positions, cancelling 
 Restarts: one bot at a time, each right after its own sweep: line.
 
 This file is the master reference (Trevor, 2026-10-28: "your Bible"). Every hourly check reads it first and follows it. Any change to the duties is made here first, then committed and pushed to GitHub the same hour, with a line in live/changes.log.
+
+TP DUTIES ARE MANDATORY (Trevor, 2026-10-28 08:43 MT): points 5 (TP3) and 6 (TP2) are done on EVERY check, with no exceptions. Each run logs, per bot, the current TP price and size, then MOVE (old -> new, with the evidence) or HOLD (the exact reason, with the numbers). Credit saving never cuts the TP work or the trading checks; save credits elsewhere.
