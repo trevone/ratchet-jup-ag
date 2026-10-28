@@ -43,6 +43,7 @@ from live import trim as trimmod
 from live import bank as bankmod
 from live import deposit as depositmod
 from live import resting as restmod
+from live import jupsol_loans as jlmod
 
 import urllib.request
 
@@ -278,6 +279,8 @@ class Bot:
         self._sol_px = 0.0
         self._mkt_px = 0.0
         self.confirm_tries, self.confirm_wait = 5, 3.0   # increase / trim confirmation: re-read the chain up to 5x 3 s
+        self._jl_nopeer = 0      # JupSOL next-add loans: consecutive ticks no peer could cover the shortfall
+        self._jl_want: dict | None = None   # JupSOL next-add loan decided by rest_add_plan, sent by the next bank tick
 
     def killed(self) -> bool:
         """This bot's KILL file or the global KILL_ALL."""
@@ -1467,7 +1470,8 @@ class Bot:
             return f"collateral {it.margin:.2f} < min {lv.min_collateral_usd}"
         if self.local.day_start_equity - equity > lv.max_daily_loss_usd:
             return "max_daily_loss_usd reached"
-        if self.bank_on:   # own-coin ledger: funded ONLY from this bot's own balance, never borrowed from other bots
+        if self.bank_on:   # own-coin ledger: funded ONLY from this bot's own balance (the guard itself never borrows; inter-bot /
+            # JupSOL loans are booked into bal beforehand by bank_tick)
             need = it.margin / self.coin_px(st)
             if need > self.local.bank["bal"] + 1e-12:
                 return (f"insufficient own funds: needs {need:.9f} {self.local.bank['coin']} (${it.margin:.2f}), own balance "
@@ -2003,7 +2007,10 @@ class Bot:
                 big = self.strategy.plan_next_add(p, max(cash, 0.0) + k * rung, pd.Timestamp.now(tz="UTC"))
                 k += 1
             if borrow and big is not None and big.margin > cash:   # Trevor 18:13 MT: short of equity -> borrow from a flat bot (no cap)
-                self.ib_request(bankmod.ib_need_usd(big.margin, cash))   # shortfall + $1, min $2
+                # 2026-10-27: peers first exactly as today; JupSOL lends the exact shortfall + $1 only when no peer can
+                # cover it ([ledger] jupsol_loans = "on"; live/jupsol_loans.py). True = no inter-bot request this tick.
+                if not jlmod.next_add_shortfall(self, p, cash, big):
+                    self.ib_request(bankmod.ib_need_usd(big.margin, cash))   # shortfall + $1, min $2
             return None, "no ladder plan (budget / liq rule)"
         if not self.strategy._adds_left(pos):
             return None, "no adds left (max_adds / allow_after_partial)"
@@ -2319,7 +2326,9 @@ class Bot:
         sol_px, cpx = self.sol_price(st), self.coin_px(st)
         mid_dep = self.deposit_tick(st)   # USDC deposit share (live/deposit.py): True = own leg in flight / just credited
         mid_loan = self.ib_tick(st, pos)
-        if mid_loan or mid_dep:
+        # JupSOL loans (live/jupsol_loans.py): rescue / next-add loan / park request / journalled op; True = wallet moved
+        mid_jl = False if (mid_loan or mid_dep) else jlmod.tick(self, st, pos, price)
+        if mid_loan or mid_dep or mid_jl:
             pass
         elif self.asset == "SOL":
             j = bankmod.load_journal()
@@ -2368,17 +2377,18 @@ class Bot:
         flat = pos is None and b.get("window", 0) == 0 and not self._busy(st, self.asset == "SOL")
         if pos is None and b.get("window", 0) == 0 and not self._busy(st, False) and b.get("book_pend") and not b.get("pend"):
             self.bank_book_pending(sol_px, cpx)
-        if flat and bankmod.loan_outstanding(b) > 0 and not b.get("pend"):   # JupSOL rescue: repay + restore settings
-            try:
-                from live import rescue
-                rescue.auto_repay(self)
-            except Exception as e:   # noqa: BLE001 - retried next tick
-                log.warning("RESCUE auto-repay failed (retry next tick): %s", e)
         if flat and b.get("ib_loan", {}).get("role") == "borrower" and not b.get("pend") and not b.get("book_pend"):
             try:
                 self.ib_borrower_repay(sol_px, cpx)
             except Exception as e:  # noqa: BLE001 - retried next tick
                 log.error("INTER-BOT LOAN repay failed (retry next tick): %s", e)
+        # 2026-10-27: JupSOL loan repaid AFTER the peer (exact JupSOL quantity; not while a reconcile / own-coin booking /
+        # SOL true-up is pending or a payout window is open; a carried rest waits for the next flat)
+        if flat and not mid_jl and jlmod.repay_due_now(self):
+            try:
+                jlmod.repay_tick(self, sol_px, cpx)
+            except Exception as e:   # noqa: BLE001 - retried next tick
+                log.error("JUPSOL repay failed (retry next tick): %s", e)
         if not b.get("trueup_block") and bankmod.update_hwm(b, flat, bankmod.fee_debt_native(b, sol_px, cpx)):
             log.info("BANK HWM raised (flat): %s", bankmod.status_line(b, cpx, sol_px))
         self.save()

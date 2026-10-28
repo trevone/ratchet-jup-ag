@@ -1,3 +1,2 @@
-{"trigger_pct": 3.0, "target_pct": 10.0, "collateral_share": 0.6, "keep_jupsol": 0.0, "haircut_pct": 1.0,
- "repay_margin_pct": 5.0, "repay_profit_share": 0.0, "emergency_min_push_pct": 2.0, "emergency_min_collat_pct": 10.0,
+{"trigger_pct": 3.0, "target_pct": 10.0, "keep_jupsol": 0.0, "haircut_pct": 1.0, "emergency_min_push_pct": 2.0,
  "extend_rungs": 6, "maint": 0.01}

@@ -87,8 +87,11 @@ export async function quote(a: { direction: "stake" | "unstake" | "sweep" | "swa
   if (a.direction === "sweep" && !Object.values(SWEEP_MINTS).includes(a.inputMint ?? "")) throw new Error(`sweep input mint ${a.inputMint} not allowed`);
   // "swap" (per-bot own-coin ledger, 2026-10-08 21:37 MT): any pair of the bot coins SOL / USDC / ETH / WBTC, plus
   // SOL / ETH / WBTC -> JupSOL (daily withdrawal). Output always lands in the owner's own account (checked in buildSwap).
+  // 2026-10-27 (JupSOL loans, live/jupsol_loans.py): JupSOL allowed as INPUT only (one ExactOut / ExactIn JupSOL -> coin
+  // swap, no stranded SOL leg); the output list is unchanged.
   if (a.direction === "swap") {
-    const ins = [NATIVE_MINT.toBase58(), ...Object.values(SWEEP_MINTS)], outs = [...ins, JUPSOL_MINT.toBase58()];
+    const coins = [NATIVE_MINT.toBase58(), ...Object.values(SWEEP_MINTS)];
+    const ins = [...coins, JUPSOL_MINT.toBase58()], outs = [...coins, JUPSOL_MINT.toBase58()];
     if (!ins.includes(a.inputMint ?? "") || !outs.includes(a.outputMint ?? "") || a.inputMint === a.outputMint)
       throw new Error(`swap pair ${a.inputMint} -> ${a.outputMint} not allowed`);
   }

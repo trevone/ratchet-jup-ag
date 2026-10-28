@@ -1,13 +1,15 @@
-"""JupSOL liquidation rescue (Trevor 2026-10-11 08:23 MT). Dry run unless --send (and then only via rescue.sh, service stopped).
+"""JupSOL liquidation rescue, manual tool (Trevor 2026-10-11; reworked 2026-10-27). Dry run unless --send (and then only
+via rescue.sh, service stopped). The automatic version runs inside the bots: live/jupsol_loans.py ([ledger] jupsol_loans).
 
-When a bot's position is within trigger_pct of liquidation: lend JupSOL -> the bot's own coin (JupSOL -> SOL ->
-ETH / WBTC with the bot's own swap paths), deposit part as extra collateral (increase with sizeUsd 0; shorts: keeper swaps
-to USDC as the bot already does) and credit the rest to the bot's balance. The loan is a bank LIABILITY (bank.loan):
-excluded from HWM / profit guard / withdrawals. When the bot is flat it repays principal x (1 + repay_margin_pct) (+ optional
-profit share) to JupSOL and restores any extended settings (live/bot.py bank_tick hook -> auto_repay).
+When a bot's position is within trigger_pct of liquidation (accrued borrow fee included): ONE ExactOut JupSOL -> own-coin
+swap (no SOL leg left stranded) for min(collateral that moves liq to target_pct away, 1/3 of the usable JupSOL after the
+haircut), then ALL of the measured coin goes in as extra collateral (increase with sizeUsd 0; shorts: keeper swaps to USDC
+as the bot already does). No bank credit split. The loan is a bank LIABILITY (bank.loan): excluded from HWM / profit guard /
+withdrawals. When the bot is flat it buys back exactly the JupSOL quantity lent (no margin, no profit share; live/bot.py
+bank_tick -> jupsol_loans.repay_tick) and restores any extended settings.
 
   rescue.sh status
-  rescue.sh lend <sol|eth|btc> <jupsol_amount|auto> [--send]
+  rescue.sh lend <sol|eth|btc> <auto|usd> [--send]   (auto = the rule above; usd = that collateral, still max 1/3 of JupSOL)
   rescue.sh extend <bot> [n_rungs] [--send]     (raises dca.ladder_max_rungs; original restored on repay / restore)
   rescue.sh add <bot> <usd> [--lev X] [--send]  (manual add on the bot's behalf, normal increase builder)
   rescue.sh restore <bot> [--send]              (repay now if flat + restore settings)
@@ -26,9 +28,10 @@ from live import bank as K
 
 ROOT = Path(__file__).resolve().parent.parent
 CFG_PATH = ROOT / "live" / "rescue_cfg.json"
-DEFAULTS = {"trigger_pct": 3.0, "target_pct": 10.0, "collateral_share": 0.6, "keep_jupsol": 0.0, "haircut_pct": 1.0,
-            "repay_margin_pct": 5.0, "repay_profit_share": 0.0, "emergency_min_push_pct": 2.0,
-            "emergency_min_collat_pct": 10.0, "extend_rungs": 6, "maint": 0.01}
+# 2026-10-27: collateral_share / repay_margin_pct / repay_profit_share / emergency_min_collat_pct removed (collateral only,
+# exact JupSOL repayment, EMERGENCY = push < emergency_min_push_pct); max 1/3 of the JupSOL per rescue (jupsol_loans.RESCUE_SHARE)
+DEFAULTS = {"trigger_pct": 3.0, "target_pct": 10.0, "keep_jupsol": 0.0, "haircut_pct": 1.0, "emergency_min_push_pct": 2.0,
+            "extend_rungs": 6, "maint": 0.01}
 BOTS = {"sol": ("SOL", "configs/live_100.toml", "live/state.json", "ratchet-sol"),
         "eth": ("ETH", "configs/live_eth.toml", "live/eth/state.json", "ratchet-eth"),
         "btc": ("BTC", "configs/live_btc.toml", "live/btc/state.json", "ratchet-btc")}
@@ -60,40 +63,20 @@ def collateral_for(side: int, size: float, avg: float, margin: float, px: float,
 
 
 def plan(side: int, size: float, avg: float, margin: float, px: float, jupsol_usd: float, c: dict[str, Any],
-         amount_usd: float | None = None) -> dict[str, Any]:
-    """Split a loan (default: all usable JupSOL) into collateral (up to what reaches target_pct, max collateral_share
-    of the loan unless more is needed to reach trigger_pct) and bank credit. EMERGENCY when the whole JupSOL as
-    collateral can't push liq out by emergency_min_push_pct points or is < emergency_min_collat_pct of margin."""
-    m = c["maint"]
-    liq0 = liq_price(side, size, avg, margin, m)
-    d0 = dist_pct(side, px, liq0)
-    avail = jupsol_usd * (1 - c["haircut_pct"] / 100)
-    loan = min(avail, amount_usd) if amount_usd is not None else avail
-    need_t = collateral_for(side, size, avg, margin, px, c["target_pct"], m)
-    need_trig = collateral_for(side, size, avg, margin, px, c["trigger_pct"] + 0.5, m)
-    coll = min(loan, max(min(need_t, loan * c["collateral_share"]), need_trig))
-    full_push = dist_pct(side, px, liq_price(side, size, avg, margin + avail, m)) - d0
-    emergency = full_push < c["emergency_min_push_pct"] or avail < margin * c["emergency_min_collat_pct"] / 100
-    liq1 = liq_price(side, size, avg, margin + coll, m)
-    return {"liq": round(liq0, 4), "dist_pct": round(d0, 2), "loan_usd": round(loan, 2), "collateral_usd": round(coll, 2),
-            "credit_usd": round(loan - coll, 2), "new_liq": round(liq1, 4), "new_dist_pct": round(dist_pct(side, px, liq1), 2),
-            "max_push_pts": round(full_push, 2), "need_usd_target": round(need_t, 2),
-            "need_usd_at_trigger": round(size * px / avg * (c["target_pct"] - c["trigger_pct"]) / 100, 2), "emergency": emergency,
-            "in_trigger": d0 < c["trigger_pct"]}
+         borrow_usd: float = 0.0) -> dict[str, Any]:
+    """Collateral-only rescue plan (jupsol_loans.rescue_plan): min(collateral to target_pct, 1/3 of the JupSOL after the
+    haircut); liq from margin - accrued borrow fee; EMERGENCY when that moves liq < emergency_min_push_pct points."""
+    from live.jupsol_loans import rescue_plan
+    return rescue_plan(side, size, avg, margin, borrow_usd, px, jupsol_usd, c)
 
 
 def loan_out(b: dict[str, Any]) -> float:
     return K.loan_outstanding(b)
 
 
-def repay_due(b: dict[str, Any], c: dict[str, Any]) -> float:
-    """Native coin to send back to JupSOL: principal x (1 + margin%) + profit_share x profit over the loan-time HWM."""
-    ln = b.get("loan") or {}
-    p = float(ln.get("principal", 0.0))
-    if p <= 0:
-        return 0.0
-    prof = max(0.0, b["bal"] - p - float(ln.get("hwm_at_open", b["hwm"])))
-    return round(p * (1 + c["repay_margin_pct"] / 100) + c["repay_profit_share"] * prof, 9)
+def repay_due(b: dict[str, Any], c: dict[str, Any] | None = None) -> float:
+    """JupSOL to give back: exactly the JupSOL quantity still owed (Trevor 2026-10-27: no margin, no profit share)."""
+    return round(K.loan_jupsol_owed(b), 9)
 
 
 # ------------------------------------------------------------------ settings (toml edit with snapshot)
@@ -182,93 +165,86 @@ def status(c: dict[str, Any]) -> list[str]:
             out.append(f"RESCUE {bot}: ERROR {e}")
             continue
         b = st.get("bank") or {}
-        usable = max(0.0, s["jupsol"] - c["keep_jupsol"])
+        from live import jupsol_loans as JL
+        usable = JL.usable_jupsol(s["jupsol"], c["keep_jupsol"], JL.parked_jupsol(JL.reg_read()))
         ju = usable * s["sol_per_jupsol"] * s["sol_px"]
-        loan = f" LOAN {loan_out(b):.9f} {b.get('coin')} (repay {repay_due(b, c):.9f})" if loan_out(b) > 0 else ""
+        loan = (f" LOAN {loan_out(b):.9f} {b.get('coin')} (owes {repay_due(b, c):.9f} JupSOL"
+                f"{', carried to next flat' if 'carry_flat' in (b.get('loan') or {}) else ''})") if loan_out(b) > 0 else ""
         rungs = f" rungs {max(0, int(st.get('n_entries') or 0) - 1)}/{get_rungs(bot)}"
+        mode = getattr(cfg.ledger, "jupsol_loans", "off")
         if not s["pos"]:
-            out.append(f"RESCUE {bot}: flat | JupSOL {s['jupsol']:.6f} (~${ju:.2f}){loan}{rungs}")
+            out.append(f"RESCUE {bot}: flat | auto {mode} | JupSOL {s['jupsol']:.6f} usable ~${ju:.2f}{loan}{rungs}")
             continue
         p = s["pos"]
-        pl = plan(p["side"], p["size"], p["avg"], p["margin"], s["px"], ju, c)
+        borrow = float(((s["chain"].get("positions") or {}).get("long" if p["side"] > 0 else "short") or {}).get("borrowFeeUsd") or 0.0)
+        pl = plan(p["side"], p["size"], p["avg"], p["margin"], s["px"], ju, c, borrow)
         flag = " EMERGENCY" if pl["emergency"] and pl["in_trigger"] else (" (would be EMERGENCY if triggered)" if pl["emergency"] else "")
-        out.append(f"RESCUE {bot}: {'long' if p['side'] > 0 else 'short'} ${p['size']:.2f} coll ${p['margin']:.2f} px {s['px']:.2f} "
-                   f"liq {pl['liq']:.2f} ({pl['dist_pct']:.1f}% away){' IN-TRIGGER' if pl['in_trigger'] else ''} | JupSOL {s['jupsol']:.6f} "
-                   f"(~${ju:.2f}) all-in collateral -> +{pl['max_push_pts']:.1f} pts; to {c['target_pct']:g}% needs ${pl['need_usd_target']:.2f} "
-                   f"(at {c['trigger_pct']:g}% trigger: ${pl['need_usd_at_trigger']:.2f})"
-                   f"{loan}{rungs}{flag}")
+        out.append(f"RESCUE {bot}: auto {mode} | {'long' if p['side'] > 0 else 'short'} ${p['size']:.2f} coll ${p['margin']:.2f} "
+                   f"(borrow fee ${borrow:.2f}) px {s['px']:.2f} liq {pl['liq']:.2f} ({pl['dist_pct']:.1f}% away)"
+                   f"{' IN-TRIGGER' if pl['in_trigger'] else ''} | JupSOL {s['jupsol']:.6f} (usable ~${ju:.2f}): to "
+                   f"{c['target_pct']:g}% needs ${pl['need_usd']:.2f}, 1/3 cap ${pl['cap_usd']:.2f} -> ${pl['collateral_usd']:.2f} "
+                   f"-> {pl['new_dist_pct']:.1f}% away (+{pl['push_pts']:.1f} pts){loan}{rungs}{flag}")
     return out
 
 
-def lend(bot: str, amount: str, send: bool, c: dict[str, Any], coll_override: float | None = None,
-         force: bool = False) -> dict[str, Any]:
+def lend(bot: str, amount: str, send: bool, c: dict[str, Any], force: bool = False) -> dict[str, Any]:
+    """Manual rescue (service stopped): one ExactOut JupSOL -> coin swap, measured coin booked as the loan, all of it
+    deposited as collateral. amount = "auto" or a USD collateral (still capped at 1/3 of the usable JupSOL)."""
     asset = BOTS[bot][0]
     cfg, sp, st = _load(bot)
-    from live import stake as S
+    from live import jupsol_loans as JL
     from live import sweep as W
     s = snapshot(bot)
     if not s["pos"]:
         raise SystemExit(f"{bot}: no open position")
-    usable = max(0.0, s["jupsol"] - c["keep_jupsol"])
-    js = usable if amount == "auto" else min(float(amount), usable)
-    if js <= 0:
-        return {"bot": bot, "EMERGENCY": True, "why": "no JupSOL available"}
+    p, coin = s["pos"], K.COIN[asset]
+    r = JL.reg_read()
+    usable = JL.usable_jupsol(s["jupsol"], c["keep_jupsol"], JL.parked_jupsol(r))
     rate_usd = s["sol_per_jupsol"] * s["sol_px"]
-    p = s["pos"]
-    pl = plan(p["side"], p["size"], p["avg"], p["margin"], s["px"], usable * rate_usd, c, js * rate_usd * (1 - c["haircut_pct"] / 100))
-    if coll_override is not None:
-        pl["collateral_usd"] = coll_override
+    borrow = float(((s["chain"].get("positions") or {}).get("long" if p["side"] > 0 else "short") or {}).get("borrowFeeUsd") or 0.0)
+    pl = plan(p["side"], p["size"], p["avg"], p["margin"], s["px"], usable * rate_usd, c, borrow)
+    if amount != "auto":
+        pl["collateral_usd"] = min(float(amount), pl["cap_usd"])
     if send and not pl["in_trigger"] and not force:
         raise SystemExit(f"{bot}: liq {pl['dist_pct']}% away, not within trigger {c['trigger_pct']}%; refusing (--force to override)")
-    out: dict[str, Any] = {"bot": bot, "send": send, "jupsol_in": round(js, 9), "plan": pl, "EMERGENCY": pl["emergency"], "steps": []}
-    # 1) JupSOL -> SOL (stake CLI "unstake" path)
-    a1 = S.swap_args(cfg, "unstake", int(js * LAMPORTS))
-    r1 = _jup("swap" if send else "simulate-swap", {**a1, "send": send})
-    out["steps"].append({"unstake": {k: r1.get(k) for k in ("ok", "sig", "error", "err", "quotedOut", "unitsConsumed")}})
-    if send and not r1.get("sig"):
-        return out
-    sol_got = int(r1.get("quotedOut") or 0) / LAMPORTS
-    d = r1.get("deltas") or {}
-    if send and d.get("solDeltaLamports") is not None:
-        sol_got = int(d["solDeltaLamports"]) / LAMPORTS
-    coin = K.COIN[asset]
-    got = sol_got
-    if asset != "SOL":   # 2) SOL -> ETH / WBTC (own-coin swap path)
-        a2 = W.sweep_args(cfg, K.MINT["SOL"], int(sol_got * 0.995 * LAMPORTS), K.MINT[coin])
-        r2 = _jup("swap" if send else "simulate-swap", {**a2, "send": send})
-        out["steps"].append({"sol_to_coin": {k: r2.get(k) for k in ("ok", "sig", "error", "err", "quotedOut")}})
-        if send and not r2.get("sig"):
-            out["note"] = "JupSOL already unstaked to SOL; SOL->coin failed: SOL sits in wallet (book manually)"
-            return out
-        got = int(r2.get("quotedOut") or 0) / 10 ** K.DECIMALS[coin]
+    out: dict[str, Any] = {"bot": bot, "send": send, "plan": pl, "EMERGENCY": pl["emergency"], "steps": []}
     cpx = s["px"] if asset != "SOL" else s["sol_px"]
-    got_usd = got * cpx
-    coll_usd = min(pl["collateral_usd"], got_usd)
-    coll_nat = coll_usd / cpx
-    # 3) collateral deposit = increase with sizeUsd 0 (same builder / args as open_or_add)
+    dec = K.DECIMALS[coin]
+    atoms = int(pl["collateral_usd"] / cpx * 10 ** dec)
+    if atoms <= 0:
+        return {**out, "EMERGENCY": True, "why": "no usable JupSOL / nothing needed"}
+    if send:
+        os.environ["JUP_LIVE"] = "1"
+    a1 = W.sweep_args(cfg, K.MINT["JUPSOL"], atoms, K.MINT[coin], "ExactOut")
+    r1 = _jup("swap" if send else "simulate-swap", {**a1, "send": send})
+    out["steps"].append({"jupsol_to_coin": {k: r1.get(k) for k in ("ok", "sig", "error", "err", "inAmount", "quotedOut", "unitsConsumed")}})
+    if send and not (r1.get("ok") and r1.get("sig")):
+        out["note"] = "swap not confirmed: nothing booked (check the wallet if it has a sig)"
+        return out
+    got, js, measured = JL.lend_measured(r1, coin) if send else (atoms / 10 ** dec, int(r1.get("inAmount") or 0) / LAMPORTS, False)
     slip = cfg.live.price_slippage_pct
-    side = "long" if p["side"] > 0 else "short"
-    dec = 9 if asset == "SOL" else K.DECIMALS[coin]
-    args: dict[str, Any] = {"side": side, "collateralAtoms": str(int(coll_nat * 10 ** dec)), "sizeUsd": 0,
-                            "priceSlippageUsd": round(s["px"] * (1 + slip) if p["side"] > 0 else s["px"] * (1 - slip), 2),
-                            "market": asset}
+    args: dict[str, Any] = {"side": "long" if p["side"] > 0 else "short", "collateralAtoms": str(int(round(got * 10 ** dec))),
+                            "sizeUsd": 0, "market": asset,
+                            "priceSlippageUsd": round(s["px"] * (1 + slip) if p["side"] > 0 else s["px"] * (1 - slip), 2)}
     if asset != "SOL":
         args["inputMint"] = K.MINT[coin]
     if p["side"] < 0:
-        args["jupiterMinimumOut"] = str(int(coll_usd * (1 - slip) * USDC_ATOMS))
-    elif asset != "SOL" and "inputMint" not in args:
-        pass
-    r3 = (_jup("increase" if send else "simulate-increase", {**args, "send": send}) if coll_nat > 0
-          else {"ok": True, "error": "skipped: no collateral needed (liq already beyond target); all credited to bal"})
-    out["steps"].append({"add_collateral": {"args": args, **{k: r3.get(k) for k in ("ok", "sig", "error", "err", "unitsConsumed", "logs")
-                                                             if k != "logs"}}})
-    out["coin_got"], out["collateral_native"], out["credit_native"] = round(got, 9), round(coll_nat, 9), round(got - coll_nat, 9)
+        args["jupiterMinimumOut"] = str(int(got * cpx * (1 - slip) * USDC_ATOMS))
+    out["coin_got"], out["jupsol_out"], out["measured"] = round(got, 9), round(js, 9), measured
     if send:
-        os.environ["JUP_LIVE"] = "1"
         b = st["bank"]
-        K.loan_open(b, got, js, c["repay_margin_pct"], f"JupSOL rescue: {js:.9f} JupSOL -> {got:.9f} {coin}")
+        K.loan_open(b, got, js, 0.0, f"JupSOL rescue (manual): {js:.9f} JupSOL -> {got:.9f} {coin} sig {r1.get('sig')}",
+                    kind="rescue_manual", sig=r1.get("sig"))
+        _save(sp, st)
+        JL._stake_row("loan_out", f"rescue-manual-{asset}", r1, -js, f"{js:.9f} JupSOL lent -> {got:.9f} {coin}")
+    r3 = _jup("increase" if send else "simulate-increase", {**args, "send": send})
+    out["steps"].append({"add_collateral": {"args": args, **{k: r3.get(k) for k in ("ok", "sig", "error", "err", "unitsConsumed")}}})
+    if send:
+        b = st["bank"]
         if r3.get("sig") or r3.get("ok"):
-            K.debit(b, coll_nat, "collateral", f"rescue collateral ${coll_usd:.2f} sig {r3.get('sig')}")
+            K.debit(b, got, "collateral", f"rescue collateral {got:.9f} {coin} sig {r3.get('sig')}")
+        else:
+            out["note"] = "collateral add failed: the borrowed coin stays in bal (repaid on flat); retry with rescue.sh add"
         b["window"] = max(b.get("window", 0), 10)
         _save(sp, st)
     return out
@@ -305,39 +281,34 @@ def manual_add(bot: str, usd: float, lev: float | None, send: bool) -> dict[str,
 
 
 def repay(bot: str, b: dict[str, Any], cfg: Any, c: dict[str, Any], send: bool) -> dict[str, Any]:
-    """Flat + open loan: coin -> JupSOL for repay_due (capped at bal), book it, restore settings."""
+    """Manual (service stopped, flat): buy back exactly the JupSOL still owed (ExactOut coin -> JupSOL). Not enough
+    balance -> nothing sent (the bot carries it to its next flat). Restores settings once repaid."""
     asset = BOTS[bot][0]
     coin = K.COIN[asset]
-    due = min(repay_due(b, c), b["bal"])
-    if due <= 0:
+    owed = repay_due(b, c)
+    if owed <= 0:
         return {"bot": bot, "nothing": True, "restored": restore_settings(bot, b, cfg) if send else []}
-    if asset == "SOL":
-        from live.stake import stake_sol
-        r = stake_sol(cfg, due, source="rescue-repay-SOL", send=send)
-    else:
-        from live import sweep as W
-        if send:
-            os.environ["JUP_LIVE"] = "1"
-        r = _jup("swap" if send else "simulate-swap",
-                 {**W.sweep_args(cfg, K.MINT[coin], int(due * 10 ** K.DECIMALS[coin]), K.MINT["JUPSOL"]), "send": send})
+    from live import jupsol_loans as JL
+    from live import sweep as W
+    args = W.sweep_args(cfg, K.MINT[coin], int(round(owed * LAMPORTS)), K.MINT["JUPSOL"], "ExactOut")
+    q = _jup("swap-quote", args)
+    need = int(q.get("otherAmountThreshold") or q.get("inAmount") or 0) / 10 ** K.DECIMALS[coin]
+    if not q.get("ok") or need <= 0 or need > b["bal"]:
+        return {"bot": bot, "owed_jupsol": owed, "ok": False, "error": f"quote {q.get('error') or ''} needs {need:.9f} {coin} "
+                                                                      f"vs bal {b['bal']:.9f}: not sent (carried to the next flat)"}
+    if send:
+        os.environ["JUP_LIVE"] = "1"
+    r = _jup("swap" if send else "simulate-swap", {**args, "send": send})
     ok = bool(r.get("ok")) and bool(r.get("sig"))
-    res = {"bot": bot, "due": due, "send": send, "ok": ok or not send, "sig": r.get("sig"), "error": r.get("error")}
+    res = {"bot": bot, "owed_jupsol": owed, "max_in": need, "send": send, "ok": ok or not send, "sig": r.get("sig"), "error": r.get("error")}
     if send and ok:
-        K.loan_repay(b, due, f"repay to JupSOL sig {r.get('sig')}")
-        res["restored"] = restore_settings(bot, b, cfg)
+        spent, got, measured = JL.repay_measured(r, coin)
+        res.update(spent=spent, jupsol_got=got, measured=measured,
+                   book=K.loan_repay_jupsol(b, spent, got, f"manual repay to JupSOL sig {r.get('sig')}"))
+        JL._stake_row("loan_repay", f"rescue-manual-repay-{asset}", r, got, f"{spent:.9f} {coin} -> {got:.9f} JupSOL repaid")
+        if res["book"]["closed"]:
+            res["restored"] = restore_settings(bot, b, cfg)
     return res
-
-
-def auto_repay(botobj: Any) -> None:
-    """Hook from live/bot.py bank_tick (flat, settled window, loan open). Errors are logged, retried next tick."""
-    import logging
-    log = logging.getLogger("live")
-    bot = {"SOL": "sol", "ETH": "eth", "BTC": "btc"}[botobj.asset]
-    b = botobj.local.bank
-    r = repay(bot, b, botobj.cfg, rcfg(), send=True)
-    log.warning("RESCUE auto-repay %s", json.dumps(r))
-    if r.get("ok") and r.get("sig"):
-        b["window"] = max(b.get("window", 0), botobj.cfg.ledger.window_ticks)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -345,7 +316,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status")
     p = sub.add_parser("lend"); p.add_argument("bot", choices=BOTS); p.add_argument("amount"); p.add_argument("--send", action="store_true")
-    p.add_argument("--collateral-usd", type=float, help="override collateral part (testing / manual)"); p.add_argument("--force", action="store_true")
+    p.add_argument("--force", action="store_true")
     p = sub.add_parser("extend"); p.add_argument("bot", choices=BOTS); p.add_argument("n", nargs="?", type=int); p.add_argument("--send", action="store_true")
     p = sub.add_parser("add"); p.add_argument("bot", choices=BOTS); p.add_argument("usd", type=float); p.add_argument("--lev", type=float); p.add_argument("--send", action="store_true")
     p = sub.add_parser("restore"); p.add_argument("bot", choices=BOTS); p.add_argument("--send", action="store_true")
@@ -356,7 +327,7 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(lines))
         return 3 if any(ln.endswith("EMERGENCY") for ln in lines) else 0
     if a.cmd == "lend":
-        r = lend(a.bot, a.amount, a.send, c, a.collateral_usd, a.force)
+        r = lend(a.bot, a.amount, a.send, c, a.force)
         print(json.dumps(r, indent=1))
         if r.get("EMERGENCY"):
             print(f"EMERGENCY {a.bot}: JupSOL too small for meaningful relief -> notify Trevor now")

@@ -197,17 +197,37 @@ Kill files: per-bot `live/{,eth/,btc/}KILL`; global `live/KILL_ALL`. `close_all_
 
 Last updated 2026-10-08 22:27 MT
 
-## JupSOL rescue (Trevor 2026-10-11)
+## JupSOL rescue (Trevor 2026-10-11; reworked 2026-10-27)
 
-When a bot's open position is within **3%** of liquidation (`live/rescue_cfg.json` trigger_pct), JupSOL is **lent** to that bot
-(the one exception to "JupSOL is never margin"): JupSOL -> SOL (stake unstake path) -> ETH / WBTC (own-coin swap path);
-part is deposited as extra collateral (increase with sizeUsd 0, shorts swapped to USDC by the keeper as usual) to push liq
-toward `target_pct` 10% (max `collateral_share` 60% of the loan unless needed to clear the trigger), the rest is credited to
-the bot's balance as add budget. Booked as a **liability** `bank.loan` (principal, JupSOL in, hwm_at_open): excluded from
-HWM, profit guard equity and withdrawals. Out of rungs -> `rescue.sh extend` (+6 `ladder_max_rungs`, original saved) or a manual
-add via `rescue.sh add`. When flat the bot auto-repays principal x (1 + `repay_margin_pct` 5%) (+ `repay_profit_share`) to
-JupSOL and restores settings. JupSOL too small (full JupSOL pushes liq < 2 pts or < 10% of collateral) -> **EMERGENCY**:
-notify Trevor. Tool: `live/rescue.sh` (dry run by default); steps: `RESCUE_PLAYBOOK.md`.
+When a bot's open position is within **3%** of liquidation (`live/rescue_cfg.json` trigger_pct; the distance uses the
+collateral minus the **accrued borrow fee**), JupSOL is **lent** to that bot (the one exception to "JupSOL is never margin").
+**2026-10-27 (Trevor):** collateral only (no bank credit split): ONE ExactOut JupSOL -> own-coin swap (no stranded SOL leg)
+for min(collateral that moves liq to `target_pct` 10% away, **1/3** of the usable JupSOL after the 1% `haircut_pct`), all of the
+**measured** coin deposited as collateral (increase, sizeUsd 0). EMERGENCY (notify Trevor) when that amount moves liq by less
+than `emergency_min_push_pct` 2 points. Booked as a **liability** `bank.loan` (coin received = principal, JupSOL measured out =
+what is owed): excluded from HWM, profit-guard equity, guard target and withdrawals. Repayment: the **exact JupSOL quantity lent**
+(ExactOut own coin -> JupSOL; no 5% margin, no profit share) when the bot is flat, after any inter-bot loan, never while a
+reconcile / own-coin booking / SOL true-up is pending. If the balance cannot buy it all back, what it buys is repaid and the rest is
+carried to the bot's **next** flat (deposits do not pay it while it is still flat); nothing is ever written off. Settings
+extended for the rescue are restored on full repayment. Out of rungs -> `rescue.sh extend` / `rescue.sh add` (manual only).
+Automatic version: `[ledger] jupsol_loans` (below); manual tool: `live/rescue.sh` (dry run by default); steps: `RESCUE_PLAYBOOK.md`.
+
+### Automatic JupSOL loans (Trevor 2026-10-27, `live/jupsol_loans.py`, `[ledger] jupsol_loans` = off | observe | on, default off)
+- **Rescue** as above, automatic in `on` (observe: logs `JUPSOL observe: would RESCUE ...`). KILL present -> skipped and logged.
+  A bot in trigger registers in `live/jupsol_loans.json` (`rescue_want`) and every bot's next-add loan waits (rescue first).
+- **Next-add loan**: when the next resting rung needs more than the free balance, peers go first exactly as today (the
+  inter-bot request is filed). Only when no peer can cover it (no flat peer with free >= max($2, need) + $5, or another pair's
+  loan record busy; checked on 2 consecutive ticks; or `<state dir>/IB_BORROW_OFF` present) JupSOL lends **exactly the shortfall
+  + $1** (rung margin - free + $1, no minimum, no cap) and only if the whole amount is usable; the bot's own inter-bot request is
+  withdrawn first (a peer that already started funding wins). The add is then placed by the normal resting-add path.
+- **Booking**: measured tx deltas (quote only as a logged fallback); SOL network fee via bank_fee (ETH / BTC fee debt);
+  `live/stake_ledger.csv` rows `loan_out` / `loan_repay` (+ totals); SOL open trade: `ledger.update(external_out_sol)` so the
+  wallet-delta fallback never sees the loan as P&L; `day_start_equity` moved by the same USD so the daily-loss guard is
+  unaffected. Every send is journalled first in `bank.jl_op`; an unknown outcome is resolved from `tx-deltas` (never re-sent).
+  The tick that swapped holds the wallet reconcile. **Invariant**: borrow and repay leave equity, hwm, wd_mark, guard target and
+  withdrawable unchanged (only the JupSOL price move / swap cost between lend and repay lands in bal, as with inter-bot loans).
+- `extend` / manual `add` stay manual. `<state dir>/JUPSOL_PARK` (park / unpark own coin in JupSOL as a receivable) exists for
+  the live test only (docs/JUPSOL_LIVE_TEST.md). Parked JupSOL is never lent.
 
 ## Withdrawal balancing (Trevor 2026-10-11 08:43 MT)
 - Each bot has its own `[ledger] withdraw_fraction` (share of HWM gain sent to JupSOL nightly at 00:05 MT); all started at 0.5; **now SOL 0.65, ETH 0.65, BTC 0.70** (2026-10-14). No $0.50 minimum: a withdrawal goes whenever it beats its swap costs.
@@ -413,7 +433,7 @@ to `bal` and the record is cleared. `bank.update_hwm` (flat only, from `bal`) an
 - **Resting add in equity:** `hwm_equity` includes the debited resting add's collateral (section above), so the guard does not understate equity while an add rests.
 - **SOL trade rows are deferred** until the cancelled resting add's refund lands (`book_pend`, section above); ETH / BTC book from their own-coin bank the same way.
 - **Inter-bot loans (`ib_*`):** ANY bot can borrow from ANY other bot (not just SOL as lender) via `live/ib_loan.json`: **no cap** (request = real next-rung shortfall + $1, min $2), **one loan at a time** but an open loan can be **topped up** by the same lender; the lender must be flat, no position, without a loan to anyone else, with >= $5 spare beyond the amount. HWM / equity / withdrawable amounts are never moved.
-- **JupSOL rescue is manual:** it is triggered by Grok Bot / Trevor when a position is within **3%** of liquidation (`live/rescue.sh`, `RESCUE_PLAYBOOK.md`), aiming for liq **10%** away (`target_pct`). Not an automatic bot action.
+- **JupSOL rescue:** manual (`live/rescue.sh`, `RESCUE_PLAYBOOK.md`) while `[ledger] jupsol_loans = "off"` (all three bots); automatic in `"on"` (2026-10-27, see "Automatic JupSOL loans"): within **3%** of liquidation (borrow fee included), collateral only, min(to **10%** away, 1/3 of JupSOL), repaid with the exact JupSOL quantity.
 - **PAUSE_UNTIL management is Grok Bot's job** (`live/PAUSE_UNTIL`, `live/eth/`, `live/btc/`; ISO time, naive = America/Denver): blocks fresh opens only; never closes positions or cancels adds. Grok Bot sets and lifts it and tells Trevor.
 - **Direction management via `[bot] sides`** (`both` / `long` / `short`) is operational and done by Grok Bot from the Analyst bias and the news. Config change then restart right after a `sweep:` log line. **The bots never read Analyst data** (the bot only reads its own `sides`); the `sides` lines in `configs/live_*.toml` are uncommitted on the droplet and must not be committed or reverted.
 - **TP2_SET / TP3_SET** overrides (Grok Bot, one-shot files; see section 6): moved in place, clamped to fee minimums; TP2 override kept in `tp2_override` until the next add.
@@ -425,7 +445,7 @@ Silence rule: message Trevor only on issues or events (fills, closes, restarts, 
 1. **Direction alignment:** Analyst bias + news vs each bot's `sides`; change `sides` in `configs/live_*.toml` if misaligned, restart only right after a `sweep:` log line, one bot at a time, verify health. Never commit those config lines.
 2. **TP2 management:** volume, ATR and the 55-min timer (from first TP1 fill; closes only in profit + HWM check). Never place TP2 closer than the fee minimums except in a dire case.
 3. **Brownie tally and rules:** +1 for a TP2 moved and hit, +1 for a TP3 moved and hit, +1 for a new real-token HWM; tally target 5.
-4. **Liquidation within 3%:** flag; JupSOL rescue is manual (aim 10%).
+4. **Liquidation within 3%:** flag; JupSOL rescue is manual while `jupsol_loans` is off (aim 10%, max 1/3 of JupSOL).
 5. **Red risk** (positions deeply underwater / low margin): flag.
 6. **Missing TPs / adds:** every open position has TP1/TP2 (and TP3 when adds filled) and its resting add; a missing one is a `tp_retry` / `RETP_NOW` matter, never closed or cancelled by hand.
 7. **Borrow guard:** if any bot's free cash is below ~$12 while a flat bot can lend, pause fresh opens on another bot via PAUSE_UNTIL (prefer pausing ETH and keeping SOL as the lender); lift when not needed; tell Trevor when set and when lifted.
