@@ -1025,7 +1025,7 @@ class Bot:
         want = self.set_file_price(f)
         if want is None:
             return
-        if not self.local.partials:
+        if not self.local.partials or self.local.partials[0].get("booked"):
             log.warning("TP3_SET %.2f: no resting TP3; file deleted, nothing changed", want)
             return
         p = self.local.partials[0]
@@ -1802,6 +1802,15 @@ class Bot:
             elif pd.Timestamp.now(tz="UTC") - pd.Timestamp(ra["placed"]) < pd.Timedelta(minutes=2):
                 return pos, False   # may still land: wait before judging
         gone_p = restmod.unmatched(L.partials, reqs)
+        # 2026-10-28: a TP3 record already booked from its size drop (early_partial_fill) whose request account has now
+        # gone: the fill is booked once already -> record removed quietly (no "records dropped", no second booking)
+        stale = [p for p in gone_p if p.get("booked")]
+        if stale:
+            log.info("per-add partial(s) %s: stale order record gone after its fill was booked from the size drop; "
+                     "record removed (already booked)", [p["pubkey"] for p in stale])
+            L.partials = [p for p in L.partials if not p.get("booked") or p["pubkey"] in on_chain]
+            self.save()
+        gone_p = [p for p in gone_p if not p.get("booked")]
         add_gone = bool(ra) and ra.get("pubkey") not in on_chain
         delta = pos.size - L.last_size
         p_size = sum(float(p["size"]) for p in gone_p)
@@ -1844,8 +1853,11 @@ class Bot:
                             ra.get("pubkey"), L.last_size, pos.size)
                 self._rest_bank_refund(ra, f"resting add {ra.get('pubkey')} gone unfilled")
                 L.rest_add = None
-        if gone_p:
+        early = [] if gone_p or resync or pos.size >= L.last_size - 0.01 else self.early_partial_fill(pos, price)
+        fills = gone_p or early
+        if fills:
             if pos.size < L.last_size - 0.01:   # partial trigger(s) executed
+                gone_p = fills
                 closed = round(L.last_size - pos.size, 2)
                 old_m = L.pg_margin if L.pg_margin > 0 and abs(L.pg_m_size - L.last_size) <= 0.01 and not resync \
                     else pos.margin * L.last_size / pos.size
@@ -1877,17 +1889,46 @@ class Bot:
                 L.last_size = pos.size
                 self._tp_resize = True   # Trevor 2026-10-12 06:07 MT: re-size TP1/TP2 to the remaining position
                 ledger.update(exit=f"P{len(L.partials_done)}@{pd.Timestamp.now(tz='UTC'):%H:%M}")
-                log.warning("PER-ADD PARTIAL FILLED: %s closed $%.2f at ~%s; payout est $%.4f; last partial price %s; "
-                            "lots left %d, n_entries %d, last_entry %.4f", [p["pubkey"] for p in gone_p], closed,
-                            [p["px"] for p in gone_p], usd, L.last_partial_px, len(L.lots), L.n_entries, L.last_entry)
+                log.warning("PER-ADD PARTIAL FILLED%s: %s closed $%.2f at ~%s; payout est $%.4f; last partial price %s; "
+                            "lots left %d, n_entries %d, last_entry %.4f",
+                            " (size drop before its order record disappeared)" if early else "", [p["pubkey"] for p in gone_p],
+                            closed, [p["px"] for p in gone_p], usd, L.last_partial_px, len(L.lots), L.n_entries, L.last_entry)
             else:
                 log.warning("per-add partial(s) %s gone without a size drop: records dropped", [p["pubkey"] for p in gone_p])
             gone = {p["pubkey"] for p in gone_p}
-            L.partials = [p for p in L.partials if p["pubkey"] not in gone]
-        if add_gone or gone_p:
+            if early:   # request account still on-chain: keep the record flagged booked until it disappears (never re-booked,
+                for p in L.partials:   # never cancelled / re-planned by partial_sync, excluded from the TP1/TP2 ladder)
+                    if p["pubkey"] in gone:
+                        p["booked"] = str(pd.Timestamp.now(tz="UTC"))
+            else:
+                L.partials = [p for p in L.partials if p["pubkey"] not in gone]
+        if add_gone or gone_p or early:
             self.save()
             pos = self.chain_position(st) or pos
         return pos, resync
+
+    def early_partial_fill(self, pos: ChainPosition, price: float) -> list[dict[str, Any]]:
+        """Trevor 2026-10-28 (BTC 12:46 MT): the chain can show a TP3 (per-add partial) fill as a size drop BEFORE its
+        request account disappears. A size drop that matches the resting TP3 (closed size = its size, or the market reached
+        its trigger and no pending TP1/TP2 trigger, closing at most its size) is that TP3 fill, not a TP1/TP2 hit.
+        Returns the matching (not yet booked) partial record(s); [] = an ordinary TP fill."""
+        L = self.local
+        closed = L.last_size - pos.size
+        out = []
+        for p in L.partials:
+            if p.get("booked"):
+                continue
+            psz = min(float(p["size"]), L.last_size)
+            size_ok = abs(closed - psz) <= max(0.05, 0.005 * psz)
+            tol = max(self.cfg.tp.tp_market_gap, 0.0005 * float(p["px"]))
+            reached = pos.side * (float(p["px"]) - price) <= tol   # long: price >= TP3 - tol; short: price <= TP3 + tol
+            tps = [x for x in (L.tp_px or [])[L.tp_hits:] if x]
+            tp_reached = any(pos.side * (float(x) - price) <= 0 for x in tps)
+            if tp_reached and not reached:   # a TP1/TP2 trigger was crossed but not the TP3 one: an ordinary TP fill
+                continue
+            if size_ok or (reached and not tp_reached and closed <= psz + max(0.05, 0.005 * psz)):
+                out.append(p)
+        return out[:1]
 
     def resting_tick(self, pos: ChainPosition, st: dict[str, Any], price: float, account: Any, equity: float) -> None:
         """Every tick with an open position: place what is missing (per-add partials, then the next resting add)."""
@@ -2239,6 +2280,9 @@ class Bot:
         L = self.local
         if not self.cfg.resting.partials_enabled:
             return
+        if any(p.get("booked") for p in L.partials):   # 2026-10-28: a booked TP3's stale record is still on-chain:
+            self._rest_note("partial", "TP3 booked from its size drop; waiting for its stale order record to disappear")
+            return   # nothing cancelled / re-placed until it is gone (resting_reconcile removes it quietly)
         tgt, old = self.partial_plan(pos), (L.partials[0] if L.partials else None)
         if tgt is None:
             R, t, c = self.cfg.resting, self.cfg.trim, self.cfg.costs

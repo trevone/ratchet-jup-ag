@@ -76,3 +76,5 @@ Note 2026-10-16 03:20 MT: no new setting; TP3 planner now logs `resting: TP3 ski
 Note 2026-10-16 03:15 MT: TP3 reference avg = bot's own lot-weighted entry (not Jupiter avg); no new setting.
 
 Note 2026-10-16 03:30 MT: TP3 reference = whole-position breakeven (bank equity == trade_start_equity); no new setting.
+
+Note 2026-10-28 13:49 MT: no new setting; a TP3 fill seen as a size drop before its order record disappears is booked as that TP3 partial (not a TP hit), and the stale record later disappearing books nothing (STRATEGY.md, `Bot.early_partial_fill`).

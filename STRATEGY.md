@@ -346,6 +346,18 @@ compares the order with that same stored price, so the order is placed once and 
 ### TP1/TP2 re-size after a TP3 fill (Trevor 2026-10-12 06:07 MT)
 When a TP3 (per-add partial TP order) fills, the pending TP1/TP2 trigger orders are re-placed at the same prices, sized on the remaining position with the original % split (e.g. TP1 = 50% of remaining). Nothing else changes.
 
+### TP3 fill seen as a size drop before its order record disappears (Trevor 2026-10-28 13:49 MT, all three bots)
+The chain state can show a TP3 (per-add partial) fill as a position size drop while the TP3 request account is still listed
+(BTC 2026-10-28 12:46 MT: booked as a plain TP hit `tp_hits=1`, the add lot kept; 12:47 "gone without a size drop: records dropped";
+a new $50 TP3 then sat on the first entry and closed the trade at a small loss). Now `resting_reconcile` (`Bot.early_partial_fill`):
+a size drop while the TP3 record is still on-chain that matches it - closed size = its size (+-max($0.05, 0.5%)), or the market
+reached its trigger (tolerance max(tp_market_gap, 0.05%)) with no pending TP1/TP2 trigger reached and at most its size closed - is
+booked (never when a TP1/TP2 trigger was crossed but the TP3 one was not) as that TP3 partial exactly like a normal TP3 fill (add lot(s) removed, first entry and other lots kept, payout, partials_done,
+last partial price, re-arm, guard latch, TP1/TP2 resized to the remaining position) and NOT as a TP hit (`tp_hits` unchanged). The record
+stays in `local.partials` flagged `booked` until its request account disappears, then it is removed quietly (no "records dropped", no
+second booking); while flagged, `partial_sync` neither cancels nor re-places TP3, TP3_SET ignores it, and the TP1/TP2 ladder never
+touches it. Normal ordering (record gone with the size drop) is unchanged. Any other size drop is an ordinary TP1/TP2 fill.
+
 ### TP3 arm distance 1 % (Trevor 2026-10-12 06:22 MT)
 trim_arm_dist_pct = 0.01 on all three bots (was 0.0065): trim/TP3 arms once price is > 1 % against the avg.
 
