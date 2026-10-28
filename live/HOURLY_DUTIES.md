@@ -23,3 +23,5 @@ No point may be skipped or written as just "ok" / "quiet": each one states what 
 
 Reserved for Trevor (propose only): pausing adds, closing positions, cancelling orders by hand, marks (HWM / wd_mark), strategy and code changes.
 Restarts: one bot at a time, each right after its own sweep: line.
+
+This file is the master reference (Trevor, 2026-10-28: "your Bible"). Every hourly check reads it first and follows it. Any change to the duties is made here first, then committed and pushed to GitHub the same hour, with a line in live/changes.log.
