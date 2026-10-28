@@ -10,7 +10,9 @@ The JupSOL bucket (the shared wallet's JupSOL, the bots' past withdrawals) lends
 2. NEXT ADD (mode "on"): the next resting add needs more than the bot's free balance and NO peer bot can cover it (peers
    go first exactly as today; checked on 2 consecutive ticks, or peer borrowing switched off with <state dir>/IB_BORROW_OFF
    for a test). JupSOL lends exactly the shortfall + the inter-bot $1 rounding buffer (rung margin - free + $1), and only
-   if the whole amount is available (rescues always go first).
+   if the whole amount is available (rescues always go first). 2026-10-28: the shortfall is the larger of the bank
+   shortfall and (SOL bot) the native SOL fee-reserve gap of the add (Bot.add_reserve_short_usd); a rung the free balance
+   covers but that only the fee reserve blocks takes the same path (Bot.place_rest_add, no inter-bot request).
 
 Booking (live/bank.py): the coin MEASURED from the tx deltas is booked as bal + liability (bank.loan_open), the JupSOL
 measured out of the wallet is what is owed. Equity / hwm / wd_mark / guard target / withdrawable do not move. Repayment
@@ -170,9 +172,11 @@ def rescue_plan(side: int, size: float, avg: float, margin: float, borrow_usd: f
             "emergency": (d1 - d0) < c["emergency_min_push_pct"], "in_trigger": d0 < c["trigger_pct"]}
 
 
-def next_add_need_usd(rung_margin: float, cash: float) -> float:
-    """Exactly the shortfall + the $1 inter-bot rounding buffer (no minimum, no cap)."""
-    return max(0.0, float(rung_margin) - float(cash)) + NEXT_ADD_BUFFER_USD
+def next_add_need_usd(rung_margin: float, cash: float, reserve_short_usd: float = 0.0) -> float:
+    """Exactly the shortfall + the $1 inter-bot rounding buffer (no minimum, no cap). 2026-10-28: the shortfall is the
+    larger of the bank shortfall (rung margin - free) and the native SOL fee-reserve gap of the add (SOL bot; the lent
+    SOL raises the bank balance and the native wallet by the same amount)."""
+    return max(0.0, float(rung_margin) - float(cash), float(reserve_short_usd)) + NEXT_ADD_BUFFER_USD
 
 
 # ------------------------------------------------------------------ measured amounts (tx deltas; quote only as fallback)
@@ -309,15 +313,16 @@ def peers_can_cover(bot: Any, need_usd: float, read_peer: Any = None) -> tuple[b
 
 
 # ------------------------------------------------------------------ next add (called from Bot.rest_add_plan)
-def next_add_shortfall(bot: Any, p: Any, cash: float, big: Any) -> bool:
-    """The next rung needs big.margin > cash. Decide who lends. True = skip the inter-bot request (JupSOL will lend /
-    peer borrowing switched off); False = file the inter-bot request exactly as today."""
+def next_add_shortfall(bot: Any, p: Any, cash: float, big: Any, reserve_short_usd: float = 0.0) -> bool:
+    """The next rung needs big.margin > cash (or, 2026-10-28, its add would breach the SOL fee reserve by
+    reserve_short_usd). Decide who lends. True = skip the inter-bot request (JupSOL will lend / peer borrowing switched
+    off); False = file the inter-bot request exactly as today."""
     md, off = mode(bot.cfg), peer_borrow_off(bot)
     if md == "off":
         if off:
             bot.ib_cancel_request(f"peer borrowing switched off ({PEER_OFF_FILE})")
         return off
-    need = next_add_need_usd(big.margin, cash)
+    need = next_add_need_usd(big.margin, cash, reserve_short_usd)
     can, why = peers_can_cover(bot, need)
     if can:
         bot._jl_nopeer = 0
@@ -333,11 +338,14 @@ def next_add_shortfall(bot: Any, p: Any, cash: float, big: Any) -> bool:
         return off
     if md == "observe":
         if _every(bot, "na_observe", 900):
-            log.warning("JUPSOL observe: would lend $%.2f (rung margin $%.2f - free $%.2f + $1) for the next add (%s); "
-                        "nothing sent", need, big.margin, cash, why)
+            log.warning("JUPSOL observe: would lend $%.2f (max(rung margin $%.2f - free $%.2f, SOL fee-reserve gap $%.2f) "
+                        "+ $1) for the next add (%s); nothing sent", need, big.margin, cash, reserve_short_usd, why)
+        return off
+    if getattr(bot, "_jl_just_lent", False):   # a loan was booked this tick: the wallet snapshot (st) predates it
         return off
     bot._jl_want = {"need_usd": round(need, 6), "cash": round(cash, 6), "margin": round(float(big.margin), 6),
-                    "bal": bot.local.bank["bal"], "t": time.time(), "why": why}
+                    "reserve_short_usd": round(float(reserve_short_usd), 6), "bal": bot.local.bank["bal"],
+                    "t": time.time(), "why": why}
     return True
 
 
@@ -523,6 +531,7 @@ def _book_lend(bot: Any, res: dict[str, Any], what: str, cpx: float) -> None:
     b, coin = bot.local.bank, bot.local.bank["coin"]
     got, js, measured = lend_measured(res, coin)
     before = {k: b[k] for k in ("hwm", "wd_mark")}
+    bot._jl_just_lent = True   # this tick's wallet snapshot predates the loan (reset by Bot.bank_tick)
     K.loan_open(b, got, js, 0.0, f"JupSOL {what} loan: {js:.9f} JupSOL -> {got:.9f} {coin} sig {res.get('sig')}"
                 + ("" if measured else " (QUOTE fallback: tx deltas missing)"), kind=what, sig=res.get("sig"))
     assert {k: b[k] for k in ("hwm", "wd_mark")} == before

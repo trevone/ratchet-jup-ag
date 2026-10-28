@@ -99,8 +99,9 @@ def inv(b, close=0.3, frac=0.5):
 def test_config_default_off_everywhere_and_validated():
     from config import LedgerConfig
     assert LedgerConfig().jupsol_loans == "off"
-    for p in ("configs/live_100.toml", "configs/live_eth.toml", "configs/live_btc.toml"):
+    for p in ("configs/live_eth.toml", "configs/live_btc.toml"):
         assert load_config(p).ledger.jupsol_loans == "off"
+    assert load_config("configs/live_100.toml").ledger.jupsol_loans in ("off", "observe", "on")   # SOL: live test 2026-10-28
     with pytest.raises(Exception):
         load_config("configs/live_100.toml", ["ledger.jupsol_loans=yes"])
 
@@ -494,3 +495,110 @@ def test_park_refuses_more_than_free(env):
 def test_stake_ts_allowlist_jupsol_input_only():
     src = open("live/src/stake.ts").read()
     assert "JupSOL is allowed as INPUT only" in src or "INPUT only" in src
+
+
+# ------------------------------------------------------------------ 2026-10-28: next-add loan covers the SOL fee reserve
+def test_next_add_need_covers_the_larger_of_bank_shortfall_and_fee_reserve_gap():
+    assert JL.next_add_need_usd(10.0, 10.99, 0.41) == pytest.approx(1.41)    # cash covers the rung: reserve gap + $1
+    assert JL.next_add_need_usd(10.0, 2.0, 0.5) == pytest.approx(9.0)        # bank shortfall binds: unchanged
+    assert JL.next_add_need_usd(10.0, 5.05, 6.0) == pytest.approx(7.0)       # reserve gap binds
+    assert JL.next_add_need_usd(10.0, 2.0) == pytest.approx(9.0)             # default: exactly as before
+
+
+def test_add_reserve_short_usd_sol_only(env):
+    bot = env["mk"]("SOL")
+    st = st_with()
+    st["wallet"]["sol"] = 0.105
+    need = 10.0 / PX
+    assert bot.add_reserve_short_usd(st, 10.0) == pytest.approx((need + bot.live.sol_fee_reserve - 0.105) * PX)
+    st["wallet"]["sol"] = 1.2
+    assert bot.add_reserve_short_usd(st, 10.0) == 0.0                         # reserve holds
+    assert bot.add_reserve_short_usd(None, 10.0) == 0.0
+    eth = env["mk"]("ETH")
+    st["wallet"]["sol"] = 0.01
+    assert eth.add_reserve_short_usd(st, 10.0) == 0.0                        # ETH / BTC: never
+
+
+def _reserve_case(env, mode="on"):
+    """Live 2026-10-28 11:09 MT: bank cash covers the $10 rung, but native SOL - need < sol_fee_reserve; a first
+    next-add loan is already outstanding."""
+    import types
+    bot = env["mk"]("SOL", bal=0.108929717, mode=mode)
+    (bot.dir / JL.PEER_OFF_FILE).touch()
+    del bot.guard                                                             # the real guard (fee-reserve check)
+    K.loan_open(bot.local.bank, 0.058942093, 0.048497176, kind="next_add", sig="LEND1")
+    st = st_with(jupsol=1.0)
+    st["wallet"]["sol"] = 0.105
+    pos = bot.chain_position(st)
+    acc = types.SimpleNamespace(cash=bot.local.bank["bal"] * PX)
+    return bot, st, pos, acc
+
+
+def test_fee_reserve_only_block_triggers_jupsol_loan_then_add_placed_and_total_repaid(env):
+    bot, st, pos, acc = _reserve_case(env)
+    b = bot.local.bank
+    assert acc.cash >= 10.0 and bot.guard(B.Intent(B.Action.ADD, pos.side, 100.0, 10.0, 5.0), pos, st, 100.0) \
+        == "would breach SOL fee reserve"
+    short = bot.add_reserve_short_usd(st, 10.0)
+    assert short > 0
+    before = inv(b)
+    for _ in range(2):
+        bot._jl_just_lent = False
+        bot.resting_tick(pos, st, PX, acc, 100.0)
+    assert not any(n == "create-limit-order" for n, _ in bot.calls)
+    assert bot._jl_want["need_usd"] == pytest.approx(short + 1.0) and bot._jl_want["reserve_short_usd"] > 0
+    assert not env["ib"].exists() or json.loads(env["ib"].read_text()).get("status") != "requested"   # no peer request
+    need_sol = bot._jl_want["need_usd"] / PX
+    fake_swap(env, lambda plan, out, md: lend_res(plan["atoms"] / LAM, 0.0115, sig="LEND2"))
+    assert JL.tick(bot, st, pos, PX) is True
+    assert env["calls"]["swap"][-1]["atoms"] == int(need_sol * LAM)
+    # the second loan adds to the outstanding one; equity / hwm / wd_mark unchanged
+    assert K.loan_outstanding(b) == pytest.approx(0.058942093 + need_sol, abs=1e-9)
+    assert K.loan_jupsol_owed(b) == pytest.approx(0.048497176 + 0.0115, abs=1e-9)
+    assert [t["sig"] for t in b["loan"]["tranches"]] == ["LEND1", "LEND2"] and b["loan"]["n"] == 2
+    assert inv(b) == before
+    # same tick, stale wallet snapshot: no second want (never a double loan)
+    acc.cash = b["bal"] * PX
+    bot.resting_tick(pos, st, PX, acc, 100.0)
+    assert bot._jl_want is None and not any(n == "create-limit-order" for n, _ in bot.calls)
+    # next tick: the wallet shows the lent SOL -> the reserve holds -> the add is placed
+    bot._jl_just_lent = False
+    st["wallet"]["sol"] = round(0.105 + need_sol, 9)
+    assert bot.add_reserve_short_usd(st, 10.0) == 0.0
+    bot.resting_tick(pos, st, PX, acc, 100.0)
+    assert any(n == "create-limit-order" for n, _ in bot.calls)
+    # flat later: ONE ExactOut repay of the total JupSOL owed (both tranches)
+    b["bal"], b["window"], bot.local.flat_since = 0.5, 0, "F1"
+    b.pop("pend", None)
+    assert JL.repay_due_now(bot)
+    env["jres"]["swap-quote"] = {"ok": True, "inAmount": "75000000", "otherAmountThreshold": "76000000"}
+    fake_swap(env, lambda plan, out, md: repay_res(0.075, plan["atoms"] / LAM, sig="REPAY"))
+    JL.repay_tick(bot, PX, PX)
+    sw = env["calls"]["swap"][-1]
+    assert sw["mode"] == "ExactOut" and sw["atoms"] == int(round((0.048497176 + 0.0115) * LAM))
+    assert "loan" not in b and b["loans_done"][-1]["repaid_jupsol"] == pytest.approx(0.059997176)
+
+
+def test_fee_reserve_block_mode_off_or_eth_unchanged(env):
+    bot, st, pos, acc = _reserve_case(env, mode="off")
+    for _ in range(3):
+        bot.resting_tick(pos, st, PX, acc, 100.0)
+    assert bot._jl_want is None and not env["calls"]["swap"]
+    assert not env["ib"].exists() or json.loads(env["ib"].read_text()).get("status") != "requested"
+    eth = env["mk"]("ETH", mode="on")
+    eth._reserve_loan(pos, st, 50.0, __import__("types").SimpleNamespace(margin=10.0))
+    assert getattr(eth, "_jl_want", None) is None
+
+
+def test_shortfall_path_includes_fee_reserve_gap(env):
+    bot = env["mk"]("SOL", bal=0.0474, mode="on")                              # ~$5.05 free, $10 rung
+    (bot.dir / JL.PEER_OFF_FILE).touch()
+    st = st_with()
+    st["wallet"]["sol"] = 0.0535                                              # native barely above bal (live shape)
+    pos = bot.chain_position(st)
+    cash = bot.local.bank["bal"] * PX
+    for _ in range(2):
+        plan, _ = bot.rest_add_plan(pos, cash, st=st)
+    short = bot.add_reserve_short_usd(st, 10.0)
+    assert plan is None and short > 10.0 - cash
+    assert bot._jl_want["need_usd"] == pytest.approx(short + 1.0)

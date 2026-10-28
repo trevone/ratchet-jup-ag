@@ -1938,7 +1938,7 @@ class Bot:
         edit (keeper co-signed): cancel, and ONLY on a confirmed cancel place the new one (never two resting adds).
         True when a cancel was attempted (the re-plan check is then skipped this tick)."""
         acc = types.SimpleNamespace(cash=account.cash + float(ra["margin"]))   # the cancel frees the old add's collateral
-        plan, why = self.rest_add_plan(pos, acc.cash, price)
+        plan, why = self.rest_add_plan(pos, acc.cash, price, st=st)
         if plan is None or getattr(plan, "source", "") != "rearm":
             self._rest_note("rearm", f"resting add stays at {ra['trigger']}: {why or 'market not beyond the re-arm price'}")
             return False
@@ -2000,8 +2000,19 @@ class Bot:
         self._cancel_then_place(pos, st, price, acc, equity, ra, "re-plan")
         return True
 
+    def add_reserve_short_usd(self, st: dict[str, Any] | None, margin: float) -> float:
+        """2026-10-28: USD by which an add of ``margin`` would breach the native SOL fee reserve (guard: native wallet SOL
+        - need >= sol_fee_reserve), SOL bot on the own-coin ledger only; 0 for ETH / BTC, without a state, or when the
+        reserve holds. The JupSOL next-add loan covers this gap too (live/jupsol_loans.next_add_need_usd)."""
+        if st is None or not self.bank_on or self.asset != "SOL":
+            return 0.0
+        px = self.coin_px(st)
+        if px <= 0:
+            return 0.0
+        return max(0.0, float(margin) / px + self.live.sol_fee_reserve - margin_sol(st)) * px
+
     def rest_add_plan(self, pos: ChainPosition, cash: float, price: float | None = None,
-                      borrow: bool = True) -> tuple[Any, str]:
+                      borrow: bool = True, st: dict[str, Any] | None = None) -> tuple[Any, str]:
         """(AddPlan | None, why-not) for the next resting add: the ladder's next rung, planned from the last fill (rule 3:
         from the more adverse of the last fill and the last partial price) with this bot's free collateral."""
         R, L = self.cfg.resting, self.local
@@ -2031,7 +2042,7 @@ class Bot:
             if borrow and big is not None and big.margin > cash:   # Trevor 18:13 MT: short of equity -> borrow from a flat bot (no cap)
                 # 2026-10-27: peers first exactly as today; JupSOL lends the exact shortfall + $1 only when no peer can
                 # cover it ([ledger] jupsol_loans = "on"; live/jupsol_loans.py). True = no inter-bot request this tick.
-                if not jlmod.next_add_shortfall(self, p, cash, big):
+                if not jlmod.next_add_shortfall(self, p, cash, big, self.add_reserve_short_usd(st, big.margin)):
                     self.ib_request(bankmod.ib_need_usd(big.margin, cash))   # shortfall + $1, min $2
             return None, "no ladder plan (budget / liq rule)"
         if not self.strategy._adds_left(pos):
@@ -2039,6 +2050,18 @@ class Bot:
         if R.last_partial_rule and not restmod.beyond_last_partial(pos.side, plan.trigger, L.last_partial_px):
             return None, f"next rung {plan.trigger:.4f} is not beyond the last partial price {L.last_partial_px}"
         return plan, ""
+
+    def _reserve_loan(self, pos: ChainPosition, st: dict[str, Any], cash: float, plan: Any) -> None:
+        """2026-10-28: the rung fits in the free balance but its add would breach the native SOL fee reserve (SOL bot):
+        the JupSOL next-add loan (jupsol_loans on / observe) covers the reserve gap + $1. No inter-bot request here
+        (a peer that can cover it only makes this bot wait, as for a shortfall); jupsol_loans "off": nothing."""
+        if not (self.bank_on and self.asset == "SOL") or jlmod.mode(self.cfg) == "off":
+            return
+        p = pos
+        if self.cfg.resting.last_partial_rule and self.local.last_partial_px:
+            import dataclasses as _dc
+            p = _dc.replace(pos, last_entry=restmod.add_ref(pos.side, pos.last_entry, self.local.last_partial_px))
+        jlmod.next_add_shortfall(self, p, cash, plan, self.add_reserve_short_usd(st, plan.margin))
 
     def front_atr(self) -> float | None:
         """ATR for the add front-run: own 1h ATR; 2026-10-24: before the first kline fetch (first tick after a restart)
@@ -2095,7 +2118,7 @@ class Bot:
             self._rest_note("add", f"an increase request is already on-chain {[r.get('pubkey') for r in untracked]} "
                                    "(not tracked by this bot): no new resting add placed", logging.WARNING)
             return
-        plan, why = self.rest_add_plan(pos, account.cash, price)
+        plan, why = self.rest_add_plan(pos, account.cash, price, st=st)
         if plan is None:
             self._rest_note("add", f"no resting add placed: {why}")
             return
@@ -2109,6 +2132,8 @@ class Bot:
         it = Intent(Action.ADD, pos.side, plan.trigger, plan.margin, plan.leverage)
         why = self.guard(it, pos, st, equity)
         if why:
+            if why == "would breach SOL fee reserve":
+                self._reserve_loan(pos, st, account.cash, plan)
             self._rest_note("add", f"resting add skipped: {why}")
             return
         args, nat, sol = self.rest_add_args(pos, st, plan)
@@ -2343,6 +2368,7 @@ class Bot:
     def bank_tick(self, st: dict[str, Any], pos: ChainPosition | None, price: float) -> None:
         """Reconcile this bot's balance with the wallet, settle external-event shares, raise the HWM when flat."""
         b, lc = self.local.bank, self.cfg.ledger
+        self._jl_just_lent = False   # set by jupsol_loans._book_lend when a JupSOL loan is booked this tick
         if self.live.dry_run:
             return
         sol_px, cpx = self.sol_price(st), self.coin_px(st)

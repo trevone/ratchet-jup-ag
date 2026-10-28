@@ -22,6 +22,7 @@ def env(monkeypatch, tmp_path):
     def mk(asset="SOL", flags=LIVE_RUNG):
         b = mkbot(monkeypatch, tmp_path, ON + flags)
         b.asset = asset
+        b.dir = tmp_path   # never the real live/ dir (a live/IB_BORROW_OFF test switch would leak in)
         b.local.bank = {"coin": "SOL", "bal": 0.1, "hwm": 0.1, "wd_mark": 0.1, "hist": [], "totals": {}}
         b.bank_fee = lambda *a: None
         b._busy = lambda *a: False

@@ -220,6 +220,13 @@ Automatic version: `[ledger] jupsol_loans` (below); manual tool: `live/rescue.sh
   loan record busy; checked on 2 consecutive ticks; or `<state dir>/IB_BORROW_OFF` present) JupSOL lends **exactly the shortfall
   + $1** (rung margin - free + $1, no minimum, no cap) and only if the whole amount is usable; the bot's own inter-bot request is
   withdrawn first (a peer that already started funding wins). The add is then placed by the normal resting-add path.
+  **2026-10-28 (SOL fee reserve):** the shortfall is max(rung margin - free, SOL fee-reserve gap) + $1, where the gap (SOL bot
+  only, `Bot.add_reserve_short_usd`) = (rung margin / SOL px + `sol_fee_reserve` - native wallet SOL) x SOL px, i.e. what the
+  add guard's `native SOL - need >= sol_fee_reserve` check is missing. A rung the free balance covers but that only the fee
+  reserve blocks (`resting add skipped: would breach SOL fee reserve`) takes the same JupSOL path (same peer / 2-tick rules, no
+  inter-bot request filed). A second loan adds to the open liability (principal and JupSOL owed summed, one tranche each); the
+  flat repay buys back the total JupSOL owed. No want is decided in the tick a loan was booked (its wallet snapshot predates the
+  loan). ETH / BTC: unchanged (gap always 0).
 - **Booking**: measured tx deltas (quote only as a logged fallback); SOL network fee via bank_fee (ETH / BTC fee debt);
   `live/stake_ledger.csv` rows `loan_out` / `loan_repay` (+ totals); SOL open trade: `ledger.update(external_out_sol)` so the
   wallet-delta fallback never sees the loan as P&L; `day_start_equity` moved by the same USD so the daily-loss guard is
