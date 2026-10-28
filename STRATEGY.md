@@ -358,6 +358,19 @@ stays in `local.partials` flagged `booked` until its request account disappears,
 second booking); while flagged, `partial_sync` neither cancels nor re-places TP3, TP3_SET ignores it, and the TP1/TP2 ladder never
 touches it. Normal ordering (record gone with the size drop) is unchanged. Any other size drop is an ordinary TP1/TP2 fill.
 
+### Resting add fill seen as size growth before its order record disappears (Trevor 2026-10-28 14:15 MT, all three bots)
+The chain state can show a resting add fill as position size growth while the add's increase request is still listed (SOL
+2026-10-28 14:01 MT: the $125 add @ 103.3 had filled, size 225 -> 350, but its record was still listed, so the fill was not booked
+and `hwm_equity` counted the add's collateral twice - in the close value and again as the resting-add term, ~+0.0976 SOL - and the
+profit guard closed SOL on that false equity). Now `resting_reconcile` (`Bot.early_add_fill`, mirror of `early_partial_fill`): growth
+while the record is still on-chain that matches the add - grown by its size (+-max($0.05, 0.5%)), or the market reached its trigger
+(tolerance max(tp_market_gap, 0.05%)) with growth above half of it - never more than the add - is booked at once exactly like a normal
+resting add fill (new lot, fill price from the avg change, n_entries, leverage step, guard latch, fresh TP1/TP2 ladder and TP3). The
+record stays in `local.rest_add` flagged `booked` until its request account disappears, then it is removed quietly (no second
+booking, no refund); while flagged it is not in `hwm_equity`'s resting-add term, is never refunded, and no new resting add is placed,
+re-planned or re-armed. `hwm_equity` also never counts a not-yet-booked resting add whose fill is already in the position size
+(size above the booked size by more than half the add). Normal ordering (record gone with the growth) is unchanged.
+
 ### TP3 arm distance 1 % (Trevor 2026-10-12 06:22 MT)
 trim_arm_dist_pct = 0.01 on all three bots (was 0.0065): trim/TP3 arms once price is > 1 % against the avg.
 

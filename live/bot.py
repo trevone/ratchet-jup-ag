@@ -1662,8 +1662,8 @@ class Bot:
 
     def _rest_bank_refund(self, ra: dict[str, Any], why: str) -> None:
         """Reverse the collateral debit of a resting add that was cancelled / never filled (own-coin ledger)."""
-        if not self.bank_on or self.live.dry_run or not ra.get("debited"):
-            return
+        if not self.bank_on or self.live.dry_run or not ra.get("debited") or ra.get("booked"):
+            return   # 2026-10-28: a booked (filled) add is never refunded
         b, amt = self.local.bank, float(ra.get("nat") or 0.0)
         b["bal"] = round(b["bal"] + amt, 9)
         b["trade_dep"] = round(b.get("trade_dep", 0.0) - amt, 9)
@@ -1812,12 +1812,20 @@ class Bot:
             self.save()
         gone_p = [p for p in gone_p if not p.get("booked")]
         add_gone = bool(ra) and ra.get("pubkey") not in on_chain
+        if ra and ra.get("booked"):   # 2026-10-28: resting add already booked from its size growth (early_add_fill)
+            if add_gone:   # its stale order record has now gone: removed quietly (no second booking, no refund)
+                log.info("resting add %s: stale order record gone after its fill was booked from the size growth; "
+                         "record removed (already booked)", ra.get("pubkey"))
+                L.rest_add = None
+                self.save()
+            ra, add_gone = None, False
         delta = pos.size - L.last_size
         p_size = sum(float(p["size"]) for p in gone_p)
         resync = False
-        if add_gone and ra is not None:
+        ra_early = bool(ra) and not add_gone and self.early_add_fill(pos, price, ra, delta + p_size)
+        if (add_gone or ra_early) and ra is not None:
             add_size = float(ra["size_usd"])
-            if delta + p_size > 0.5 * add_size:   # filled (also a submitted-but-unconfirmed order that landed and filled)
+            if ra_early or delta + p_size > 0.5 * add_size:   # filled (also a submitted-but-unconfirmed order that landed and filled)
                 fill = float(ra["trigger"])
                 src = "order trigger"
                 if not gone_p and L.rest_last_avg > 0:   # exact fill from the avg change (same as a market add)
@@ -1841,11 +1849,16 @@ class Bot:
                 L.lots.append(lot)
                 L.trade_opened_usd += add_size
                 L.tp2_override = None   # a new add re-places TPs normally (TP2_SET dropped)
-                L.rest_add = None
+                if ra_early:   # request account still listed: record kept, flagged booked, until it disappears (never
+                    ra["booked"] = now   # booked twice, never refunded, not in hwm_equity's resting term, not re-planned)
+                    L.rest_add = ra
+                else:
+                    L.rest_add = None
                 L.rearm = None
                 resync = True
                 self.save()   # 2026-10-12: persist the booked fill at once (a restart must not lose the lot)
-                log.warning("RESTING ADD FILLED: %s $%.2f x%g at %.4f (%s), n_entries %d, size now %.2f avg %.4f",
+                log.warning("RESTING ADD FILLED%s: %s $%.2f x%g at %.4f (%s), n_entries %d, size now %.2f avg %.4f",
+                            " (size growth before its order record disappeared)" if ra_early else "",
                             "long" if pos.side == LONG else "short", add_size, ra["lev"], fill, src, L.n_entries, pos.size,
                             pos.avg_entry)
             else:   # gone without a fill: cancelled / expired / never landed
@@ -1902,10 +1915,23 @@ class Bot:
                         p["booked"] = str(pd.Timestamp.now(tz="UTC"))
             else:
                 L.partials = [p for p in L.partials if p["pubkey"] not in gone]
-        if add_gone or gone_p or early:
+        if add_gone or ra_early or gone_p or early:
             self.save()
             pos = self.chain_position(st) or pos
         return pos, resync
+
+    def early_add_fill(self, pos: ChainPosition, price: float, ra: dict[str, Any], grow: float) -> bool:
+        """Trevor 2026-10-28 14:15 MT (SOL 14:01 MT): the chain can show a resting add fill as position size growth BEFORE
+        its request account disappears. Size growth that matches the resting add (grown by its size, or the market reached
+        its trigger and the position grew by more than half of it, never more than the add) is that add's fill. Mirror of
+        early_partial_fill."""
+        add = float(ra["size_usd"])
+        tol = max(0.05, 0.005 * add)
+        if grow <= 0.5 * add or grow > add + tol:
+            return False
+        trig = float(ra["trigger"])
+        reached = pos.side * (price - trig) <= max(self.cfg.tp.tp_market_gap, 0.0005 * trig)   # short: price >= trigger - tol
+        return abs(grow - add) <= tol or reached
 
     def early_partial_fill(self, pos: ChainPosition, price: float) -> list[dict[str, Any]]:
         """Trevor 2026-10-28 (BTC 12:46 MT): the chain can show a TP3 (per-add partial) fill as a size drop BEFORE its
@@ -1939,6 +1965,9 @@ class Bot:
         ra = self.local.rest_add
         if R.adds_enabled and ra is None:
             self.place_rest_add(pos, st, price, account, equity)
+            return
+        if ra.get("booked"):
+            self._rest_note("add", "resting add booked from its size growth; waiting for its stale order record to disappear")
             return
         if not R.adds_enabled or ra.get("unconfirmed") or self.live.dry_run:
             return
@@ -2961,7 +2990,10 @@ class Bot:
             net = lc.close_network_native if self.asset == "SOL" else 0.0
             cv = bankmod.close_value_native(pos.side, pos.size, pos.avg_entry, pos.margin, fill, c.close_fee, cpx, swap, net)
         ra = self.local.rest_add   # a resting add's collateral left bal at placement and is neither refunded nor margin yet
-        rest = float(ra.get("nat") or 0.0) if ra and ra.get("debited") else 0.0
+        rest = float(ra.get("nat") or 0.0) if ra and ra.get("debited") and not ra.get("booked") else 0.0
+        add = float(ra.get("size_usd") or 0.0) if ra else 0.0
+        if rest and add > 0 and pos is not None and self.local.last_size > 0 and pos.size - self.local.last_size > 0.5 * add:
+            rest = 0.0   # 2026-10-28: its fill is already in the position size (close value) -> never counted twice
         return bankmod.equity(b, cv, bankmod.fee_debt_native(b, sol_px, cpx)) + rest - self.sol_fees_unbooked(pos)
 
     def sol_fees_unbooked(self, pos: ChainPosition | None) -> float:
