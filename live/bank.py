@@ -103,7 +103,7 @@ def update_hwm(b: dict[str, Any], flat: bool, debt_native: float = 0.0) -> bool:
     """HWM only rises and only while flat (and nothing pending): hwm = max(hwm, bal - fee debt). True if raised."""
     if not flat:
         return False
-    v = round(b["bal"] - debt_native - loan_outstanding(b) + ib_adj(b), 9)   # JupSOL rescue loan is a liability, never HWM
+    v = round(b["bal"] - debt_native - loan_outstanding(b) + ib_adj(b) + park_adj(b), 9)   # JupSOL loan: liability, never HWM
     if v > b["hwm"] + 1e-12:
         old = b["hwm"]
         b["hwm"] = v
@@ -123,7 +123,7 @@ def close_value_native(side: int, size: float, avg: float, margin: float, price:
 
 
 def equity(b: dict[str, Any], close_native: float, debt_native: float = 0.0) -> float:
-    return b["bal"] - debt_native - loan_outstanding(b) + ib_adj(b) + close_native
+    return b["bal"] - debt_native - loan_outstanding(b) + ib_adj(b) + park_adj(b) + close_native
 
 
 def withdraw_amount(b: dict[str, Any], fraction: float, min_native: float) -> tuple[float, float]:
@@ -166,34 +166,104 @@ def ib_adj(b: dict[str, Any]) -> float:
     return float(ln["sol"]) if ln["role"] == "lender" else -float(ln["coin"])
 
 
-# ------------------------------------------------------------------ JupSOL rescue loan (Trevor 2026-10-11)
+# ------------------------------------------------------------------ JupSOL loans (Trevor 2026-10-11, reworked 2026-10-27)
+# b["loan"] = {"principal": own coin booked as the liability (measured amount received), "jupsol": JupSOL still owed (the
+# SAME JupSOL quantity that was lent is paid back: no margin, no profit share), "tranches": [...], ...}. A partial repayment
+# lowers both pro rata to the JupSOL repaid and the rest stays owed (2026-10-27: no write-off); "carry_flat" = repay the
+# rest only at the bot's NEXT flat (a later trade's close), never from a deposit while it is still flat.
+def _now() -> str:
+    return str(datetime.now(timezone.utc).replace(tzinfo=None))[:19] + "Z"
+
+
 def loan_outstanding(b: dict[str, Any]) -> float:
     return float((b.get("loan") or {}).get("principal", 0.0))
 
 
-def loan_open(b: dict[str, Any], amt: float, jupsol: float, margin_pct: float, why: str = "") -> None:
-    """Lent JupSOL arrives as own coin: bal rises, a liability of the same size is booked; hwm / wd_mark untouched."""
+def loan_jupsol_owed(b: dict[str, Any]) -> float:
+    return float((b.get("loan") or {}).get("jupsol", 0.0))
+
+
+def loan_open(b: dict[str, Any], amt: float, jupsol: float, margin_pct: float = 0.0, why: str = "", kind: str = "manual",
+              sig: str | None = None) -> None:
+    """Lent JupSOL arrives as own coin: bal rises, a liability of the same size is booked; hwm / wd_mark untouched.
+    amt = own coin MEASURED in the wallet (tx deltas), jupsol = JupSOL MEASURED out of the wallet (what is owed back)."""
     ln = b.get("loan") or {"principal": 0.0, "jupsol": 0.0, "hwm_at_open": b["hwm"], "opened": None, "n": 0}
     ln["principal"] = round(ln["principal"] + amt, 9)
     ln["jupsol"] = round(ln.get("jupsol", 0.0) + jupsol, 9)
-    ln["margin_pct"] = margin_pct
-    ln["opened"] = ln["opened"] or str(datetime.now(timezone.utc).replace(tzinfo=None))[:19] + "Z"
+    ln["margin_pct"] = margin_pct   # informational only (2026-10-27: repayment is the exact JupSOL quantity, no margin)
+    ln["opened"] = ln["opened"] or _now()
     ln["n"] = ln.get("n", 0) + 1
+    ln["tranches"] = (ln.get("tranches") or [])[-19:] + [{"kind": kind, "coin": round(amt, 9), "jupsol": round(jupsol, 9),
+                                                          "t": _now(), "sig": sig}]
+    ln.pop("carry_flat", None)   # new money lent: the next flat repays all of it
     b["loan"] = ln
     b["bal"] = round(b["bal"] + amt, 9)
     note(b, "loan_in", amt, why)
 
 
-def loan_repay(b: dict[str, Any], paid: float, why: str = "") -> None:
-    """Repaid to JupSOL (principal + margin): bal drops by paid, liability cleared. The margin is a cost of the rescue;
-    hwm is untouched (it only rises again when flat from real profit)."""
+def loan_repay_jupsol(b: dict[str, Any], spent: float, jupsol_repaid: float, why: str = "") -> dict[str, Any]:
+    """Own coin ``spent`` bought back ``jupsol_repaid`` JupSOL for the lender (both measured). bal drops by spent; the
+    liability drops pro rata to the JupSOL repaid; the loan closes when no JupSOL is owed any more. The difference
+    between the liability cleared and the coin spent (JupSOL price move + swap cost) is the loan's cost / gain: it lands
+    in equity through bal (hwm / wd_mark are never touched here). Returns {cleared, cost, closed, owed_jupsol}."""
     ln = b.get("loan") or {}
-    b["bal"] = round(b["bal"] - paid, 9)
-    done = (b.get("loans_done") or []) + [{**ln, "repaid": round(paid, 9),
-                                           "closed": str(datetime.now(timezone.utc).replace(tzinfo=None))[:19] + "Z"}]
-    b["loans_done"] = done[-10:]
-    b.pop("loan", None)
-    note(b, "loan_repay", -paid, why)
+    owed = float(ln.get("jupsol", 0.0))
+    princ = float(ln.get("principal", 0.0))
+    frac = 1.0 if owed <= 0 else min(1.0, max(0.0, jupsol_repaid) / owed)
+    cleared = round(princ * frac, 9)
+    b["bal"] = round(b["bal"] - spent, 9)
+    left_j = round(owed - jupsol_repaid, 9)
+    closed = left_j <= 1e-9
+    note(b, "loan_repay", -spent, why)
+    note(b, "loan_cost", round(cleared - spent, 9), f"liability cleared {cleared:.9f} vs spent {spent:.9f} (not profit/loss "
+                                                      f"of a trade; hwm untouched)")
+    if closed:
+        done = (b.get("loans_done") or []) + [{**ln, "repaid": round(float(ln.get("repaid", 0.0)) + spent, 9),
+                                               "repaid_jupsol": round(float(ln.get("repaid_jupsol", 0.0)) + jupsol_repaid, 9),
+                                               "closed": _now()}]
+        b["loans_done"] = done[-10:]
+        b.pop("loan", None)
+    else:
+        ln["principal"] = round(princ - cleared, 9)
+        ln["jupsol"] = left_j
+        ln["repaid"] = round(float(ln.get("repaid", 0.0)) + spent, 9)
+        ln["repaid_jupsol"] = round(float(ln.get("repaid_jupsol", 0.0)) + jupsol_repaid, 9)
+        b["loan"] = ln
+    return {"cleared": cleared, "cost": round(spent - cleared, 9), "closed": closed, "owed_jupsol": max(left_j, 0.0)}
+
+
+def loan_repay(b: dict[str, Any], paid: float, why: str = "") -> None:
+    """Legacy coin-amount repayment (manual tool): converted pro rata to the JupSOL quantity it covers. 2026-10-27 fix: a
+    partial payment no longer writes the rest of the loan off (the rest stays owed)."""
+    princ = loan_outstanding(b)
+    frac = 1.0 if princ <= 0 else min(1.0, paid / princ)
+    loan_repay_jupsol(b, paid, round(loan_jupsol_owed(b) * frac, 9), why)
+
+
+# ------------------------------------------------------------------ parked capital (JupSOL live test, 2026-10-27)
+# A bot's own coin parked in JupSOL (live/jupsol_loans.py park / unpark request): bal drops by the coin spent and
+# b["park"]["native"] holds the same amount as a receivable, so equity / hwm / wd_mark / guard target / withdrawable are
+# unchanged (same treatment as an inter-bot lender's receivable). Unpark: the JupSOL comes back as coin; the difference
+# to the parked native (swap cost / JupSOL move) is booked through bal as a cost, never as profit or deposit.
+def park_adj(b: dict[str, Any]) -> float:
+    return float((b.get("park") or {}).get("native", 0.0))
+
+
+def park_open(b: dict[str, Any], spent: float, jupsol: float, why: str = "") -> None:
+    pk = b.get("park") or {"native": 0.0, "jupsol": 0.0, "opened": _now()}
+    pk["native"] = round(pk["native"] + spent, 9)
+    pk["jupsol"] = round(pk["jupsol"] + jupsol, 9)
+    b["park"] = pk
+    b["bal"] = round(b["bal"] - spent, 9)
+    note(b, "park", -spent, why)
+
+
+def park_close(b: dict[str, Any], got: float, why: str = "") -> float:
+    """Unparked: bal += got, receivable cleared. Returns got - parked native (cost < 0 / gain > 0, through bal)."""
+    pk = b.pop("park", None) or {"native": 0.0}
+    b["bal"] = round(b["bal"] + got, 9)
+    note(b, "unpark", got, why)
+    return round(got - float(pk["native"]), 9)
 
 
 def withdraw_min_native(cost_pct: float, network_sol: float, factor: float, sol_px: float, coin_px: float) -> float:

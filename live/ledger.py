@@ -300,7 +300,9 @@ STAKE = LIVE / "stake_ledger.csv"
 STAKE_FIELDS = ["time", "kind", "source", "sol_in", "sol_out", "jupsol_delta", "wallet_sol_change", "fee_sol",
                 "sol_per_jupsol", "sig", "solscan", "note"]
 STAKE_TOTALS = {"ops": 0, "staked_sol_total": 0.0, "staked_jupsol_total": 0.0, "unstaked_jupsol_total": 0.0,
-                "unstaked_sol_total": 0.0, "sent_jupsol_total": 0.0, "net_jupsol": 0.0, "costs_sol_total": 0.0}
+                "unstaked_sol_total": 0.0, "sent_jupsol_total": 0.0, "net_jupsol": 0.0, "costs_sol_total": 0.0,
+                # 2026-10-27 JupSOL loans (live/jupsol_loans.py) and the live-test park tool: bucket movements only
+                "lent_jupsol_total": 0.0, "repaid_jupsol_total": 0.0, "parked_jupsol_total": 0.0, "unparked_jupsol_total": 0.0}
 
 
 def read_stake_rows() -> list[dict[str, Any]]:
@@ -315,7 +317,8 @@ def stake_totals() -> dict[str, Any]:
 
 
 def record_stake(row: dict[str, Any]) -> dict[str, Any]:
-    """Append one stake-bucket op. kind: stake (SOL -> JupSOL) | unstake (JupSOL -> SOL) | send_to_withdraw (JupSOL out).
+    """Append one stake-bucket op. kind: stake (SOL -> JupSOL) | unstake (JupSOL -> SOL) | send_to_withdraw (JupSOL out)
+    | loan_out (JupSOL lent to a bot) | loan_repay (JupSOL bought back by it) | park / unpark (a bot's capital in / out).
     wallet_sol_change = native + wSOL change of the bot wallet in that tx (fees and token-account rent included)."""
     new = not STAKE.exists()
     with open(STAKE, "a", newline="") as f:
@@ -339,7 +342,16 @@ def record_stake(row: dict[str, Any]) -> dict[str, Any]:
     elif row["kind"] == "send_to_withdraw":
         t["sent_jupsol_total"] += -jd
         t["costs_sol_total"] += -chg
-    t["net_jupsol"] = t["staked_jupsol_total"] - t["unstaked_jupsol_total"] - t["sent_jupsol_total"]
+    elif row["kind"] == "loan_out":
+        t["lent_jupsol_total"] += -jd
+    elif row["kind"] == "loan_repay":
+        t["repaid_jupsol_total"] += jd
+    elif row["kind"] == "park":
+        t["parked_jupsol_total"] += jd
+    elif row["kind"] == "unpark":
+        t["unparked_jupsol_total"] += -jd
+    t["net_jupsol"] = (t["staked_jupsol_total"] - t["unstaked_jupsol_total"] - t["sent_jupsol_total"]
+                       - t["lent_jupsol_total"] + t["repaid_jupsol_total"] + t["parked_jupsol_total"] - t["unparked_jupsol_total"])
     s["stake"] = {k: (round(v, 9) if isinstance(v, float) else v) for k, v in t.items()}
     SUMMARY.write_text(json.dumps(s, indent=1))
     return s["stake"]

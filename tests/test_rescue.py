@@ -1,4 +1,5 @@
-"""JupSOL rescue loan booking (Trevor 2026-10-11): HWM untouched, repay + margin, settings restore, relief maths."""
+"""JupSOL rescue loan booking (Trevor 2026-10-11; 2026-10-27: exact JupSOL repayment, collateral-only rescue): HWM
+untouched, repayment, settings restore, relief maths."""
 import pytest
 
 from live import bank as K
@@ -26,23 +27,23 @@ def test_loan_excluded_from_withdrawal():
     assert amt == 0.0
 
 
-def test_repay_with_margin_and_hwm():
+def test_repay_exact_jupsol_and_hwm():
+    """2026-10-27 (Trevor): the exact JupSOL quantity lent is repaid; no 5 % margin, no profit share."""
     b = _b()
     K.loan_open(b, 0.5, 0.42, 5.0)
     b["bal"] += 0.3                                # trading profit while the loan was out
-    due = R.repay_due(b, {**R.DEFAULTS, "repay_margin_pct": 5.0})
-    assert due == pytest.approx(0.525)
-    K.loan_repay(b, due)
-    assert K.loan_outstanding(b) == 0 and b["bal"] == pytest.approx(1.275)
-    assert K.update_hwm(b, flat=True) and b["hwm"] == pytest.approx(1.275)
-    assert b["loans_done"][-1]["repaid"] == pytest.approx(0.525)
+    assert R.repay_due(b, {**R.DEFAULTS, "repay_margin_pct": 5.0}) == pytest.approx(0.42)   # JupSOL owed; margin ignored
+    K.loan_repay_jupsol(b, 0.5, 0.42)              # same JupSOL price: 0.5 SOL buys the 0.42 JupSOL back
+    assert K.loan_outstanding(b) == 0 and b["bal"] == pytest.approx(1.3)
+    assert K.update_hwm(b, flat=True) and b["hwm"] == pytest.approx(1.3)
+    assert b["loans_done"][-1]["repaid"] == pytest.approx(0.5) and b["loans_done"][-1]["repaid_jupsol"] == pytest.approx(0.42)
 
 
-def test_repay_profit_share():
+def test_no_profit_share():
     b = _b()
     K.loan_open(b, 0.5, 0.42, 5.0)
-    b["bal"] += 0.4                                # bal 1.9, profit over hwm_at_open 1.2 net of loan = 0.2
-    assert R.repay_due(b, {**R.DEFAULTS, "repay_margin_pct": 0.0, "repay_profit_share": 0.5}) == pytest.approx(0.6)
+    b["bal"] += 0.4
+    assert R.repay_due(b, {**R.DEFAULTS, "repay_margin_pct": 0.0, "repay_profit_share": 0.5}) == pytest.approx(0.42)
 
 
 def test_extend_and_restore(tmp_path, monkeypatch):
@@ -64,7 +65,7 @@ def test_liq_and_plan():
     assert R.liq_price(-1, 100, 100, 10) == pytest.approx(109)
     p = R.plan(-1, 100, 100, 10, 107, 50, c)       # 1.9% away -> in trigger
     assert p["in_trigger"] and not p["emergency"] and p["new_dist_pct"] > p["dist_pct"]
-    assert p["collateral_usd"] + p["credit_usd"] == pytest.approx(p["loan_usd"])
+    assert p["collateral_usd"] == pytest.approx(min(p["need_usd"], 50 * 0.99 / 3))   # collateral only, max 1/3 of JupSOL
     e = R.plan(-1, 100, 100, 10, 107, 1.0, c)      # $1 of JupSOL -> EMERGENCY
     assert e["emergency"]
     lg = R.plan(1, 100, 100, 10, 92, 50, c)        # long: liq 91

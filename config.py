@@ -433,6 +433,11 @@ class LedgerConfig:
     withdraw_network_sol: float = 0.0001
     withdraw_fee_factor: float = 2.0
     fee_settle_min_sol: float = 0.005       # ETH/BTC: settle SOL network-fee debt (native -> SOL swap) above this
+    # Trevor 2026-10-27: automatic JupSOL loans (live/jupsol_loans.py). "off" = no automatic JupSOL lending (manual
+    # rescue.sh only); "observe" = log what would be lent, send nothing; "on" = rescue (< 3% from liq, collateral only, max
+    # 1/3 of the JupSOL) and next-add loans (exact shortfall + $1, only when no peer bot can cover it). Repayment of an
+    # outstanding JupSOL loan (exact JupSOL quantity, on flat) runs in every mode.
+    jupsol_loans: str = "off"
 
     def __post_init__(self) -> None:
         if self.min_profit_native < 0 or not 0.0 <= self.withdraw_fraction <= 1.0 or self.ext_min_usd <= 0:
@@ -441,6 +446,8 @@ class LedgerConfig:
             raise ValueError("ledger.ext_flow_mode must be 'alert' or 'split'")
         if abs(sum(self.ext_split) - 1.0) > 1e-9:
             raise ValueError("ledger.ext_split must sum to 1")
+        if self.jupsol_loans not in ("off", "observe", "on"):
+            raise ValueError("ledger.jupsol_loans must be 'off', 'observe' or 'on'")
 
 
 @dataclass(frozen=True)
