@@ -9,5 +9,4 @@ if echo "$out" | grep -qE '^EVENTS$|ALERT'; then echo "$out"
   if echo "$out" | grep -q 'ALERT LIQ'; then (set -a; . /home/ratchet/.secrets/ratchet.env 2>/dev/null; set +a; unset JUP_LIVE; timeout 120 .venv/bin/python -m live.rescue status 2>&1 | grep RESCUE); fi
   echo "VERDICT: EVENTS"; else
   s=$(echo "$out" | grep -E '^(sol|eth|btc) (liq|hwm|risk)|close=' | tr '\n' ';' | cut -c1-600)
-  echo "$(date '+%Y-%m-%d %H:%M') MT quickcheck: quiet" >> live/changes.log
-  echo "VERDICT: QUIET (logged) | $s"; fi
+  echo "VERDICT: QUIET | $s"; fi
