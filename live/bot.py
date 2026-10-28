@@ -3069,6 +3069,106 @@ class Bot:
         return eq >= tgt - 1e-12, (f"trade guard: equity if closed now {eq:.9f} vs start {self.local.bank['trade_start_equity']:.9f} x (1+{self.cfg.profit_guard.min_profit_pct_trade:g}) = {tgt:.9f}"
                                    + self.guard_sole_note(pos, st, price, eq, tgt))
 
+    GUARD_CHAIN_MAX_AGE_S = 60.0   # a chain read older than this is stale for the guard's close decision
+
+    def guard_chain_equity(self, st: dict[str, Any], pos: ChainPosition | None) -> tuple[float | None, str]:
+        """Trevor 2026-10-28 14:42/14:49 MT ("only one truth: what is on the table"): this bot's guard equity in its own coin
+        from the chain read ``st`` only -- no lot / order / payout records, no fee estimates from records:
+          wallet    ETH / BTC: the bot's own token in the wallet ATA (sweepTokens atoms). SOL: native SOL + the rent locked
+                    in the wallet's open request accounts (allOpenRequests x REQ_RENT, refundable lamports) - sol_fee_reserve
+                    (the 0.02 SOL fee reserve, never in bal / HWM).
+          + escrow  own-coin tokens held on chain in this market's open request accounts (escrowAtoms of each request's
+                    escrow ATA: a resting add's collateral until it fills or is cancelled).
+          + close   the position account: collateralUsd - accrued borrowFeeUsd + PnL at the on-chain oracle - close fee at
+                    the custody's on-chain decreasePositionBps, in own coin at the oracle, less the same execution haircuts
+                    as hwm_equity (slippage, ETH/BTC short swap cost, SOL close tx).
+          - loans   the only bookkeeping used: JupSOL loan / inter-bot loan / SOL fee debt between the bots (ETH / BTC owe
+                    the SOL their network fees took from the shared wallet; the SOL bot is owed it), exactly as HWM counts them.
+        Like-for-like with HWM / trade_start_equity: both are bal - loans (bal excludes the fee reserve and request rent).
+        (None, why) when any read failed or is stale: the guard never closes on it."""
+        b, lv = self.local.bank, self.live
+        coin = b["coin"]
+        dec = bankmod.DECIMALS[coin]
+        age = time.time() - float(st.get("_read_at") or 0.0)
+        if age > self.GUARD_CHAIN_MAX_AGE_S:
+            return None, f"chain read {age:.0f}s old (> {self.GUARD_CHAIN_MAX_AGE_S:g}s)"
+        o, so = st.get("oracle") or {}, st.get("solOracle") or st.get("oracle") or {}
+        for nm, x in (("oracle", o), ("SOL oracle", so)):
+            if not x.get("price") or float(x.get("ageSec", 1e9)) > lv.max_oracle_age_sec:
+                return None, f"{nm} stale / missing {x}"
+        px, sol_px = float(o["price"]), float(so["price"])
+        if b.get("park"):
+            return None, "JupSOL park open (its JupSOL value is not read here)"
+        if self.asset == "SOL":
+            wallet = float(st["wallet"]["sol"]) + bankmod.rent_held(st) - lv.sol_fee_reserve
+        else:
+            tok = st.get("sweepTokens") or {}
+            if "error" in tok or coin not in tok or tok[coin].get("atoms") is None:
+                return None, f"{coin} wallet balance unreadable: {str(tok)[:120]}"
+            wallet = int(tok[coin]["atoms"]) / 10 ** dec
+        esc = 0
+        for r in st.get("openRequests") or []:
+            if r.get("escrowError") or r.get("escrowAtoms") is None:
+                return None, f"request {r.get('pubkey')} escrow unreadable: {r.get('escrowError')}"
+            a = int(r["escrowAtoms"])
+            if a and r.get("mint") != bankmod.MINT[coin]:
+                return None, f"request {r.get('pubkey')} escrow holds {r.get('mint')}, not {coin}"
+            esc += a
+        escrow = esc / 10 ** dec
+        cv = 0.0
+        if pos is not None:
+            p = st["positions"]["long" if pos.side == LONG else "short"]
+            bps = (st.get("custody") or {}).get("decreasePositionBps")
+            if p.get("borrowFeeUsd") is None or bps is None or not p.get("sizeUsd"):
+                return None, f"position / fee read incomplete (borrowFeeUsd {p.get('borrowFeeUsd')}, decreasePositionBps {bps})"
+            c, lc = self.cfg.costs, self.cfg.ledger
+            fill = px * (1 - pos.side * c.slippage)
+            swap = lc.swap_cost_pct if (pos.side == SHORT and self.asset != "SOL") else 0.0
+            net = lc.close_network_native if self.asset == "SOL" else 0.0
+            cv = bankmod.close_value_native(pos.side, float(p["sizeUsd"]), float(p["price"]),
+                                            float(p["collateralUsd"]) - float(p["borrowFeeUsd"]), fill, float(bps) / 1e4,
+                                            px, swap, net)
+        if self.asset == "SOL":
+            fees = -sum(self._peer_fee_sol())   # receivable: SOL the ETH / BTC bots' fees took from this wallet
+        else:
+            fees = bankmod.fee_debt_native(b, sol_px, px)
+        loans = bankmod.loan_outstanding(b) - bankmod.ib_adj(b)
+        eq = wallet + escrow + cv - fees - loans
+        return eq, (f"on-chain {wallet:.9f} wallet + {escrow:.9f} escrow + {cv:.9f} close - {fees:.9f} fee debt "
+                    f"- {loans:.9f} loans = {eq:.9f} {coin}")
+
+    def _peer_fee_sol(self) -> list[float]:
+        """ETH / BTC bots' unsettled SOL network-fee debt (their bank fee_sol, owed to the shared SOL wallet). Raises if unreadable."""
+        out = []
+        for a, rel in jlmod.STATE_FILES.items():
+            if a != "SOL":
+                out.append(float((json.loads((ROOT / rel).read_text()).get("bank") or {}).get("fee_sol") or 0.0))
+        return out
+
+    def guard_check_chain(self, st: dict[str, Any], pos: ChainPosition | None) -> tuple[bool, str]:
+        """The profit guard's close decision (2026-10-28): on-chain equity >= guard_target; any failed / stale read: no close."""
+        try:
+            eq, why = self.guard_chain_equity(st, pos)
+        except Exception as e:  # noqa: BLE001 - a failed read never closes
+            eq, why = None, f"read failed: {e!r}"
+        if eq is None:
+            return False, f"on-chain guard: NO CLOSE this tick ({why})"
+        tgt = self.guard_target(st)
+        return eq >= tgt - 1e-12, (f"trade guard (on chain): {why} vs start {self.local.bank['trade_start_equity']:.9f} x "
+                                   f"(1+{self.cfg.profit_guard.min_profit_pct_trade:g}) = {tgt:.9f}")
+
+    def guard_recheck_chain(self, pos: ChainPosition) -> tuple[bool, str, ChainPosition | None, float]:
+        """Right before a guard close: a fresh chain read; same side still open and on-chain equity >= target, else abort."""
+        try:
+            st2 = self.chain()
+            pos2 = self.chain_position(st2)
+        except Exception as e:  # noqa: BLE001
+            return False, f"re-read failed: {e!r}", None, 0.0
+        if pos2 is None or pos2.side != pos.side:
+            return False, "position changed on chain during the check", None, 0.0
+        ok, note = self.guard_check_chain(st2, pos2)
+        return ok, note, pos2, float(st2["oracle"]["price"])
+
     def guard_sole_note(self, pos: ChainPosition, st: dict[str, Any], price: float, eq: float, tgt: float) -> str:
         """guard_tps: target (coin + USD) and the guard close price where TP1/TP2 sit. Empty when the flag is off."""
         if not self.guard_tps():
@@ -3251,10 +3351,15 @@ class Bot:
                 return
             if self.bank_on:   # per-trade profit guard (Trevor 2026-10-14): close all once equity >= trade_start_equity x 1.002 (never moves TPs)
                 if self.hwm_close_armed():
-                    ok, note = self.guard_check(pos, st, price)
+                    ok, note = self.guard_check_chain(st, pos)   # 2026-10-28: on-chain equity only
                     if ok:
-                        self.close(pos, price, f"profit_guard ({note})")
-                        return
+                        ok, note, pos2, px2 = self.guard_recheck_chain(pos)   # fresh chain read right before the close
+                        if ok:
+                            self.close(pos2, px2, f"profit_guard ({note})")
+                            return
+                        log.warning("profit_guard: pre-close re-check -> NO close: %s", note)
+                    elif note.startswith("on-chain guard: NO CLOSE"):
+                        log.warning("%s", note)
             elif self.pg_close_armed():   # profit guard action (owner 18:02 MT): market-close once the close now meets it
                 pg_ok, pg_note = self.pg_close_ok(pos, price)
                 if pg_ok:

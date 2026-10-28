@@ -189,6 +189,22 @@ async function readOracle(doves: any, custody: any) {
   } catch (e) { return { error: String(e).slice(0, 160) }; }
 }
 
+/** Trevor 2026-10-28 (on-chain profit guard): this market's requests + the token amount each one holds on chain in its
+ * escrow ATA (positionRequestAta = ATA(request.mint, request)): a resting add's collateral sits there until it fills
+ * or is cancelled. escrowAtoms = that token account's amount ("0" = no account); escrowError is set when the read
+ * failed (the guard then never closes). Read-only, additive fields. */
+async function withEscrow(conn: Connection, rs: any[], fmt: (r: any) => any) {
+  const out = rs.map(fmt);
+  try {
+    const atas = rs.map((r: any) => getAssociatedTokenAddressSync(r.account.mint, r.publicKey, true));
+    const accs = atas.length ? await conn.getMultipleAccountsInfo(atas) : [];
+    out.forEach((o: any, i: number) => Object.assign(o, { mint: rs[i].account.mint.toBase58(),
+      collateralDelta: rs[i].account.collateralDelta?.toString?.() ?? null, escrowAta: atas[i].toBase58(),
+      escrowAtoms: accs[i] ? accs[i]!.data.readBigUInt64LE(64).toString() : "0" }));
+  } catch (e) { out.forEach((o: any) => { o.escrowError = String(e).slice(0, 160); }); }
+  return out;
+}
+
 /** State for one market. Shared-wallet fields: ``openRequests`` = this market's requests only (both sides);
  * ``allOpenRequests`` = every request of the owner; ``allPositions`` = collateral of every open position (all markets);
  * ``solOracle`` = SOL price (margin is native SOL, so every bot converts USD <-> SOL with it). */
@@ -249,7 +265,7 @@ export async function readState(conn: Connection, owner: PublicKey, mkt: Market 
       assets: { owned: custody.assets.owned.toString(), locked: custody.assets.locked.toString() },
     },
     pool: { name: pool.name, maxRequestExecutionSec: pool.maxRequestExecutionSec?.toString?.() },
-    openRequests: reqs.filter((r: any) => mine.has(r.account.position.toBase58())).map(fmt),   // this market only
+    openRequests: await withEscrow(conn, reqs.filter((r: any) => mine.has(r.account.position.toBase58())), fmt),   // this market only
     allOpenRequests: reqs.map(fmt),
   };
 }
