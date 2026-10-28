@@ -60,3 +60,4 @@ EXT_FLOW_ALERT*
 live/deposits.jsonl
 live/deposit_journal.json*
 live/deposit*.lock
+live/hourly_decisions.log
