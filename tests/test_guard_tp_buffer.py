@@ -46,6 +46,7 @@ def _run(ebot, st, pos, ticks):
         ebot.guard_drift_check(pos, st)
 
 
+@pytest.mark.usefixtures("guard_eq_from_bank")
 @pytest.mark.parametrize("side", ["short", "long"])
 def test_old_behaviour_loops_without_buffer(ebot, monkeypatch, side):
     """Reproduction: with no buffer every re-place's own fee pushes the guard past the TPs it just placed."""
@@ -58,6 +59,7 @@ def test_old_behaviour_loops_without_buffer(ebot, monkeypatch, side):
     assert all(0 < s <= 0.03 for s in steps)   # cent-sized, fee-only moves
 
 
+@pytest.mark.usefixtures("guard_eq_from_bank")
 @pytest.mark.parametrize("side", ["short", "long"])
 def test_fee_only_drift_no_longer_replaces(ebot, monkeypatch, side):
     st, pos = _setup(ebot, monkeypatch, side)
@@ -71,6 +73,7 @@ def test_fee_only_drift_no_longer_replaces(ebot, monkeypatch, side):
     assert pos.side * (px - gp) > 0             # on the safe side of the live guard price (short below, long above)
 
 
+@pytest.mark.usefixtures("guard_eq_from_bank")
 @pytest.mark.parametrize("side", ["short", "long"])
 def test_buffer_on_safe_side_and_rounded_against_itself(ebot, monkeypatch, side):
     st, pos = _setup(ebot, monkeypatch, side)
@@ -83,6 +86,7 @@ def test_buffer_on_safe_side_and_rounded_against_itself(ebot, monkeypatch, side)
     assert 0.03 < abs(px - gp) < 0.15           # ETH ($350 short): a few re-places' fees, a few cents
 
 
+@pytest.mark.usefixtures("guard_eq_from_bank")
 @pytest.mark.parametrize("side", ["short", "long"])
 def test_real_drift_still_replaces(ebot, monkeypatch, side):
     st, pos = _setup(ebot, monkeypatch, side)
