@@ -10,6 +10,7 @@ No point may be skipped or written as just "ok" / "quiet": each one states what 
 4. **Levels script risk call** - every reading since last hour (history.jsonl, eth/, btc/), its reasons, whether I agree and why.
 5. **TP3 decision** - per bot: current TP3 price and size; moved or not, old -> new, why; the 0.2% minimum-profit check.
 6. **TP2 decision** - only for trades with no partial yet (guard not armed); moved or not and why. Guarded trades: TP1/TP2 sit at the guard price by design.
+   - **Deeper TP2 (Trevor, 2026-10-28 20:53 MT):** if the 1h DI is bearish (-DI > +DI), price is under the 1h EMA200 and the levels script is not red, set TP2 just in front of the NEXT real support below the nearest one (not the nearest) to capture bigger moves. TP1 stays as is. Otherwise keep the normal rule: TP2 just in front of the nearest strong support. Log MOVE/HOLD with evidence as usual. (Example: 2026-10-28 ETH TP2 2330.90 in front of 2329.51 support; ETH fell to 2294, a TP2 near 2310 would have roughly doubled the profit.)
 7. **Profit guard** - armed on every trade with adds/partials; TPs on the safe side of the guard target; bank vs target; no re-place loop.
 8. **Closed trades** - each close since last hour: overall net profit (coin and $), partials taken, bank vs guard target.
 9. **Liquidation distance** - per bot, from the live position; anything within 3% -> rescue decision and alert.
