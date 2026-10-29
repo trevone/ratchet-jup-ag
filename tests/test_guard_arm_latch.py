@@ -59,6 +59,7 @@ def test_plain_first_entry_not_armed(monkeypatch, tmp_path):
     assert not b.hwm_close_armed() and not b.local.guard_armed and not b.guard_tps()
 
 
+@pytest.mark.usefixtures("guard_eq_from_bank")
 def test_add_partial_cycles_keep_guard_armed_until_flat(monkeypatch, tmp_path):
     b = first_entry_bot(monkeypatch, tmp_path)
     L = b.local

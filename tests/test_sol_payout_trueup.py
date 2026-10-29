@@ -113,6 +113,7 @@ def test_true_up_waits_for_a_consistent_snapshot(sbot):
     assert not L.pay_check and b["bal"] != bal
 
 
+@pytest.mark.usefixtures("guard_eq_from_bank")
 def test_close_at_tp_guard_price_meets_the_target_after_the_true_up(sbot):
     """The guard price is found on hwm_equity: with the real payout + fees it sits further into profit, so a close
     there (real money = the corrected bal + close value) reaches the target."""

@@ -1,5 +1,6 @@
 """Trevor 2026-10-15: after a TP3 fill: TP2 AT the profit-guard close price, TP1 tp_guard_gap_pct inside it (hwm_equity == guard_target),
 re-placed on every partial / add; fee-minimum floors still clamp; resting add / TP3 partials never cancelled. Default off."""
+import pytest
 from live import bank as bankmod
 from strategy import LONG, SHORT
 from tests.test_resting import ON, mkbot, req, state
@@ -34,6 +35,7 @@ def test_default_off():
     assert ProfitGuardConfig().tp_guard_gap_pct == 0.003
 
 
+@pytest.mark.usefixtures("guard_eq_from_bank")
 def test_guard_price_long_equity_equals_target(monkeypatch, tmp_path):
     b, st, pos = _setup(monkeypatch, tmp_path, ON + [FLAG])
     gp = b.guard_price(pos, st)
@@ -41,6 +43,7 @@ def test_guard_price_long_equity_equals_target(monkeypatch, tmp_path):
     assert abs(b.hwm_equity(pos, st, gp) - b.guard_target(st)) < 1e-9
 
 
+@pytest.mark.usefixtures("guard_eq_from_bank")
 def test_guard_price_short_equity_equals_target(monkeypatch, tmp_path):
     b, st, pos = _setup(monkeypatch, tmp_path, ON + [FLAG], short=True)
     assert pos.side == SHORT
@@ -49,11 +52,13 @@ def test_guard_price_short_equity_equals_target(monkeypatch, tmp_path):
     assert abs(b.hwm_equity(pos, st, gp) - b.guard_target(st)) < 1e-9
 
 
+@pytest.mark.usefixtures("guard_eq_from_bank")
 def test_guard_price_none_when_met(monkeypatch, tmp_path):
     b, st, pos = _setup(monkeypatch, tmp_path, ON + [FLAG], boost=-0.01)
     assert b.guard_price(pos, st) is None
 
 
+@pytest.mark.usefixtures("guard_eq_from_bank")
 def test_tps_placed_at_guard_price_after_partial_resting_add_kept(monkeypatch, tmp_path):
     b, st, pos = _setup(monkeypatch, tmp_path, ON + [FLAG])
     gp = b.guard_price(pos, st)
@@ -67,6 +72,7 @@ def test_tps_placed_at_guard_price_after_partial_resting_add_kept(monkeypatch, t
     assert not b.local.tp_retry
 
 
+@pytest.mark.usefixtures("guard_eq_from_bank")
 def test_clamped_to_fee_minimum(monkeypatch, tmp_path):
     b, st, pos = _setup(monkeypatch, tmp_path, ON + [FLAG], boost=0.00001)   # guard price barely beyond market
     mins, _ = b.tp_fee_mins(pos, st)
@@ -75,6 +81,7 @@ def test_clamped_to_fee_minimum(monkeypatch, tmp_path):
     assert got[0] == got[1] and got[0] >= max(mins) - 0.005
 
 
+@pytest.mark.usefixtures("guard_eq_from_bank")
 def test_guard_met_places_at_fee_floors(monkeypatch, tmp_path):
     b, st, pos = _setup(monkeypatch, tmp_path, ON + [FLAG], boost=-0.01)
     mins, _ = b.tp_fee_mins(pos, st)
@@ -103,6 +110,7 @@ def test_exception_sets_tp_retry_no_halt(monkeypatch, tmp_path):
     assert b.local.tp_retry and not b.kill.exists() and b.calls == []   # computed before cancel: nothing cancelled
 
 
+@pytest.mark.usefixtures("guard_eq_from_bank")
 def test_guard_note_shows_target_and_tp_price(monkeypatch, tmp_path):
     b, st, pos = _setup(monkeypatch, tmp_path, ON + [FLAG])
     n = b.guard_sole_note(pos, st, 106.6, 1.0, b.guard_target(st))
@@ -149,6 +157,7 @@ def test_defer_when_wallet_differs_from_bank(monkeypatch, tmp_path):
     assert b.calls == [] and bk["tp_defer"] == 1
 
 
+@pytest.mark.usefixtures("guard_eq_from_bank")
 def test_replaced_after_credit_and_defer_cleared(monkeypatch, tmp_path):
     b, st, pos = _setup(monkeypatch, tmp_path, ON + [FLAG])
     bk = _btc_bank(b, pay_wait=20)
@@ -170,6 +179,7 @@ def test_no_defer_without_resting_tps(monkeypatch, tmp_path):
     assert len(_placed(b)) == 2   # never a window without TPs
 
 
+@pytest.mark.usefixtures("guard_eq_from_bank")
 def test_implausibly_far_tp_deferred_then_placed_after_cap(monkeypatch, tmp_path):
     b, st, pos = _setup(monkeypatch, tmp_path, ON + [FLAG], boost=0.01)
     bk = _btc_bank(b)

@@ -150,6 +150,10 @@ def last_close_time() -> str | None:
         return None
 
 
+class GuardChainUnreadable(Exception):
+    """2026-10-29: the guard TP price needs a fresh, complete chain read; none available -> keep the resting TPs."""
+
+
 @dataclass
 class ChainPosition:  # satisfies strategy.PositionView
     side: int
@@ -685,18 +689,29 @@ class Bot:
     def guard_price(self, pos: ChainPosition, st: dict[str, Any], extra: float = 0.0) -> float | None:
         """Trevor 2026-10-15: price at which hwm_equity() == guard_target() (bisection on the existing functions; equity is
         monotone in price: up for a long, down for a short). None when already met at market or unreachable.
+        2026-10-29: equity = guard_equity_at (on chain); GuardChainUnreadable when the read is unusable (never an estimate).
         ``extra`` (own coin, >= 0; 2026-10-28) raises the target: used for the guard TP fee buffer."""
         price, tgt = st["oracle"]["price"], self.guard_target(st) + max(extra, 0.0)
-        if self.hwm_equity(pos, st, price) >= tgt:
+        eq = lambda px: self.guard_equity_at(pos, st, px)   # noqa: E731
+        if eq(price) >= tgt:
             return None
         far = price * (2.0 if pos.side == LONG else 0.01)
-        if self.hwm_equity(pos, st, far) < tgt:
+        if eq(far) < tgt:
             return None
         lo, hi = price, far   # lo: below target, hi: at/above target
         for _ in range(60):
             mid = (lo + hi) / 2
-            lo, hi = (mid, hi) if self.hwm_equity(pos, st, mid) < tgt else (lo, mid)
+            lo, hi = (mid, hi) if eq(mid) < tgt else (lo, mid)
         return hi
+
+    def guard_equity_at(self, pos: ChainPosition, st: dict[str, Any], price: float) -> float:
+        """2026-10-29 (Trevor: on-chain truth only): guard equity with the position closed at ``price`` from the chain read
+        only (guard_chain_equity: wallet + escrow + position collateral - accrued borrow fee + PnL - custody close fee bps),
+        never the bookkept bank / payout estimates. Failed / stale read: raises GuardChainUnreadable."""
+        eq, why = self.guard_chain_equity(st, pos, price)
+        if eq is None:
+            raise GuardChainUnreadable(why)
+        return eq
 
     PRICE_TICK = 0.01   # trigger price precision the bot places at (place_tp / move_trigger: cents; same for SOL, ETH, BTC)
 
@@ -770,7 +785,11 @@ class Bot:
         now = time.time()
         if now < self._guard_drift_until or self.guard_bank_stale(st):
             return False
-        gp = self.guard_price(pos, st)
+        try:
+            gp = self.guard_price(pos, st)
+        except GuardChainUnreadable as e:   # 2026-10-29: never re-place on an estimate; resting TPs kept
+            log.info("TP at guard: drift check skipped (chain read unusable: %s); resting TPs kept", e)
+            return False
         if gp is None:   # guard met at market: the tick's market-close guard handles it
             return False
         px = self.guard_round(pos.side, gp)   # the guard side only: a fee-floor move is fee_min_recheck's job (no churn on borrow accrual)
@@ -842,7 +861,16 @@ class Bot:
         at_guard = self.guard_tps()
         if at_guard and self.guard_defer(pos, st, None):   # payout not credited yet: keep the resting TPs, retry
             return
-        targets = self.guard_tp_targets(pos, st, targets) if at_guard else self.fee_min_targets(pos, targets, st, "placement")
+        try:
+            targets = self.guard_tp_targets(pos, st, targets) if at_guard else self.fee_min_targets(pos, targets, st, "placement")
+        except GuardChainUnreadable as e:
+            if self.tp_requests(st):   # 2026-10-29: resting TPs stay as they are; the next tick retries on a fresh read
+                log.warning("TP at guard: chain read unusable (%s); resting TPs kept, no re-place, retry next tick", e)
+                L.tp_retry = True
+                self.save()
+                return
+            log.warning("TP at guard: chain read unusable (%s) and no TP resting -> fee-floor TPs", e)
+            targets = self.fee_min_targets(pos, targets, st, "placement")
         if at_guard and self.guard_defer(pos, st, targets[0].price):   # implausibly far from market: keep, retry
             return
         if at_guard:
@@ -3075,7 +3103,8 @@ class Bot:
 
     GUARD_CHAIN_MAX_AGE_S = 60.0   # a chain read older than this is stale for the guard's close decision
 
-    def guard_chain_equity(self, st: dict[str, Any], pos: ChainPosition | None) -> tuple[float | None, str]:
+    def guard_chain_equity(self, st: dict[str, Any], pos: ChainPosition | None,
+                           at_price: float | None = None) -> tuple[float | None, str]:
         """Trevor 2026-10-28 14:42/14:49 MT ("only one truth: what is on the table"): this bot's guard equity in its own coin
         from the chain read ``st`` only -- no lot / order / payout records, no fee estimates from records:
           wallet    ETH / BTC: the bot's own token in the wallet ATA (sweepTokens atoms). SOL: native SOL + the rent locked
@@ -3101,6 +3130,8 @@ class Bot:
             if not x.get("price") or float(x.get("ageSec", 1e9)) > lv.max_oracle_age_sec:
                 return None, f"{nm} stale / missing {x}"
         px, sol_px = float(o["price"]), float(so["price"])
+        if at_price is not None and at_price > 0:   # guard_price bisection: position closed at this price (coin px follows it)
+            px = float(at_price)
         if b.get("park"):
             return None, "JupSOL park open (its JupSOL value is not read here)"
         if self.asset == "SOL":

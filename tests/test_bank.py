@@ -402,6 +402,7 @@ def _with_oracle(st, px):
     return s2
 
 
+@pytest.mark.usefixtures("guard_eq_from_bank")
 @pytest.mark.parametrize("side", ["long", "short"])
 def test_guard_price_independent_of_oracle(ebot, side):
     st, pos = _gp_setup(ebot, side)
@@ -414,6 +415,7 @@ def test_guard_price_independent_of_oracle(ebot, side):
         assert ebot.guard_price(pos, s2) == pytest.approx(base, rel=1e-9) or ebot.guard_price(pos, s2) is None
 
 
+@pytest.mark.usefixtures("guard_eq_from_bank")
 @pytest.mark.parametrize("side", ["long", "short"])
 def test_guard_price_sol_oracle_bounded_sensitivity(ebot, side):
     st, pos = _gp_setup(ebot, side)
@@ -436,6 +438,7 @@ def test_hwm_equity_closed_form(ebot, side):
         assert ebot.hwm_equity(pos, st, p) == pytest.approx(want, rel=1e-12)
 
 
+@pytest.mark.usefixtures("guard_eq_from_bank")
 @pytest.mark.parametrize("side", ["long", "short"])
 def test_guard_check_flips_at_guard_price_with_other_oracle(ebot, side):
     st, pos = _gp_setup(ebot, side)
@@ -448,6 +451,7 @@ def test_guard_check_flips_at_guard_price_with_other_oracle(ebot, side):
     assert ebot.guard_check(pos, other, dn)[0] is (side == "short")
 
 
+@pytest.mark.usefixtures("guard_eq_from_bank")
 def test_regression_btc_0815_guard_price_no_longer_follows_oracle(ebot):
     # synthetic BTC-like short (coin price = candidate price): old code held cpx at the oracle -> a different guard price
     st, pos = _gp_setup(ebot, "short")

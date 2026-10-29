@@ -26,3 +26,12 @@ def _no_chain(monkeypatch, tmp_path):
     monkeypatch.setattr(bank, "ROOT", tmp_path)
     from live import deposit   # USDC deposit journal / locks / deposits.jsonl -> temp dir
     monkeypatch.setattr(deposit, "ROOT", tmp_path)
+
+
+@pytest.fixture
+def guard_eq_from_bank(monkeypatch):
+    """Opt-in, for tests of the guard-price MECHANICS (bisection, buffer, rounding, fee floors, defer) whose fake chain
+    states carry no wallet / escrow / custody fields: evaluate the guard equity with hwm_equity instead of the on-chain
+    guard_chain_equity that live code uses since 2026-10-29 (tests/test_guard_tp_onchain.py covers the on-chain source)."""
+    import live.bot as B
+    monkeypatch.setattr(B.Bot, "guard_equity_at", lambda self, pos, st, price: self.hwm_equity(pos, st, price))
