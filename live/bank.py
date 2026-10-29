@@ -141,6 +141,8 @@ def apply_withdrawal(b: dict[str, Any], amt_in: float, why: str = "") -> None:
     b["bal"] = round(b["bal"] - amt_in, 9)
     b["hwm"] = round(b["hwm"] - amt_in, 9)
     b["wd_mark"] = b["hwm"]
+    if b.get("trade_start_equity") is not None:   # per-trade guard baseline: capital out, not trade loss (mirrors deposits)
+        b["trade_start_equity"] = round(b["trade_start_equity"] - amt_in, 9)
     b["totals"]["withdrawn"] = round(b["totals"].get("withdrawn", 0.0) + amt_in, 9)
     note(b, "withdraw", -amt_in, why)
 
