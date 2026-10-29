@@ -81,3 +81,5 @@ Note 2026-10-16 03:30 MT: TP3 reference = whole-position breakeven (bank equity 
 Note 2026-10-28 13:49 MT: no new setting; a TP3 fill seen as a size drop before its order record disappears is booked as that TP3 partial (not a TP hit), and the stale record later disappearing books nothing (STRATEGY.md, `Bot.early_partial_fill`).
 
 Note 2026-10-28 14:15 MT: no new setting; a resting add fill seen as size growth before its order record disappears is booked as that add fill at once, never counted twice in the guard equity, and the stale record later disappearing books nothing (STRATEGY.md, `Bot.early_add_fill`).
+
+Note 2026-10-29 MT: no new setting; a TP3_SET price is now held by partial_sync (record flag manual) until the next add / resize changes the TP3 size.

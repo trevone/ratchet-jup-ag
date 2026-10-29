@@ -1021,7 +1021,8 @@ class Bot:
 
     def tp3_set(self, pos: ChainPosition, st: dict[str, Any], f: Path) -> None:
         """One-shot manual TP3 move (file TP3_SET with a price; Trevor 2026-10-14): the resting TP3 (partial) trigger is
-        moved in place (no fee clamp; must be beyond market); the next add / resize re-plans TP3. Never halts."""
+        moved in place (no fee clamp; must be beyond market); marked manual so partial_sync keeps it until the next add /
+        resize (size change) re-plans TP3. Never halts."""
         want = self.set_file_price(f)
         if want is None:
             return
@@ -1039,6 +1040,7 @@ class Bot:
             return
         log.warning("TP3_SET: TP3 %.2f -> %.2f in place", p["px"], px)
         p["px"] = px
+        p["manual"] = True   # 2026-10-29: partial_sync holds this price until the next add / resize (size change)
         self.save()
 
     def resize_tps(self, pos: ChainPosition) -> None:
@@ -2323,6 +2325,8 @@ class Bot:
                     min_net_pct=R.partial_min_net_pct), logging.WARNING)
         else:
             self.__dict__.setdefault("_rest_notes", {}).pop("tp3_skip", None)
+        if old and old.get("manual") and tgt and abs(float(old["size"]) - tgt["size"]) < 0.01:   # 2026-10-29: TP3_SET
+            return   # price held until the next add / resize changes the TP3 size, then normal planning resumes
         if old and tgt and abs(float(old["size"]) - tgt["size"]) < 0.01 and abs(float(old["px"]) - tgt["px"]) < max(0.005, 0.0003 * price):   # hysteresis: breakeven drifts with the coin / SOL price
             return
         if tgt and pos.side * (tgt["px"] - price) < self.cfg.tp.tp_market_gap - 1e-9:
