@@ -72,3 +72,43 @@ def test_tp3_set_moves_partial_in_place(monkeypatch, tmp_path):
     f.write_text("100")   # below market -> fee-min clamp still inside market: nothing changed
     b.tp3_set(b.chain_position(st), st, f)
     assert not f.exists() and len(b.calls) == 1 and b.local.partials[0]["px"] == 108.40
+
+
+def _tp3_manual(monkeypatch, tmp_path):
+    b, st = _bot(monkeypatch, tmp_path)
+    b.local.partials = [{"pubkey": "PT", "px": 108.0, "entry": 105.0, "size": 20.0}]
+    f = tmp_path / "TP3_SET"
+    f.write_text("108.40")
+    b.tp3_set(b.chain_position(st), st, f)
+    placed = []
+    b._place_partial = lambda pos, price, tgt, why: placed.append(tgt) or True
+    b.calls.clear()
+    return b, st, placed
+
+
+def test_tp3_set_held_by_partial_sync_until_size_changes(monkeypatch, tmp_path):
+    b, st, placed = _tp3_manual(monkeypatch, tmp_path)
+    assert b.local.partials[0]["manual"] is True
+    b.partial_plan = lambda pos: {"size": 20.0, "px": 108.0}   # same size, planned price differs
+    b.partial_sync(b.chain_position(st), 107.0)
+    assert not b.calls and not placed and b.local.partials[0]["px"] == 108.40
+    b.partial_plan = lambda pos: {"size": 35.0, "px": 108.1}   # new add: size changed -> normal re-plan
+    b.partial_sync(b.chain_position(st), 107.0)
+    assert b.calls == [("cancel1", "PT")] and placed == [{"size": 35.0, "px": 108.1}]
+
+
+def test_tp3_unmanual_still_replanned(monkeypatch, tmp_path):
+    b, st, placed = _tp3_manual(monkeypatch, tmp_path)
+    b.local.partials[0].pop("manual")
+    b.partial_plan = lambda pos: {"size": 20.0, "px": 108.0}
+    b.partial_sync(b.chain_position(st), 107.0)
+    assert b.calls == [("cancel1", "PT")] and placed == [{"size": 20.0, "px": 108.0}]
+
+
+def test_tp3_set_rejected_not_manual(monkeypatch, tmp_path):
+    b, st = _bot(monkeypatch, tmp_path)
+    b.local.partials = [{"pubkey": "PT", "px": 108.0, "entry": 105.0, "size": 20.0}]
+    f = tmp_path / "TP3_SET"
+    f.write_text("100")
+    b.tp3_set(b.chain_position(st), st, f)
+    assert "manual" not in b.local.partials[0]
