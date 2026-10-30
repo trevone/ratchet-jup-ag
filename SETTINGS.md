@@ -91,3 +91,6 @@ Note 2026-10-29 MT: no new setting; a TP3_SET price is now held by partial_sync 
 
 
 **Profit-guard market close (2026-10-29 21:05 MT, no config key):** skipped while guard TP1/TP2 are resting on chain (`guard_tps_resting`); the TPs handle the close. Fires (after the fresh chain re-check) only when no guard TP is resting.
+
+
+**[entry] first_collateral_mode (2026-10-29 21:24 MT):** `pct` on SOL / ETH / BTC (was `fixed`). `first_collateral_pct` 0.10, `first_collateral_min_usd` 10.50, `first_collateral_max_usd` off. Free = own bank bal x coin price. `[sizing] initial_margin_usd` is only used in fixed mode.

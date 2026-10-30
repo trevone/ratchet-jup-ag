@@ -56,6 +56,8 @@ Grow each bot’s own coin (SOL / Wormhole ETH / WBTC) with small, fee-aware pro
 
 First-entry sizing uses **10% of the bot’s free bank balance (USD)** (`first_collateral_pct`), floor $10.50, with `$0.10` fee reserve for adds.
 
+**Live since 2026-10-29 21:24 MT (Trevor):** `[entry] first_collateral_mode = "pct"` on SOL, ETH and BTC (was `"fixed"` = $10 from `[sizing]` since 2026-10-12). First entry collateral = max(10% x free, $10.50), no cap, never above free - $0.10. Free = the bot's own bank balance x coin price (the `free $` on the `budget` log line). The ladder budgets from what is left after the open; rungs stay `ladder_fixed_usd` $10.
+
 ---
 
 ## 3. Entries
