@@ -686,6 +686,19 @@ class Bot:
         trade (partials_done is reset on flat); before that tp1_pct / tp2_pct from the average."""
         return bool(self.local.partials_done and self.bank_on and self.local.bank)
 
+    def guard_tps_resting(self, st: dict[str, Any]) -> bool:
+        """Trevor 2026-10-29 21:05 MT: True while TP1/TP2 sit at the guard price (guard_tps) AND at least one of those
+        TP trigger requests is resting on chain (this tick's openRequests; TP3 partials / resting adds excluded). Then the
+        profit-guard MARKET close is skipped: the resting guard TPs handle the close."""
+        return self.guard_tps() and bool(self.tp_requests(st))
+
+    def _log_guard_tps_handle(self, st: dict[str, Any], note: str) -> None:
+        now = time.time()
+        if now >= getattr(self, "_guard_tps_log_at", 0.0):   # once a minute, not every tick
+            self._guard_tps_log_at = now + 60
+            log.info("profit_guard: met (%s) but guard TPs are resting on chain (%s) -> NO market close; the TPs handle it",
+                     note, ", ".join(f"{float(r['triggerPrice']):.4f}" for r in self.tp_requests(st)))
+
     def guard_price(self, pos: ChainPosition, st: dict[str, Any], extra: float = 0.0) -> float | None:
         """Trevor 2026-10-15: price at which hwm_equity() == guard_target() (bisection on the existing functions; equity is
         monotone in price: up for a long, down for a short). None when already met at market or unreachable.
@@ -3387,7 +3400,9 @@ class Bot:
             if self.bank_on:   # per-trade profit guard (Trevor 2026-10-14): close all once equity >= trade_start_equity x 1.002 (never moves TPs)
                 if self.hwm_close_armed():
                     ok, note = self.guard_check_chain(st, pos)   # 2026-10-28: on-chain equity only
-                    if ok:
+                    if ok and self.guard_tps_resting(st):   # Trevor 2026-10-29 21:05 MT: resting guard TPs own the close
+                        self._log_guard_tps_handle(st, note)
+                    elif ok:
                         ok, note, pos2, px2 = self.guard_recheck_chain(pos)   # fresh chain read right before the close
                         if ok:
                             self.close(pos2, px2, f"profit_guard ({note})")
@@ -3397,7 +3412,9 @@ class Bot:
                         log.warning("%s", note)
             elif self.pg_close_armed():   # profit guard action (owner 18:02 MT): market-close once the close now meets it
                 pg_ok, pg_note = self.pg_close_ok(pos, price)
-                if pg_ok:
+                if pg_ok and self.guard_tps_resting(st):   # Trevor 2026-10-29 21:05 MT
+                    self._log_guard_tps_handle(st, pg_note)
+                elif pg_ok:
                     self.close(pos, price, f"profit_guard ({pg_note})")
                     return
             timer = self.cfg.tp.close_remainder_after_min

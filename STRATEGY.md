@@ -14,6 +14,10 @@ Applies identically to all three bots (SOL, ETH, BTC). Config: `[tp] tp1_pct`, `
 - All three bots: TP1/TP2 at `tp1_pct`/`tp2_pct` from avg until a TP3 partial fills on the trade; after that TP1 and TP2 both sit at the SAME price = the profit-guard price clamped by the stricter fee floor (2026-10-16: no `tp_guard_gap_pct` spacing, no `tp_min_gap_usd`; `tps_at_guard` removed).
 - Removed with this rule: the level rule (TP1 front-running analyst levels, `tp1_mode`, `tp2_from_tp1_ratio`), the 60% ratio (`tp1_ratio*`), the TP2 resistance cap (`tp_res_*`, analyst touch counts), the momentum fade (`tp_fade_*`, `tp_near_miss_frac`, `tp_swing_buffer_atr`; the bot never passed fade inputs) and the above-water TP1 (`deep_buffer_*`).
 
+## Profit-guard market close vs resting guard TPs (Trevor 2026-10-29 21:05 MT)
+
+While guard TPs are resting on chain (TP1/TP2 at the guard price, i.e. after a TP3 partial on this trade, and at least one of their trigger requests in this tick's chain `openRequests`), the profit guard does **not** market-close: it logs `profit_guard: met (...) but guard TPs are resting on chain (...) -> NO market close; the TPs handle it`. Only when no guard TP is resting does the guard market-close, still after the fresh on-chain re-check (`guard_recheck_chain`). Applies to the bank guard and the `pg_close_armed` branch, all three bots.
+
 ## 1. Goal and philosophy
 
 Grow each bot’s own coin (SOL / Wormhole ETH / WBTC) with small, fee-aware profits. JupSOL is a stake bucket from daily withdrawals, never margin.

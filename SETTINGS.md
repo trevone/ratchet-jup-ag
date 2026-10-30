@@ -88,3 +88,6 @@ Note 2026-10-28 14:15 MT: no new setting; a resting add fill seen as size growth
 Note 2026-10-29 MT: no new setting; a TP3_SET price is now held by partial_sync (record flag manual) until the next add / resize changes the TP3 size.
 
 - 2026-10-29: the guard TP price (TP1 == TP2 after a TP3 fill) is computed from the on-chain equity only (`guard_chain_equity`); no setting; `GUARD_CHAIN_MAX_AGE_S` (60 s, code constant) is the freshness limit. A stale read keeps the resting TPs.
+
+
+**Profit-guard market close (2026-10-29 21:05 MT, no config key):** skipped while guard TP1/TP2 are resting on chain (`guard_tps_resting`); the TPs handle the close. Fires (after the fresh chain re-check) only when no guard TP is resting.
