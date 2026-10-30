@@ -122,6 +122,9 @@ class Local:
     # cleared until flat (a new Local on flat / open resets it), so a partial that leaves lots=1, n_entries=1 no longer
     # disarms the guard. Persisted in state.json; a state without the key derives it (trade_guard_armed).
     guard_armed: bool = False
+    # Trevor 2026-10-30 05:51 MT: a TP3 (per-add partial) filled this trade -> the 55-min TP timer is off until flat; only the
+    # profit guard (or TP1/TP2) closes it. Persisted in state.json; reset by the new Local on flat / open.
+    tp3_filled: bool = False
     # Trevor 2026-10-27 (SOL bot): a payout this trade was booked as an estimate -> re-measure the trade's real on-chain
     # flows (position txs, as the flat true-up) and true up bal mid-trade (sol_pay_trueup); fee_mark_sol = this trade's
     # network fees (ledger_open.json) already inside bal after that true-up (hwm_equity deducts only the fees since)
@@ -1310,6 +1313,14 @@ class Bot:
                 self._pg_note = note
         return targets
 
+    def timer_blocked_tp3(self) -> bool:
+        """Trevor 2026-10-30 05:51 MT: 'If a tp3 is taken then it should only close with profit guard.' True once any TP3
+        (per-add partial) filled this trade (latched local.tp3_filled; partials_done derives it for older state)."""
+        L = self.local
+        if not L.tp3_filled and L.partials_done:
+            L.tp3_filled = True
+        return L.tp3_filled
+
     def trade_guard_armed(self) -> bool:
         """Trevor 2026-10-27: this trade had an add fill or a partial (TP3 / trim) since it opened -> the guard stays armed
         until flat. Latched in local.guard_armed; derived from the trade's state (n_entries > 1, > 1 lot, trims, partials_done:
@@ -1959,6 +1970,7 @@ class Bot:
                     L.last_partial_px = float(last["px"])
                 L.partials_done += [{**p, "filled": str(pd.Timestamp.now(tz="UTC"))} for p in gone_p]
                 L.guard_armed = True   # 2026-10-27: a partial (TP3) arms the guard until flat, even with lots / n_entries back to 1
+                L.tp3_filled = True   # Trevor 2026-10-30 05:51 MT: no TP timer close for the rest of this trade
                 L.last_size = pos.size
                 self._tp_resize = True   # Trevor 2026-10-12 06:07 MT: re-size TP1/TP2 to the remaining position
                 ledger.update(exit=f"P{len(L.partials_done)}@{pd.Timestamp.now(tz='UTC'):%H:%M}")
@@ -3440,7 +3452,11 @@ class Bot:
                     self.close(pos, price, f"profit_guard ({pg_note})")
                     return
             timer = self.cfg.tp.close_remainder_after_min
-            if timer is not None and pos.first_tp_time is not None:
+            if timer is not None and pos.first_tp_time is not None and self.timer_blocked_tp3():
+                if pd.Timestamp.now(tz="UTC") - pos.first_tp_time >= pd.Timedelta(minutes=timer) and not getattr(self, "_tp3_timer_note", False):
+                    self._tp3_timer_note = True
+                    log.info("timer expired but a TP3 filled this trade: no timer close (profit guard / TPs only)")
+            elif timer is not None and pos.first_tp_time is not None:
                 expired = pd.Timestamp.now(tz="UTC") - pos.first_tp_time >= pd.Timedelta(minutes=timer)
                 net = self.strategy.net_close_pnl(pos, price)
                 pg_ok, pg_note = ((self.hwm_check(pos, st, price, 0.0) if self.bank_on else self.pg_close_ok(pos, price))
