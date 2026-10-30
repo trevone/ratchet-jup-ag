@@ -51,6 +51,7 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 | [profit_guard] | min_trade_profit_sol | 0.001 | 0.001 | 0.001 | **Legacy field, not used by the live guard** (see [ledger] min_profit_native) |
 | [ledger] | enabled | true | true | true | Per-bot own-coin bank + HWM |
 | [ledger] | min_profit_native | 0.0015 SOL | 0.000066 ETH | 0.00000195 WBTC | Obsolete (guard is per trade: [profit_guard] min_profit_pct_trade 0.003 in the live tomls since 2026-10-27) |
+| [ledger] | ext_flow_mode | "chain" | "chain" | "chain" | Trevor 2026-10-30: bank balance = on-chain token every tick when nothing is in flight (SOL minus 0.02 reserve); no own-token deposit detection; see STRATEGY.md Core design. `alert` = old reconcile, `split` = oldest |
 | [ledger] | ext_min_usd / window_ticks | 1.5 / 3 | same | same | External deposit/withdrawal detection |
 | [ledger] | withdraw_enabled / time / fraction / min_usd | true / 00:05 / 0.90 / 0.50 | same | same | Daily withdraw_fraction (0.90 since 2026-10-27 00:32 MT, the cap; nudged nightly) of HWM gain -> JupSOL |
 | (code) bot.py | SOL flat true-up | always applied | n/a | n/a | 2026-10-27: no 0.02 SOL skip; re-applied at booking; if flows unreadable -> bank.trueup_block: SOL daily withdrawal blocked + HWM held until applied |

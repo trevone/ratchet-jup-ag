@@ -2512,6 +2512,27 @@ class Bot:
             return True
         return False
 
+    def chain_balance_sync(self, st: dict[str, Any]) -> None:
+        """Trevor 2026-10-30 07:15 MT ([ledger] ext_flow_mode = "chain"): this bot's balance = its own token on chain.
+        SOL: native SOL - live.sol_fee_reserve; ETH / BTC: the wallet's ETH / WBTC. Skipped while a (non-trigger) request is
+        in flight (its escrow / payout is moving) or the token read failed. A deposit of the bot's own token is usable on
+        the next tick; HWM follows it only when flat (update_hwm)."""
+        b = self.local.bank
+        if self._busy(st, self.asset == "SOL"):
+            return
+        if self.asset == "SOL":
+            v = float(st["wallet"]["sol"]) - self.live.sol_fee_reserve
+        else:
+            tok = st.get("sweepTokens") or {}
+            if "error" in tok or b["coin"] not in tok:
+                return
+            v = int((tok[b["coin"]] or {}).get("atoms") or 0) / 10 ** bankmod.DECIMALS[b["coin"]]
+        v = round(max(0.0, v), 9)
+        if abs(v - b["bal"]) > bankmod.DUST[b["coin"]]:
+            log.info("BANK chain balance %s: bal %.9f -> %.9f (%+.9f)", b["coin"], b["bal"], v, v - b["bal"])
+        b["bal"] = v
+        b["pend"] = None
+
     def bank_tick(self, st: dict[str, Any], pos: ChainPosition | None, price: float) -> None:
         """Reconcile this bot's balance with the wallet, settle external-event shares, raise the HWM when flat."""
         b, lc = self.local.bank, self.cfg.ledger
@@ -2525,6 +2546,8 @@ class Bot:
         mid_jl = False if (mid_loan or mid_dep) else jlmod.tick(self, st, pos, price)
         if mid_loan or mid_dep or mid_jl:
             pass
+        elif lc.ext_flow_mode == "chain":
+            self.chain_balance_sync(st)
         elif self.asset == "SOL":
             j = bankmod.load_journal()
             r = bankmod.recon_sol(b, float(st["wallet"]["sol"]), bankmod.pending_others(j), sol_px, lc.ext_min_usd,
@@ -2562,7 +2585,7 @@ class Bot:
                                 r["diff"], r["diff"] * cpx)
                 elif r["action"] == "pending":
                     log.info("BANK: unexplained %s change %+.9f; re-checking next tick", coin, r["diff"])
-            if not self._busy(st, False) and lc.ext_flow_mode != "alert":   # alert mode: never swap for ext events
+            if not self._busy(st, False) and lc.ext_flow_mode == "split":   # alert / chain: never swap for ext events
                 self.bank_settle_external(st, sol_px, cpx)
         if not mid_dep:   # deposit in flight / credited this tick: the reconcile was held, so the payout window is too
             if b.get("window", 0) > 0:

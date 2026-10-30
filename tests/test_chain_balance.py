@@ -1,0 +1,73 @@
+"""Trevor 2026-10-30 07:15 MT: balance = own token on chain; HWM only bookkeeping: flat and token > HWM -> HWM = token."""
+import dataclasses
+
+import pytest
+
+import live.bank as K
+from config import load_config
+from tests.test_bank import _st
+
+
+def _bot(monkeypatch, tmp_path, path, asset):
+    import live.bot as B
+    monkeypatch.setattr(B, "STATE", tmp_path / "state.json")
+    ov = ["live.dry_run=true"]
+    if asset != "SOL":
+        monkeypatch.setattr(B, "ROOT", tmp_path.parent)
+        ov.append(f"bot.state_dir={tmp_path.name}")
+    b = B.Bot(load_config(path, ov))
+    b.live = dataclasses.replace(b.live, dry_run=False)
+    return b
+
+
+@pytest.mark.parametrize("p", ["configs/live_100.toml", "configs/live_eth.toml", "configs/live_btc.toml"])
+def test_live_configs_chain(p):
+    assert load_config(p).ledger.ext_flow_mode == "chain"
+
+
+def test_sol_deposit_usable_next_tick_and_hwm_follows_when_flat(monkeypatch, tmp_path):
+    b = _bot(monkeypatch, tmp_path, "configs/live_100.toml", "SOL")
+    b.local.bank = K.new_bank("SOL", 0.957, 1.174)
+    st = _st(asset="SOL", size=0)
+    st["wallet"]["sol"] = 0.977 + 0.9375                   # ~$90 SOL arrives
+    b.bank_tick(st, None, 96.0)
+    bk = b.local.bank
+    assert bk["bal"] == pytest.approx(0.957 + 0.9375)        # wallet - 0.02 reserve, at once
+    assert bk["hwm"] == pytest.approx(0.957 + 0.9375)        # flat and token > HWM -> HWM = token
+    assert K.load_journal()["events"] == []                  # never split
+
+
+def test_hwm_never_moves_down(monkeypatch, tmp_path):
+    b = _bot(monkeypatch, tmp_path, "configs/live_100.toml", "SOL")
+    b.local.bank = K.new_bank("SOL", 0.957, 1.174)
+    st = _st(asset="SOL", size=0)
+    st["wallet"]["sol"] = 0.80
+    b.bank_tick(st, None, 96.0)
+    assert b.local.bank["bal"] == pytest.approx(0.78) and b.local.bank["hwm"] == pytest.approx(1.174)
+
+
+def test_no_sync_while_request_in_flight(monkeypatch, tmp_path):
+    b = _bot(monkeypatch, tmp_path, "configs/live_100.toml", "SOL")
+    b.local.bank = K.new_bank("SOL", 0.957, 1.174)
+    st = _st(asset="SOL", size=0)
+    st["wallet"]["sol"] = 0.50
+    st["openRequests"] = st["allOpenRequests"] = [{"requestType": "market"}]
+    b.bank_tick(st, None, 96.0)
+    assert b.local.bank["bal"] == pytest.approx(0.957)
+
+
+def test_hwm_not_raised_in_a_trade(monkeypatch, tmp_path):
+    import live.bank as KK
+    bk = K.new_bank("SOL", 2.0, 1.174)
+    assert KK.update_hwm(bk, False) is False and bk["hwm"] == 1.174
+
+
+def test_eth_balance_is_wallet_eth(monkeypatch, tmp_path):
+    b = _bot(monkeypatch, tmp_path, "configs/live_eth.toml", "ETH")
+    b.local.bank = K.new_bank("ETH", 0.05, 0.0528)
+    st = _st(asset="ETH", size=0)
+    coin = b.local.bank["coin"]
+    st.setdefault("sweepTokens", {})[coin] = {"atoms": int(0.09 * 10 ** K.DECIMALS[coin])}
+    b.bank_tick(st, None, 2200.0)
+    assert b.local.bank["bal"] == pytest.approx(0.09) and b.local.bank["hwm"] >= 0.09 - 1e-9
+

@@ -12,6 +12,20 @@ from live import ledger
 from live import withdraw as wd
 from strategy import LONG, Action, Intent
 
+
+@pytest.fixture(autouse=True)
+def _legacy_ledger_mode(monkeypatch):
+    """These tests cover the stored-bank reconcile (ext_flow_mode alert); live configs use "chain" since 2026-10-30."""
+    import config as C
+    orig = C.load_config
+
+    def lc(path, overrides=None, *a, **k):
+        return orig(path, list(overrides or []) + ["ledger.ext_flow_mode=alert"], *a, **k)
+    monkeypatch.setattr(C, "load_config", lc)
+    if "load_config" in globals():
+        monkeypatch.setitem(globals(), "load_config", lc)
+
+
 SOL_PX, BTC_PX = 110.6318, 82700.0
 
 
