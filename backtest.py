@@ -35,9 +35,13 @@ class BacktestResult:
 
 
 def iter_bars(features: pd.DataFrame) -> list[Bar]:
-    cols = features[["open", "high", "low", "close", "rsi", "trend_up"]]
-    return [Bar(t, o, h, l, c, r, None if pd.isna(tu) else bool(tu))
-            for t, (o, h, l, c, r, tu) in zip(cols.index, cols.itertuples(index=False, name=None))]
+    f = features
+    nan = pd.Series(float("nan"), index=f.index)
+    cols = pd.DataFrame({k: f[k] for k in ("open", "high", "low", "close", "rsi", "trend_up")})
+    cols["ma_htf"] = f["ma_htf"] if "ma_htf" in f else nan
+    cols["sma"] = f["sma_sig"] if "sma_sig" in f else nan
+    return [Bar(t, o, h, l, c, r, None if pd.isna(tu) else bool(tu), float(m), float(sm))
+            for t, (o, h, l, c, r, tu, m, sm) in zip(cols.index, cols.itertuples(index=False, name=None))]
 
 
 def run_backtest(cfg: Config, features: pd.DataFrame) -> BacktestResult:

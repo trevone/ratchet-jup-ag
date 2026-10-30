@@ -5,10 +5,13 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 
 | Section | Key | SOL | ETH | BTC | What it does |
 |---|---|---|---|---|---|
-| [signal] | tf | 15m | 15m | 15m | RSI timeframe for entries (trend filter = 4h EMA200) |
-| [signal] | oversold / overbought | 45 / 55 | 45 / 55 | 45 / 55 | Long entry RSI < oversold, short entry RSI > overbought |
-| [signal] | idle_after_min / idle_step_min | 60 / 30 | 60 / 30 | 60 / 30 | Flat this long -> loosen RSI thresholds in steps |
-| [signal] | idle_long_rsi_steps / idle_short_rsi_steps | [48,50] / [52,50] | same | same | Loosened RSI thresholds while idle |
+| [signal] | entry_rule | price_ma | price_ma | price_ma | 2026-10-29: LONG when price > 4h EMA200 AND > 15m SMA10; SHORT when below both; disagree/equal = flat. Price vs line, never slope. "rsi" = old rule |
+| (top) | sides | both | both | both | 2026-10-29: both (was short, analyst bias); outlook/levels no longer restrict entry side |
+| [signal] | entry_sma_length | 10 | 10 | 10 | SMA length on the signal TF (15m) for the entry rule |
+| [signal] | tf | 15m | 15m | 15m | Signal timeframe (15m SMA10; RSI logged only) (trend filter = 4h EMA200) |
+| [signal] | oversold / overbought | 45 / 55 | 45 / 55 | 45 / 55 | Long entry RSI < oversold, short entry RSI > overbought (UNUSED for entries since 2026-10-29: entry_rule = price_ma) |
+| [signal] | idle_after_min / idle_step_min | 60 / 30 | 60 / 30 | 60 / 30 | Flat this long -> loosen RSI thresholds in steps (UNUSED for entries since 2026-10-29: entry_rule = price_ma) |
+| [signal] | idle_long_rsi_steps / idle_short_rsi_steps | [48,50] / [52,50] | same | same | Loosened RSI thresholds while idle (UNUSED for entries since 2026-10-29: entry_rule = price_ma) |
 | [entry] | first_collateral_pct | 0.10 | 0.10 | 0.10 | First entry = 10% of bot's free bank (USD) |
 | [entry] | first_collateral_min_usd | 10.50 | 10.50 | 10.50 | Floor for first entry collateral |
 | [entry] | fee_reserve_usd | 0.10 | 0.10 | 0.10 | Kept back from first entry for add fees |

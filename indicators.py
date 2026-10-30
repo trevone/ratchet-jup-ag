@@ -54,6 +54,7 @@ def trend_frame(base: pd.DataFrame, cfg: TrendConfig) -> pd.DataFrame:
 def signal_frame(base: pd.DataFrame, base_tf: str, cfg: SignalConfig) -> pd.DataFrame:
     sig = base.copy() if pd.Timedelta(cfg.tf) == pd.Timedelta(base_tf) else resample_ohlc(base, cfg.tf)
     sig["rsi"] = rsi(sig["close"], cfg.rsi_length, cfg.rsi_method)
+    sig["sma_sig"] = moving_average(sig["close"], cfg.entry_sma_length, "sma")
     sig["close_time"] = sig.index + pd.Timedelta(cfg.tf)
     return sig
 
