@@ -130,6 +130,7 @@ def test_in_position_increase_never_bumps(monkeypatch, tmp_path):
     b, st = _flat_sol(monkeypatch, tmp_path)
     b.bank_tick(st, None, 96.0)
     st["wallet"]["sol"] = 0.977 + 0.5
+    b.local.bank["window"] = 3                            # payout of the trade (window open)
     b.bank_tick(st, object(), 96.0)                        # a position is open
     assert b.local.bank["wd_mark"] == pytest.approx(1.174)
 
@@ -177,3 +178,42 @@ def test_peer_fee_unreadable_skips_sync(monkeypatch, tmp_path):
     st["wallet"]["sol"] = 0.5
     b.bank_tick(st, None, 96.0)
     assert b.local.bank["bal"] == pytest.approx(0.957)
+
+
+
+def test_midtrade_deposit_is_capital_not_profit(monkeypatch, tmp_path):
+    b, st = _flat_sol(monkeypatch, tmp_path)
+    bk = b.local.bank
+    bk["mig_dep_20261030"] = True
+    bk["hwm"], bk["wd_mark"], bk["trade_start_equity"] = 1.174, 1.1678, 1.1755
+    pos = object()
+    b.bank_tick(st, pos, 96.0)                             # quiet baseline in the trade
+    st["wallet"]["sol"] = 0.977 + 0.959212932
+    b.bank_tick(st, pos, 96.0)
+    assert bk["hwm"] == pytest.approx(1.174 + 0.959212932)
+    assert bk["wd_mark"] == pytest.approx(1.1678 + 0.959212932)
+    assert bk["trade_start_equity"] == pytest.approx(1.1755 + 0.959212932)
+
+
+def test_midtrade_payout_window_is_not_a_deposit(monkeypatch, tmp_path):
+    b, st = _flat_sol(monkeypatch, tmp_path)
+    bk = b.local.bank
+    bk["mig_dep_20261030"] = True
+    pos = object()
+    b.bank_tick(st, pos, 96.0)
+    bk["window"] = 3
+    st["wallet"]["sol"] = 0.977 + 0.06
+    b.bank_tick(st, pos, 96.0)
+    assert bk["hwm"] == pytest.approx(1.174) and bk["wd_mark"] == pytest.approx(1.174)
+
+
+def test_one_off_migration_applies_once(monkeypatch, tmp_path):
+    b, st = _flat_sol(monkeypatch, tmp_path)
+    bk = b.local.bank
+    bk["hwm"], bk["wd_mark"], bk["trade_start_equity"] = 1.174001999, 1.167854843, 1.1755
+    pos = object()
+    b.bank_tick(st, pos, 96.0)
+    b.bank_tick(st, pos, 96.0)
+    assert bk["hwm"] == pytest.approx(1.174001999 + 0.959212932)
+    assert bk["wd_mark"] == pytest.approx(1.167854843 + 0.959212932)
+    assert bk["trade_start_equity"] == pytest.approx(1.1755 + 0.959212932)
