@@ -133,3 +133,5 @@ front-run, TP1/2/3, guard, timer and entry rule are unchanged. The inter-bot / J
 
 | [risk] liq_model | legacy | jupiter (live) | Liq formula used by the ladder buffer check. jupiter = 1/maxLeverage + close fee + accrued borrow; legacy = maintenance_ratio (backtests). |
 | [risk] jup_max_leverage | 500.0 | 500.0 | Fallback when custody maxLeverage is unavailable. Close-fee fallback = costs.close_fee. |
+
+| (state) tp3_filled | false | per trade | Not a setting: set when a TP3 partial fills; disables the 55-min TP timer until flat (Trevor 2026-10-30 05:51 MT). |

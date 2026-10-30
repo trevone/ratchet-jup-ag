@@ -207,7 +207,8 @@ class DcaStrategy:
         if pos is None:
             return []
         timer = self.cfg.tp.close_remainder_after_min
-        if timer is not None and pos.first_tp_time is not None:
+        if timer is not None and pos.first_tp_time is not None and not getattr(pos, "tp3_filled", False):
+            # Trevor 2026-10-30 05:51 MT: after a TP3 fill only the profit guard closes (no timer)
             # bar granularity: evaluated at bar close, so the effective delay is rounded up to a bar
             if (bar.time + self._bar_duration - pos.first_tp_time >= pd.Timedelta(minutes=timer)
                     and (not self.cfg.tp.timer_require_profit or self.net_close_pnl(pos, bar.close) > 0)):

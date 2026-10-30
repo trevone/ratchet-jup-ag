@@ -34,6 +34,7 @@ class Position:
     closed_qty: float = 0.0
     tp_hits: int = 0
     first_tp_time: pd.Timestamp | None = None
+    tp3_filled: bool = False       # live parity (Trevor 2026-10-30): a TP3 partial filled -> no TP timer (backtest has no TP3)
     committed_margin: float = 0.0  # all margin ever posted
     realized: float = 0.0          # net pnl of partial closes (after their share of all costs)
     close_fees: float = 0.0
