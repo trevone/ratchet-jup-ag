@@ -2512,6 +2512,30 @@ class Bot:
             return True
         return False
 
+    def own_capital(self, amt: float, coin_px: float, why: str, booked: bool = False) -> None:
+        """Trevor 2026-10-30 07:02 MT ([ledger] ext_flow_mode = "own"): a confirmed change of this bot's own token is its
+        capital at once: bal, hwm, wd_mark, trade_start_equity and day_start_equity move by the same measured amount (never
+        profit, never withdrawn, never split). booked=True: recon_token already applied bal / hwm / wd_mark."""
+        b = self.local.bank
+        before = {k: b[k] for k in ("bal", "hwm", "wd_mark")}
+        if not booked:
+            bankmod.apply_external(b, amt, why)
+        else:   # recon_token applied the same measured amount; report the pre-change values
+            before = {k: round(b[k] - amt, 9) for k in before}
+        if b.get("trade_start_equity") is not None:   # per-trade guard baseline: capital, not trade profit
+            b["trade_start_equity"] = round(b["trade_start_equity"] + amt, 9)
+        self.local.day_start_equity += amt * coin_px   # daily-loss baseline
+        rec = {"kind": "own_external", "coin": b["coin"], "got": round(amt, 9), "coin_px": coin_px, "before": before,
+               "after": {k: b[k] for k in ("bal", "hwm", "wd_mark")}, "at": str(pd.Timestamp.now(tz="UTC")), "why": why}
+        b["deposits"] = (b.get("deposits") or [])[-19:] + [rec]
+        self.save()
+        log.warning("BANK OWN CAPITAL %s %+.9f %s (~$%+.2f) as capital, not profit: bal %.9f -> %.9f, hwm %.9f -> %.9f, "
+                    "wd_mark %.9f -> %.9f (%s)", "deposit" if amt > 0 else "withdrawal", amt, b["coin"], amt * coin_px,
+                    before["bal"], b["bal"], before["hwm"], b["hwm"], before["wd_mark"], b["wd_mark"], why)
+        if amt < 0:   # an outflow nobody announced stays visible
+            log.warning("BANK %s", bankmod.write_alert(self.asset, f"{b['coin']} {amt:+.9f} (~${amt * coin_px:+.2f}) booked "
+                                                                   f"as own capital out (ext_flow_mode=own)"))
+
     def bank_tick(self, st: dict[str, Any], pos: ChainPosition | None, price: float) -> None:
         """Reconcile this bot's balance with the wallet, settle external-event shares, raise the HWM when flat."""
         b, lc = self.local.bank, self.cfg.ledger
@@ -2529,7 +2553,9 @@ class Bot:
             j = bankmod.load_journal()
             r = bankmod.recon_sol(b, float(st["wallet"]["sol"]), bankmod.pending_others(j), sol_px, lc.ext_min_usd,
                                   self._busy(st, True), bankmod.rent_held(st))
-            if r["action"] == "external" and lc.ext_flow_mode == "alert":
+            if r["action"] == "external" and lc.ext_flow_mode == "own":
+                self.own_capital(r["diff"], sol_px, f"native SOL wallet change {r['diff']:+.9f} (~${r['diff'] * sol_px:+.2f})")
+            elif r["action"] == "external" and lc.ext_flow_mode == "alert":
                 b["res_last"] = r["implied"]   # new reserve baseline so it alerts once; bal / hwm untouched
                 line = bankmod.write_alert("SOL", f"native SOL {r['diff']:+.9f} (~${r['diff'] * sol_px:+.2f}); banks "
                                            f"untouched (ext_flow_mode=alert); SOL bal {b['bal']:.9f} hwm {b['hwm']:.9f}")
@@ -2557,12 +2583,15 @@ class Bot:
                     line = bankmod.write_alert(self.asset, f"{coin} {r['diff']:+.9f} (~${r['diff'] * cpx:+.2f}); bank "
                                                f"untouched (ext_flow_mode=alert); bal {b['bal']:.9f} hwm {b['hwm']:.9f}")
                     log.warning("BANK %s", line)
+                elif r["action"] == "external" and lc.ext_flow_mode == "own":
+                    self.own_capital(r["diff"], cpx, f"{coin} wallet change {r['diff']:+.9f} (~${r['diff'] * cpx:+.2f})",
+                                     booked=True)
                 elif r["action"] == "external":
                     log.warning("BANK EXTERNAL %s change %+.9f (~$%+.2f) -> this bot's capital + hwm (not profit)", coin,
                                 r["diff"], r["diff"] * cpx)
                 elif r["action"] == "pending":
                     log.info("BANK: unexplained %s change %+.9f; re-checking next tick", coin, r["diff"])
-            if not self._busy(st, False) and lc.ext_flow_mode != "alert":   # alert mode: never swap for ext events
+            if not self._busy(st, False) and lc.ext_flow_mode == "split":   # alert / own mode: never swap for ext events
                 self.bank_settle_external(st, sol_px, cpx)
         if not mid_dep:   # deposit in flight / credited this tick: the reconcile was held, so the payout window is too
             if b.get("window", 0) > 0:

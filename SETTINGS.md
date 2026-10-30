@@ -135,3 +135,5 @@ front-run, TP1/2/3, guard, timer and entry rule are unchanged. The inter-bot / J
 | [risk] jup_max_leverage | 500.0 | 500.0 | Fallback when custody maxLeverage is unavailable. Close-fee fallback = costs.close_fee. |
 
 | (state) tp3_filled | false | per trade | Not a setting: set when a TP3 partial fills; disables the 55-min TP timer until flat (Trevor 2026-10-30 05:51 MT). |
+
+| [ledger] ext_flow_mode | alert | own (all bots) | own = confirmed own-token change (2 ticks, >= ext_min_usd, nothing in flight, no payout window) is this bot's capital at once (bal/hwm/wd_mark/trade+day start); decreases also alerted. alert = log only; split = old 50/25/25. |

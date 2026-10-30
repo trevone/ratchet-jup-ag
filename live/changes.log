@@ -1076,3 +1076,4 @@ Files: config.py, live/bot.py, live/trim.py, configs/live_100.toml, live_eth.tom
 2026-10-29 MT Scaled infinite ladder (Trevor 21:43 MT): [dca] ladder_mode = "scaled" on SOL/ETH/BTC; first_collateral_pct 0.10 -> 0.05 (floor $10.50). B = first-entry collateral stored per trade; rung n L=min(5+2.5n,20), N=(5+2.5n)B, C=N/L; no rung cap; skip (no shrink) on budget / liq. NOT deployed yet (awaiting Trevor).
 2026-10-29 21:59 MT  liq_model=jupiter on SOL/ETH/BTC (Trevor): Jupiter liq formula in ladder check (0.2% maint from custody + 6bps close fee + borrowFeeUsd). Shipped with scaled ladder (PR #10).
 2026-10-30 05:51 MT  TP timer off after a TP3 fill (Trevor: only the profit guard closes). local.tp3_filled persisted per trade; TP1-only timer unchanged. All bots.
+2026-10-30 07:02 MT  ext_flow_mode alert -> own (Trevor: a bot's own token on chain is its capital, usable at once). PR only, not deployed.

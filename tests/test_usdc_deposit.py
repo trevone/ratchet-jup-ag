@@ -493,7 +493,8 @@ def test_without_fold_in_the_same_deposit_would_alert(env):
     ch.land("ETH", 16_000_000)
     for _ in range(3):
         eth.bank_tick(ch.st("ETH"), None, PX["ETH"])
-    assert K.alert_path().exists()
+    # ext_flow_mode = "own" (Trevor 2026-10-30): the unbooked own-coin change is caught and booked as own capital (alert mode: alerts)
+    assert K.alert_path().exists() or (eth.local.bank.get("deposits") or [{}])[-1].get("kind") == "own_external"
 
 
 def test_kill_switch_holds_swaps(env):

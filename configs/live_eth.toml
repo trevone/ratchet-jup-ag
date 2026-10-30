@@ -202,7 +202,7 @@ min_profit_pct_hwm = 0.002            # Trevor 2026-10-12: replaces min_profit_n
 min_profit_pct_per_partial = 0.0005   #   0.05% x partials taken this trade [trims + TP3 fills])
 swap_cost_pct = 0.002           # est. USDC -> coin swap cost in the guard's close value (ETH/BTC shorts)
 ext_min_usd = 1.5
-ext_flow_mode = "alert"       # Trevor 2026-10-11 19:08 MT: unexplained wallet change -> WARNING + live/EXT_FLOW_ALERT only (no split, no swaps, banks untouched)
+ext_flow_mode = "own"         # Trevor 2026-10-30 07:02 MT: own-token change = this bot's capital at once (was "alert", 2026-10-11)
 window_ticks = 3
 withdraw_enabled = true         # daily: withdraw_fraction x HWM gain since last withdrawal -> JupSOL (replaces old SOL nightly stake)
 withdraw_time_mt = "00:05"
