@@ -104,6 +104,7 @@ mode = "fixed_usd"  # Jupiter min collateral is $10; 10% of $100 would sit right
 initial_margin_usd = 10.0  # 2026-10-12 preset C/resting LIVE (Trevor 00:04 MT)
 
 [entry]
+post_close_cooldown_sec = 300.0   # after any close: no new entry until this many seconds pass AND the trade is booked AND the flat HWM rule ran (2026-10-30)
 # Trevor 2026-10-07 18:24 MT: first entry scales with the wallet ("fixed" = the [sizing] $10.50 above).
 first_collateral_mode = "pct"    # Trevor 2026-10-29 21:24 MT: pct of this bot's free collateral (was fixed $10 since 2026-10-12)
 first_collateral_pct = 0.05     # Trevor 2026-10-29 21:43 MT: 5% of this bot's free collateral (10% too high); floor first_collateral_min_usd
