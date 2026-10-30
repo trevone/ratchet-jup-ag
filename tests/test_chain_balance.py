@@ -10,6 +10,7 @@ from tests.test_bank import _st
 
 def _bot(monkeypatch, tmp_path, path, asset):
     import live.bot as B
+    monkeypatch.setattr(B.Bot, "_peer_fee_sol", lambda self: [0.0, 0.0])   # no ETH/BTC state files in tests
     monkeypatch.setattr(B, "STATE", tmp_path / "state.json")
     ov = ["live.dry_run=true"]
     if asset != "SOL":
@@ -138,5 +139,41 @@ def test_sol_other_bots_request_rent_not_counted_as_loss(monkeypatch, tmp_path):
     st["allOpenRequests"] = [{"requestType": "trigger"}] * 4          # ETH/BTC TPs hold rent from the shared wallet
     st["openRequests"] = []
     st["wallet"]["sol"] = 0.977 - 4 * K.REQ_RENT
+    b.bank_tick(st, None, 96.0)
+    assert b.local.bank["bal"] == pytest.approx(0.957)
+
+
+def test_sol_peer_fee_debt_is_own_funds_and_repay_is_not_a_deposit(monkeypatch, tmp_path):
+    b, st = _flat_sol(monkeypatch, tmp_path)
+    b.local.bank["hwm"] = b.local.bank["wd_mark"] = 0.957
+    debt = [0.01, 0.005]
+    monkeypatch.setattr(b, "_peer_fee_sol", lambda: list(debt))
+    b.bank_tick(st, None, 96.0)
+    bk = b.local.bank
+    assert bk["bal"] == pytest.approx(0.972)
+    b.bank_tick(st, None, 96.0)
+    debt[:] = [0.0, 0.0]                                   # ETH / BTC repay: wallet up, debt down
+    st["wallet"]["sol"] = 0.977 + 0.015
+    b.bank_tick(st, None, 96.0)
+    assert bk["bal"] == pytest.approx(0.972)
+    assert bk["wd_mark"] == pytest.approx(0.957)
+
+
+def test_formula_change_rebaselines_once(monkeypatch, tmp_path):
+    b, st = _flat_sol(monkeypatch, tmp_path)
+    b.local.bank["hwm"] = b.local.bank["wd_mark"] = 0.957
+    b.local.bank["chain_idle"] = True                      # state from the previous version (no chain_v)
+    monkeypatch.setattr(b, "_peer_fee_sol", lambda: [0.3, 0.0])
+    b.bank_tick(st, None, 96.0)
+    bk = b.local.bank
+    assert bk["bal"] == pytest.approx(1.257) and bk["wd_mark"] == pytest.approx(0.957)
+
+
+def test_peer_fee_unreadable_skips_sync(monkeypatch, tmp_path):
+    b, st = _flat_sol(monkeypatch, tmp_path)
+    def boom():
+        raise OSError("x")
+    monkeypatch.setattr(b, "_peer_fee_sol", boom)
+    st["wallet"]["sol"] = 0.5
     b.bank_tick(st, None, 96.0)
     assert b.local.bank["bal"] == pytest.approx(0.957)

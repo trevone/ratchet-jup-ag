@@ -54,6 +54,7 @@ LAMPORTS = 1_000_000_000
 USDC_ATOMS = 1_000_000
 COLLATERAL_DECIMALS = {"ETH": 8, "BTC": 8}   # long collateral token of the ETH / WBTC custodies (verified on-chain)
 log = logging.getLogger("bot")
+CHAIN_V = 2   # chain-balance formula version (2 = SOL adds back peer fee debt, 2026-10-30)
 
 
 @dataclass
@@ -2530,7 +2531,13 @@ class Bot:
         if self.asset == "SOL":
             # other bots' Perps request rent sits outside the wallet only temporarily and is not this bot's loss: add it back
             rent = round(bankmod.rent_held(st) - len(st.get("openRequests") or []) * bankmod.REQ_RENT, 9)
-            v = float(st["wallet"]["sol"]) - self.live.sol_fee_reserve + max(0.0, rent)
+            try:   # 2026-10-30: SOL the ETH / BTC bots' fees took from this wallet is owed back (a receivable): this bot's funds
+                peer = max(0.0, sum(self._peer_fee_sol()))
+            except Exception as e:  # noqa: BLE001 - unreadable: no sync this tick
+                log.warning("BANK chain balance: peer fee debt unreadable (%s); sync skipped", e)
+                b["chain_idle"] = False
+                return
+            v = float(st["wallet"]["sol"]) - self.live.sol_fee_reserve + max(0.0, rent) + peer
             rent, px = 0.0, self.sol_price(st)
         else:
             tok = st.get("sweepTokens") or {}
@@ -2546,19 +2553,20 @@ class Bot:
         if abs(diff) > bankmod.DUST[b["coin"]]:
             log.info("BANK chain balance %s: bal %.9f -> %.9f (%+.9f)", b["coin"], b["bal"], v, diff)
         dep = round(diff + (rent - float(b.get("chain_rent", rent))), 9)
-        if idle and b.get("chain_idle") and dep > 0 and dep * (px or 0.0) >= self.cfg.ledger.ext_min_usd:
+        if idle and b.get("chain_idle") and b.get("chain_v") == CHAIN_V and dep > 0 and dep * (px or 0.0) >= self.cfg.ledger.ext_min_usd:
             b["wd_mark"] = round(b["wd_mark"] + dep, 9)
             bankmod.note(b, "chain_deposit", dep, "own-token increase while idle: capital, wd_mark raised")
             if self.local.day_start_equity:
                 self.local.day_start_equity += dep * (px or 0.0)
             log.warning("BANK DEPOSIT (own token) %+.9f %s (~$%.2f) while flat: capital -> wd_mark %.9f (HWM follows when flat)",
                         dep, b["coin"], dep * (px or 0.0), b["wd_mark"])
-        elif "chain_idle" not in b and abs(diff) > bankmod.DUST[b["coin"]]:
+        elif b.get("chain_v") != CHAIN_V and abs(diff) > bankmod.DUST[b["coin"]]:
             log.warning("BANK chain baseline %s: first sync, gap %+.9f vs booked bal taken as baseline (wd_mark/HWM unchanged)",
                         b["coin"], diff)
         b["bal"] = v
         b["chain_rent"] = rent
         b["chain_idle"] = bool(idle)
+        b["chain_v"] = CHAIN_V   # balance-formula version: a change re-baselines once (no wd_mark / HWM move)
         b["pend"] = None
 
     def bank_tick(self, st: dict[str, Any], pos: ChainPosition | None, price: float) -> None:
