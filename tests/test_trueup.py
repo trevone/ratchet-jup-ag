@@ -10,6 +10,20 @@ from config import load_config
 from live import bank as K
 from live import ledger
 
+
+@pytest.fixture(autouse=True)
+def _legacy_ledger_mode(monkeypatch):
+    """These tests cover the stored-bank reconcile (ext_flow_mode alert); live configs use "chain" since 2026-10-30."""
+    import config as C
+    orig = C.load_config
+
+    def lc(path, overrides=None, *a, **k):
+        return orig(path, list(overrides or []) + ["ledger.ext_flow_mode=alert"], *a, **k)
+    monkeypatch.setattr(C, "load_config", lc)
+    if "load_config" in globals():
+        monkeypatch.setitem(globals(), "load_config", lc)
+
+
 SOL_PX = 100.0
 
 

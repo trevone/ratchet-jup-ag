@@ -215,7 +215,7 @@ def test_live_configs_ledger():
     for f, m, wf in (("live_100", 0.0015, 0.90), ("live_eth", 0.000066, 0.90), ("live_btc", 0.00000195, 0.90)):
         lc = load_config(f"configs/{f}.toml").ledger
         assert lc.enabled and lc.min_profit_native == m and lc.withdraw_fraction == wf and lc.ext_split == (0.5, 0.25, 0.25)
-        assert lc.ext_flow_mode == "alert"
+        assert lc.ext_flow_mode == "chain"   # Trevor 2026-10-30 07:15 MT
     assert load_config("configs/default.toml").ledger.enabled is False
 
 
@@ -264,7 +264,7 @@ def test_recon_token_alert_mode_leaves_bank_untouched():
 
 def test_bank_tick_sol_unexplained_alert_only(monkeypatch, tmp_path):
     import live.bot as B
-    cfg = load_config("configs/live_100.toml", ["live.dry_run=true"])
+    cfg = load_config("configs/live_100.toml", ["live.dry_run=true", "ledger.ext_flow_mode=alert"])
     assert cfg.ledger.ext_flow_mode == "alert"
     monkeypatch.setattr(B, "STATE", tmp_path / "state.json")
     b = B.Bot(cfg)

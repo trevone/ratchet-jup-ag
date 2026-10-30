@@ -437,6 +437,10 @@ class LedgerConfig:
     ext_split: tuple[float, float, float] = (0.5, 0.25, 0.25)   # SOL / ETH / BTC share of an external SOL change
     # Trevor 2026-10-11 19:08 MT: "alert" = an unexplained wallet change only logs WARNING UNEXPLAINED WALLET CHANGE and
     # writes live/EXT_FLOW_ALERT; banks untouched, no split, no coin swaps. "split" = old rule (ext_split capital move).
+    # Trevor 2026-10-30 07:15 MT: "chain" = a bot's balance IS its own token on chain (SOL bot: native SOL - sol_fee_reserve;
+    # ETH bot: wallet ETH; BTC bot: wallet WBTC), re-read every tick with nothing in flight; no own-token deposit detection.
+    # HWM is the only bookkeeping number: flat and balance (net of loans / fee debt) > HWM -> HWM = balance; never lowered
+    # except by the daily withdrawal (capital out). USDC deposits (live/deposit.py) unchanged.
     ext_flow_mode: str = "alert"
     window_ticks: int = 3                   # ticks after a payout event during which own-token changes are trade flows
     withdraw_enabled: bool = True           # daily HWM-gain withdrawal to JupSOL (replaces the old SOL-bot nightly stake)
@@ -457,8 +461,8 @@ class LedgerConfig:
     def __post_init__(self) -> None:
         if self.min_profit_native < 0 or not 0.0 <= self.withdraw_fraction <= 1.0 or self.ext_min_usd <= 0:
             raise ValueError("ledger: min_profit_native >= 0, 0 <= withdraw_fraction <= 1, ext_min_usd > 0")
-        if self.ext_flow_mode not in ("alert", "split"):
-            raise ValueError("ledger.ext_flow_mode must be 'alert' or 'split'")
+        if self.ext_flow_mode not in ("alert", "split", "chain"):
+            raise ValueError("ledger.ext_flow_mode must be 'alert', 'split' or 'chain'")
         if abs(sum(self.ext_split) - 1.0) > 1e-9:
             raise ValueError("ledger.ext_split must sum to 1")
         if self.jupsol_loans not in ("off", "observe", "on"):
