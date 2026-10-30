@@ -135,6 +135,11 @@ class DcaConfig:
     ladder_weight_mult_step: float = 0.10
     ladder_weight_mult_cap: float = 2.5
     ladder_fixed_usd: float = 0.0       # > 0: every rung's budget = this flat USD collateral (weights ignored); 0 = off
+    # Trevor 2026-10-29 21:43 MT: "scaled" = infinite scaled ladder. B = first-entry collateral (set once at open, kept in
+    # trade state). Rung n: L_n = min(lev_start + n*lev_step, lev_cap), N_n = (lev_start + n*lev_step) * B, C_n = N_n / L_n.
+    # No rung count; a rung is skipped only when free collateral (+ fee reserve) can't cover it or the liq-buffer check
+    # fails (never shrunk). "legacy" = the budget / fixed_usd ladder above (kept for backtests).
+    ladder_mode: Literal["legacy", "scaled"] = "legacy"
     ladder_fee_usd_per_add: float = 0.10 # network/request fee reserve per planned rung, taken off free collateral
     trigger_mode: Literal["price_pct", "price_abs"] = "price_pct"
     trigger_pct: float = 0.04            # price_pct: adverse fraction from reference before an add

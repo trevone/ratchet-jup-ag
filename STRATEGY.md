@@ -550,3 +550,39 @@ Standing rules: never close positions, never cancel adds; HWM / wd_mark (marks) 
 - Unchanged: target (`guard_target`), arming, HWM / wd_mark, TP placement incl. the TP@guard price (`guard_price` still bisects `hwm_equity`), the 55-min TP timer (`hwm_check`), status lines, all settings. Tests: tests/test_guard_onchain.py (18).
 
 **Trevor 2026-10-29 - guard TP price from the chain only (all bots, shared code)**: `guard_price` (TP1 == TP2 at the profit-guard price, and the drift re-check) now bisects `guard_equity_at` = `guard_chain_equity(st, pos, price)`: wallet own coin (SOL: native + request rent - fee reserve) + own-coin escrow of open requests + the position account closed at the evaluated price (collateralUsd - accrued borrowFeeUsd + PnL - custody decreasePositionBps close fee, slippage / swap / close-tx haircuts) - loans / inter-bot fee debt (the only bookkeeping). It no longer uses `hwm_equity` (bank bal incl. payout ESTIMATES + a close value without the accrued borrow fee, at the config close fee). Why: SOL 2026-10-29 closed at its guard TPs 101.09 and booked 1.169343619 vs target 1.171192491 (0.001849 SOL short): the TP was set at 10:37 MT while the payout true-up had timed out (bal held the TP3 partial estimate) and the close value ignored the accrued borrow fee; the flat true-up then corrected bal by -0.002408 SOL. A failed / stale (> 60 s) / incomplete chain read raises `GuardChainUnreadable`: `_sync_tp_ladder` keeps the resting TPs (no cancel, `tp_retry` set, retried on the next fresh read; no TP resting at all -> fee-floor TPs, never a TP-less window) and `guard_drift_check` skips. The market-close guard was already on chain (2026-10-28). `hwm_equity` stays for the BANK status line / HWM timer / breakeven. HWM / wd_mark untouched. Tests: tests/test_guard_tp_onchain.py (8); older guard-price mechanics tests opt into fixture `guard_eq_from_bank`.
+
+## Scaled ladder (Trevor 2026-10-29 21:43 MT; `[dca] ladder_mode = "scaled"`)
+
+Base collateral **B** is set ONCE when the trade opens: B = max(first_collateral_pct x free, first_collateral_min_usd)
+(5% of this bot's free collateral, floor $10.50). It is stored in the trade state (`first_margin`), survives restarts,
+and on adoption of a foreign position is the on-chain collateral of that first lot. It is never recomputed from equity.
+
+Rung n (n = 0 is the first entry, n = 1, 2, ... the adds):
+
+    m_n = lev_start + n x lev_step         (uncapped multiplier)
+    L_n = min(m_n, lev_cap)                (leverage)
+    N_n = m_n x B                          (notional)
+    C_n = N_n / L_n                        (collateral; = B until the cap, then grows so notional keeps rising by lev_step x B)
+
+Live: lev_start 5, lev_step 2.5, lev_cap 20. Example (B = $10.50):
+
+| n | lev | collateral | notional |
+|---|-----|-----------|----------|
+| 0 | 5 | 10.50 | 52.50 |
+| 1 | 7.5 | 10.50 | 78.75 |
+| 2 | 10 | 10.50 | 105.00 |
+| 3 | 12.5 | 10.50 | 131.25 |
+| 4 | 15 | 10.50 | 157.50 |
+| 5 | 17.5 | 10.50 | 183.75 |
+| 6 | 20 | 10.50 | 210.00 |
+| 7 | 20 | 11.81 | 236.25 |
+| 8 | 20 | 13.13 | 262.50 |
+| 9 | 20 | 14.44 | 288.75 |
+| 10 | 20 | 15.75 | 315.00 |
+
+No maximum rung count: rungs are generated on demand. A rung is skipped (never shrunk) only when free collateral can not
+cover C_n + the per-add fee reserve (`ladder_fee_usd_per_add`; the SOL fee-reserve check still applies when placing),
+or when the post-add liquidation is not `liq_buffer_atr` ATR beyond the next rung. Rung spacing, resting adds,
+front-run, TP1/2/3, guard, timer and entry rule are unchanged. The inter-bot / JupSOL next-add loan asks for C_n.
+`ladder_max_rungs` no longer sizes anything; it is kept for the TP3 taper and the partial-zone N scaling.
+`ladder_mode = "legacy"` restores the budget / flat `ladder_fixed_usd` ladder (backtests).

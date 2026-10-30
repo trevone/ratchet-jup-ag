@@ -76,6 +76,7 @@ ladder_sizing = "budget"       # each add = its rung budget ("min" = min(formula
 ladder_min_rungs = 4           # rolling ladder once price is past the deep level: 4 rungs + a new deep level
 ladder_max_rungs = 10          # 2026-10-09 15:08 config B (ladder sim): 14 main rungs
 ladder_fixed_usd = 10.0         # 2026-10-12 preset C LIVE (Trevor 00:04 MT): flat $10 per rung
+ladder_mode = "scaled"         # Trevor 2026-10-29 21:43 MT: infinite scaled ladder from base B = first-entry collateral (ladder_fixed_usd / weights ignored)
 ladder_weight_mode = "accel"   # 2026-10-09 config B: ratio 1.15, +0.10 per rung, cap 2.5; $3 min fitted inside the budget
 ladder_weight_mult = 1.15
 ladder_weight_mult_step = 0.10
@@ -105,7 +106,7 @@ initial_margin_usd = 10.0  # 2026-10-12 preset C/resting LIVE (Trevor 00:04 MT)
 [entry]
 # Trevor 2026-10-07 18:24 MT: first entry scales with the wallet ("fixed" = the [sizing] $10.50 above).
 first_collateral_mode = "pct"    # Trevor 2026-10-29 21:24 MT: pct of this bot's free collateral (was fixed $10 since 2026-10-12)
-first_collateral_pct = 0.10     # fraction of this bot's free collateral at each fresh open (bank on: own bank bal x coin price, USD; the 'free $' on the budget line)
+first_collateral_pct = 0.05     # Trevor 2026-10-29 21:43 MT: 5% of this bot's free collateral (10% too high); floor first_collateral_min_usd
 first_collateral_min_usd = 10.50  # floor: Jupiter's $10 TP minimum always met
 # first_collateral_max_usd = 50.0  # optional cap (omitted = off)
 fee_reserve_usd = 0.10          # first entry <= free collateral - this; adds then budget from what is left

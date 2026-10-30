@@ -94,3 +94,39 @@ Note 2026-10-29 MT: no new setting; a TP3_SET price is now held by partial_sync 
 
 
 **[entry] first_collateral_mode (2026-10-29 21:24 MT):** `pct` on SOL / ETH / BTC (was `fixed`). `first_collateral_pct` 0.10, `first_collateral_min_usd` 10.50, `first_collateral_max_usd` off. Free = own bank bal x coin price. `[sizing] initial_margin_usd` is only used in fixed mode.
+
+## Scaled ladder (Trevor 2026-10-29 21:43 MT; `[dca] ladder_mode = "scaled"`)
+
+Base collateral **B** is set ONCE when the trade opens: B = max(first_collateral_pct x free, first_collateral_min_usd)
+(5% of this bot's free collateral, floor $10.50). It is stored in the trade state (`first_margin`), survives restarts,
+and on adoption of a foreign position is the on-chain collateral of that first lot. It is never recomputed from equity.
+
+Rung n (n = 0 is the first entry, n = 1, 2, ... the adds):
+
+    m_n = lev_start + n x lev_step         (uncapped multiplier)
+    L_n = min(m_n, lev_cap)                (leverage)
+    N_n = m_n x B                          (notional)
+    C_n = N_n / L_n                        (collateral; = B until the cap, then grows so notional keeps rising by lev_step x B)
+
+Live: lev_start 5, lev_step 2.5, lev_cap 20. Example (B = $10.50):
+
+| n | lev | collateral | notional |
+|---|-----|-----------|----------|
+| 0 | 5 | 10.50 | 52.50 |
+| 1 | 7.5 | 10.50 | 78.75 |
+| 2 | 10 | 10.50 | 105.00 |
+| 3 | 12.5 | 10.50 | 131.25 |
+| 4 | 15 | 10.50 | 157.50 |
+| 5 | 17.5 | 10.50 | 183.75 |
+| 6 | 20 | 10.50 | 210.00 |
+| 7 | 20 | 11.81 | 236.25 |
+| 8 | 20 | 13.13 | 262.50 |
+| 9 | 20 | 14.44 | 288.75 |
+| 10 | 20 | 15.75 | 315.00 |
+
+No maximum rung count: rungs are generated on demand. A rung is skipped (never shrunk) only when free collateral can not
+cover C_n + the per-add fee reserve (`ladder_fee_usd_per_add`; the SOL fee-reserve check still applies when placing),
+or when the post-add liquidation is not `liq_buffer_atr` ATR beyond the next rung. Rung spacing, resting adds,
+front-run, TP1/2/3, guard, timer and entry rule are unchanged. The inter-bot / JupSOL next-add loan asks for C_n.
+`ladder_max_rungs` no longer sizes anything; it is kept for the TP3 taper and the partial-zone N scaling.
+`ladder_mode = "legacy"` restores the budget / flat `ladder_fixed_usd` ladder (backtests).
