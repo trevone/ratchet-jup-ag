@@ -2546,6 +2546,11 @@ class Bot:
             b["mig_dep_20261030"] = True
             self.chain_capital(0.959212932, pos, self.sol_price(st),
                                "one-off: SOL deposit 2026-10-30 08:20:33 MT absorbed mid-trade before the fix")
+        if (self.asset == "SOL" and b.get("mig_dep_20261030") and not b.get("mig_dep2_20261030")
+                and abs(b["hwm"] - 2.133214931) < 1e-12 and abs(b["wd_mark"] - 2.127067775) < 1e-12):
+            b["mig_dep2_20261030"] = True   # second external transfer 08:28:15 MT (system transfer, signer GCRJD52p...)
+            self.chain_capital(0.201305819, pos, self.sol_price(st),
+                               "one-off: SOL deposit 2026-10-30 08:28:15 MT absorbed mid-trade before the fix")
         if self._busy(st, self.asset == "SOL"):
             b["chain_idle"] = b["chain_quiet"] = False
             return
