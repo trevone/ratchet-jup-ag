@@ -2513,6 +2513,22 @@ class Bot:
             return True
         return False
 
+    def chain_capital(self, dep: float, pos: ChainPosition | None, px: float, why: str) -> None:
+        """Own-token deposit = capital. Flat: wd_mark rises (HWM follows by the flat rule). In a trade: HWM, wd_mark and
+        trade_start_equity rise by it (guard target, TP timer HWM check and the trade's net exclude it)."""
+        b = self.local.bank
+        b["wd_mark"] = round(b["wd_mark"] + dep, 9)
+        if pos is not None:
+            b["hwm"] = round(b["hwm"] + dep, 9)
+            if b.get("trade_start_equity") is not None:
+                b["trade_start_equity"] = round(b["trade_start_equity"] + dep, 9)
+        bankmod.note(b, "chain_deposit", dep, f"{why}: capital")
+        if self.local.day_start_equity:
+            self.local.day_start_equity += dep * (px or 0.0)
+        log.warning("BANK DEPOSIT (own token) %+.9f %s (~$%.2f) %s: capital -> hwm %.9f wd_mark %.9f trade_start %s",
+                    dep, b["coin"], dep * (px or 0.0), why, b["hwm"], b["wd_mark"], b.get("trade_start_equity"))
+        self.save()
+
     def chain_balance_sync(self, st: dict[str, Any], pos: ChainPosition | None = None) -> None:
         """Trevor 2026-10-30 07:15 MT ([ledger] ext_flow_mode = "chain"): this bot's balance = its own token on chain.
         SOL: native SOL - live.sol_fee_reserve; ETH / BTC: the wallet's ETH / WBTC. Skipped while a (non-trigger) request is
@@ -2525,8 +2541,13 @@ class Bot:
         sync after a restart / deploy is only a baseline (chain_idle not yet set): an existing gap is logged, never bumped.
         Increases below ext_min_usd are float. SOL adds back other bots' locked request rent (2026-10-30)."""
         b = self.local.bank
+        if (self.asset == "SOL" and not b.get("mig_dep_20261030") and abs(b["hwm"] - 1.174001999) < 1e-12
+                and abs(b["wd_mark"] - 1.167854843) < 1e-12):   # only the live SOL bank of that moment
+            b["mig_dep_20261030"] = True
+            self.chain_capital(0.959212932, pos, self.sol_price(st),
+                               "one-off: SOL deposit 2026-10-30 08:20:33 MT absorbed mid-trade before the fix")
         if self._busy(st, self.asset == "SOL"):
-            b["chain_idle"] = False
+            b["chain_idle"] = b["chain_quiet"] = False
             return
         if self.asset == "SOL":
             # other bots' Perps request rent sits outside the wallet only temporarily and is not this bot's loss: add it back
@@ -2547,25 +2568,28 @@ class Bot:
             v = int((tok[b["coin"]] or {}).get("atoms") or 0) / 10 ** bankmod.DECIMALS[b["coin"]]
             rent, px = 0.0, self.coin_px(st)
         v = round(max(0.0, v), 9)
-        idle = (pos is None and b.get("window", 0) == 0 and b.get("pay_wait", 0) == 0 and not b.get("book_pend")
-                and not b.get("trueup_block") and not self.local.pay_check)
+        quiet = (b.get("window", 0) == 0 and b.get("pay_wait", 0) == 0 and not b.get("book_pend")
+                 and not b.get("trueup_block") and not self.local.pay_check)
+        idle = pos is None and quiet
         diff = round(v - b["bal"], 9)
         if abs(diff) > bankmod.DUST[b["coin"]]:
             log.info("BANK chain balance %s: bal %.9f -> %.9f (%+.9f)", b["coin"], b["bal"], v, diff)
         dep = round(diff + (rent - float(b.get("chain_rent", rent))), 9)
-        if idle and b.get("chain_idle") and b.get("chain_v") == CHAIN_V and dep > 0 and dep * (px or 0.0) >= self.cfg.ledger.ext_min_usd:
-            b["wd_mark"] = round(b["wd_mark"] + dep, 9)
-            bankmod.note(b, "chain_deposit", dep, "own-token increase while idle: capital, wd_mark raised")
-            if self.local.day_start_equity:
-                self.local.day_start_equity += dep * (px or 0.0)
-            log.warning("BANK DEPOSIT (own token) %+.9f %s (~$%.2f) while flat: capital -> wd_mark %.9f (HWM follows when flat)",
-                        dep, b["coin"], dep * (px or 0.0), b["wd_mark"])
+        big = dep > 0 and dep * (px or 0.0) >= self.cfg.ledger.ext_min_usd and b.get("chain_v") == CHAIN_V
+        if idle and b.get("chain_idle") and big:
+            self.chain_capital(dep, None, px, "own-token increase while idle")
+        elif pos is not None and quiet and b.get("chain_quiet") and big:
+            # 2026-10-30 08:20 MT: an own-token arrival mid-trade (no payout window / true-up pending) is capital, not
+            # trade P&L: HWM, wd_mark and the trade-start equity rise with it so the guard / TP timer / close accounting
+            # never see it as profit and the nightly withdrawal does not pay it out
+            self.chain_capital(dep, pos, px, "own-token increase mid-trade")
         elif b.get("chain_v") != CHAIN_V and abs(diff) > bankmod.DUST[b["coin"]]:
             log.warning("BANK chain baseline %s: first sync, gap %+.9f vs booked bal taken as baseline (wd_mark/HWM unchanged)",
                         b["coin"], diff)
         b["bal"] = v
         b["chain_rent"] = rent
         b["chain_idle"] = bool(idle)
+        b["chain_quiet"] = bool(quiet)
         b["chain_v"] = CHAIN_V   # balance-formula version: a change re-baselines once (no wd_mark / HWM move)
         b["pend"] = None
 
