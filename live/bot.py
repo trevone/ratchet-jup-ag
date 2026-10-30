@@ -2512,25 +2512,52 @@ class Bot:
             return True
         return False
 
-    def chain_balance_sync(self, st: dict[str, Any]) -> None:
+    def chain_balance_sync(self, st: dict[str, Any], pos: ChainPosition | None = None) -> None:
         """Trevor 2026-10-30 07:15 MT ([ledger] ext_flow_mode = "chain"): this bot's balance = its own token on chain.
         SOL: native SOL - live.sol_fee_reserve; ETH / BTC: the wallet's ETH / WBTC. Skipped while a (non-trigger) request is
         in flight (its escrow / payout is moving) or the token read failed. A deposit of the bot's own token is usable on
-        the next tick; HWM follows it only when flat (update_hwm)."""
+        the next tick; HWM follows it only when flat (update_hwm).
+        Deposits are capital (Trevor 07:20 MT, option a): an increase not explained by the bank's own bookings, seen while
+        this bot is idle (flat, no payout window / pay_wait / booking / true-up pending) on this AND the previous sync, also
+        raises wd_mark by the same amount (so the nightly withdrawal does not pay it out). A trade's payout lands while the
+        bot is not idle (window / pay_wait after the close), so it is never a deposit and stays withdrawable profit. The first
+        sync after a restart / deploy is only a baseline (chain_idle not yet set): an existing gap is logged, never bumped.
+        Increases below ext_min_usd are float; SOL compares rent-adjusted (other bots' request rent comes and goes)."""
         b = self.local.bank
         if self._busy(st, self.asset == "SOL"):
+            b["chain_idle"] = False
             return
         if self.asset == "SOL":
             v = float(st["wallet"]["sol"]) - self.live.sol_fee_reserve
+            rent = bankmod.rent_held(st)
+            px = self.sol_price(st)
         else:
             tok = st.get("sweepTokens") or {}
             if "error" in tok or b["coin"] not in tok:
+                b["chain_idle"] = False
                 return
             v = int((tok[b["coin"]] or {}).get("atoms") or 0) / 10 ** bankmod.DECIMALS[b["coin"]]
+            rent, px = 0.0, self.coin_px(st)
         v = round(max(0.0, v), 9)
-        if abs(v - b["bal"]) > bankmod.DUST[b["coin"]]:
-            log.info("BANK chain balance %s: bal %.9f -> %.9f (%+.9f)", b["coin"], b["bal"], v, v - b["bal"])
+        idle = (pos is None and b.get("window", 0) == 0 and b.get("pay_wait", 0) == 0 and not b.get("book_pend")
+                and not b.get("trueup_block") and not self.local.pay_check)
+        diff = round(v - b["bal"], 9)
+        if abs(diff) > bankmod.DUST[b["coin"]]:
+            log.info("BANK chain balance %s: bal %.9f -> %.9f (%+.9f)", b["coin"], b["bal"], v, diff)
+        dep = round(diff + (rent - float(b.get("chain_rent", rent))), 9)
+        if idle and b.get("chain_idle") and dep > 0 and dep * (px or 0.0) >= self.cfg.ledger.ext_min_usd:
+            b["wd_mark"] = round(b["wd_mark"] + dep, 9)
+            bankmod.note(b, "chain_deposit", dep, "own-token increase while idle: capital, wd_mark raised")
+            if self.local.day_start_equity:
+                self.local.day_start_equity += dep * (px or 0.0)
+            log.warning("BANK DEPOSIT (own token) %+.9f %s (~$%.2f) while flat: capital -> wd_mark %.9f (HWM follows when flat)",
+                        dep, b["coin"], dep * (px or 0.0), b["wd_mark"])
+        elif "chain_idle" not in b and abs(diff) > bankmod.DUST[b["coin"]]:
+            log.warning("BANK chain baseline %s: first sync, gap %+.9f vs booked bal taken as baseline (wd_mark/HWM unchanged)",
+                        b["coin"], diff)
         b["bal"] = v
+        b["chain_rent"] = rent
+        b["chain_idle"] = bool(idle)
         b["pend"] = None
 
     def bank_tick(self, st: dict[str, Any], pos: ChainPosition | None, price: float) -> None:
@@ -2545,9 +2572,10 @@ class Bot:
         # JupSOL loans (live/jupsol_loans.py): rescue / next-add loan / park request / journalled op; True = wallet moved
         mid_jl = False if (mid_loan or mid_dep) else jlmod.tick(self, st, pos, price)
         if mid_loan or mid_dep or mid_jl:
-            pass
+            if lc.ext_flow_mode == "chain":
+                b["chain_idle"] = False   # booked wallet move this tick: next sync is a fresh baseline
         elif lc.ext_flow_mode == "chain":
-            self.chain_balance_sync(st)
+            self.chain_balance_sync(st, pos)
         elif self.asset == "SOL":
             j = bankmod.load_journal()
             r = bankmod.recon_sol(b, float(st["wallet"]["sol"]), bankmod.pending_others(j), sol_px, lc.ext_min_usd,

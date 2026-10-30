@@ -71,3 +71,63 @@ def test_eth_balance_is_wallet_eth(monkeypatch, tmp_path):
     b.bank_tick(st, None, 2200.0)
     assert b.local.bank["bal"] == pytest.approx(0.09) and b.local.bank["hwm"] >= 0.09 - 1e-9
 
+
+
+def _flat_sol(monkeypatch, tmp_path):
+    b = _bot(monkeypatch, tmp_path, "configs/live_100.toml", "SOL")
+    b.local.bank = K.new_bank("SOL", 0.957, 1.174)
+    st = _st(asset="SOL", size=0)
+    st["wallet"]["sol"] = 0.977
+    return b, st
+
+
+def test_first_sync_after_deploy_is_baseline_only(monkeypatch, tmp_path):
+    b, st = _flat_sol(monkeypatch, tmp_path)
+    st["wallet"]["sol"] = 0.977 + 0.5                      # gap already present at deploy
+    b.bank_tick(st, None, 96.0)
+    bk = b.local.bank
+    assert bk["wd_mark"] == pytest.approx(1.174)           # never bumped by the pre-existing gap
+    assert bk["chain_idle"] is True
+
+
+def test_own_token_deposit_while_idle_raises_wd_mark_and_hwm(monkeypatch, tmp_path):
+    b, st = _flat_sol(monkeypatch, tmp_path)
+    b.local.bank["hwm"] = b.local.bank["wd_mark"] = 0.957
+    b.bank_tick(st, None, 96.0)                            # baseline
+    st["wallet"]["sol"] = 0.977 + 0.9375                    # ~$90 arrives
+    b.bank_tick(st, None, 96.0)
+    bk = b.local.bank
+    assert bk["bal"] == pytest.approx(0.957 + 0.9375)
+    assert bk["hwm"] == pytest.approx(0.957 + 0.9375)
+    assert bk["wd_mark"] == pytest.approx(0.957 + 0.9375)
+    assert K.withdraw_amount(bk, 0.9, 0.0)[0] == pytest.approx(0.0, abs=1e-9)   # not withdrawn tonight
+
+
+def test_payout_after_close_is_profit_not_deposit(monkeypatch, tmp_path):
+    b, st = _flat_sol(monkeypatch, tmp_path)
+    b.local.bank["hwm"] = b.local.bank["wd_mark"] = 0.957
+    b.bank_tick(st, None, 96.0)                            # idle baseline
+    b.local.bank["window"] = 3                             # close happened: payout window open
+    st["wallet"]["sol"] = 0.977 + 0.05                     # profit lands
+    for _ in range(4):
+        b.bank_tick(st, None, 96.0)
+    bk = b.local.bank
+    assert bk["wd_mark"] == pytest.approx(0.957)           # profit stays withdrawable
+    assert bk["hwm"] == pytest.approx(1.007)
+
+
+def test_small_increase_is_float(monkeypatch, tmp_path):
+    b, st = _flat_sol(monkeypatch, tmp_path)
+    b.local.bank["hwm"] = b.local.bank["wd_mark"] = 0.957
+    b.bank_tick(st, None, 96.0)
+    st["wallet"]["sol"] = 0.977 + 0.005                    # ~$0.48 < ext_min_usd
+    b.bank_tick(st, None, 96.0)
+    assert b.local.bank["wd_mark"] == pytest.approx(0.957)
+
+
+def test_in_position_increase_never_bumps(monkeypatch, tmp_path):
+    b, st = _flat_sol(monkeypatch, tmp_path)
+    b.bank_tick(st, None, 96.0)
+    st["wallet"]["sol"] = 0.977 + 0.5
+    b.bank_tick(st, object(), 96.0)                        # a position is open
+    assert b.local.bank["wd_mark"] == pytest.approx(1.174)
