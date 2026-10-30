@@ -192,7 +192,7 @@ def test_midtrade_deposit_is_capital_not_profit(monkeypatch, tmp_path):
     b.bank_tick(st, pos, 96.0)
     assert bk["hwm"] == pytest.approx(1.174 + 0.959212932)
     assert bk["wd_mark"] == pytest.approx(1.1678 + 0.959212932)
-    assert bk["trade_start_equity"] == pytest.approx(1.1755 + 0.959212932)
+    assert bk["trade_start_equity"] == pytest.approx(1.1755 + 0.959212932 + 0.201305819)
 
 
 def test_midtrade_payout_window_is_not_a_deposit(monkeypatch, tmp_path):
@@ -214,9 +214,9 @@ def test_one_off_migration_applies_once(monkeypatch, tmp_path):
     pos = object()
     b.bank_tick(st, pos, 96.0)
     b.bank_tick(st, pos, 96.0)
-    assert bk["hwm"] == pytest.approx(1.174001999 + 0.959212932)
-    assert bk["wd_mark"] == pytest.approx(1.167854843 + 0.959212932)
-    assert bk["trade_start_equity"] == pytest.approx(1.1755 + 0.959212932)
+    assert bk["hwm"] == pytest.approx(1.174001999 + 0.959212932 + 0.201305819)   # both one-offs, each once
+    assert bk["wd_mark"] == pytest.approx(1.167854843 + 0.959212932 + 0.201305819)
+    assert bk["trade_start_equity"] == pytest.approx(1.1755 + 0.959212932 + 0.201305819)
 
 
 def test_second_one_off(monkeypatch, tmp_path):
