@@ -131,3 +131,12 @@ def test_in_position_increase_never_bumps(monkeypatch, tmp_path):
     st["wallet"]["sol"] = 0.977 + 0.5
     b.bank_tick(st, object(), 96.0)                        # a position is open
     assert b.local.bank["wd_mark"] == pytest.approx(1.174)
+
+
+def test_sol_other_bots_request_rent_not_counted_as_loss(monkeypatch, tmp_path):
+    b, st = _flat_sol(monkeypatch, tmp_path)
+    st["allOpenRequests"] = [{"requestType": "trigger"}] * 4          # ETH/BTC TPs hold rent from the shared wallet
+    st["openRequests"] = []
+    st["wallet"]["sol"] = 0.977 - 4 * K.REQ_RENT
+    b.bank_tick(st, None, 96.0)
+    assert b.local.bank["bal"] == pytest.approx(0.957)
