@@ -20,7 +20,7 @@ Grow each bot’s own coin (SOL / Wormhole ETH / WBTC) with small, fee-aware pro
 
 **Go for broke:** no stop-loss, no daily loss limit, no collateral or notional cap (`max_*` = `1e12`). Early close only to lock **net profit after fees** (profit guard / trims) or for exchange / infra problems. **Never** close to cut a loss. **No** loss-taking trims (adds only trim when that lot is itself net profitable).
 
-`trend_flip_exit = false`. Open positions ride through 4h trend flips; the filter only gates **new** entries.
+`trend_flip_exit = false`. Open positions ride through 4h trend flips; the EMA200 + SMA10 rule (section 3) only gates **new** entries.
 
 ---
 
@@ -56,17 +56,25 @@ First-entry sizing uses **10% of the bot’s free bank balance (USD)** (`first_c
 
 ## 3. Entries
 
-**Side filter:** 4h EMA200. One 4h close flips the allowed side for **new** entries only.
+**Entry rule (Trevor 2026-10-29 20:52 MT, all three bots, `[signal] entry_rule = "price_ma"`):** two signals, both from **price vs the line, never the slope**. Price = the latest closed 15m candle close (the same value for both comparisons).
 
-**Signal TF:** 15m RSI (all three bots):
+| Signal | Price > line | Price < line | Price == line |
+|--------|--------------|--------------|---------------|
+| Long-period: 4h EMA200 | long signal | short signal | no signal |
+| Short-period: 15m SMA10 (`entry_sma_length = 10`) | long signal | short signal | no signal |
 
-| Mode | Long | Short |
-|------|------|-------|
-| Base | RSI &lt; 45 | RSI &gt; 55 |
-| Idle step 1 (≥ 60 min flat) | RSI &lt; 48 | RSI &gt; 52 |
-| Idle step 2 (+30 min, capped) | RSI &lt; 50 | RSI &gt; 50 |
+| 4h EMA200 | 15m SMA10 | Action |
+|-----------|-----------|--------|
+| long | long | **open LONG** |
+| short | short | **open SHORT** |
+| long | short | no entry (disagree) |
+| short | long | no entry (disagree) |
+| either equal | any | no entry |
 
-Idle resets on the next entry. `PAUSE_UNTIL` / `KILL` / `KILL_ALL` still block opens.
+- RSI and the idle RSI loosening are **not** used for entries (the code is kept for backtests: `entry_rule = "rsi"`; the RSI/idle keys in the live tomls are inert). Adds, ladder, TP1/TP2/TP3, guard, leverage, timer, HWM, withdrawals and loans are unchanged.
+- `sides = "both"` on all three bots (was `"short"`, an analyst bias). The levels / outlook script (`ratchet-levels`, red / amber / `pause_new_opens` / hold / stay-out, side bias) **no longer blocks or alters entries**; it is used for exit / position management only. Do not set `sides` or `PAUSE_UNTIL` from an outlook call.
+- `PAUSE_UNTIL` / `KILL` / `KILL_ALL` / lender lock still block opens (operator / safety switches, not outlook).
+- Log: each bar line shows `ema200_4h=... sma10_15m=...`; when flat the next line is `entry: entry check: price P vs 4h EMA200 E -> long|short; vs 15m SMA10 S -> long|short => OPEN LONG | OPEN SHORT | stay flat (...) (RSI off)`.
 
 ---
 

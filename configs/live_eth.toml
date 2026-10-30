@@ -4,13 +4,15 @@
 # withdraw.enabled (only the SOL bot runs the one daily stake over all bots' trade files).
 # Small live-size account on the default $1.00 / $1.50 TP ladder, stops from with_stops (on for now).
 name = "live_eth"
-sides = "short"  # Analyst bias operational (2026-10-14 08:40 MT)
+sides = "both"   # 2026-10-29 20:52 MT (Trevor): entries = 4h EMA200 + 15m SMA10 agreement only; analyst/levels bias no longer blocks a side. Was "short": Analyst bias operational (2026-10-14 08:40 MT)
 
 [market]
 symbol = "ETHUSDT"          # Binance klines (same source as SOL): 15m signals, 4h EMA200
 base_tf = "15m"                # live klines interval (= signal TF)
 
 [signal]
+entry_rule = "price_ma"         # Trevor 2026-10-29 20:52 MT: LONG price > 4h EMA200 AND > 15m SMA10; SHORT below both; else flat. RSI/idle below = unused for entries
+entry_sma_length = 10
 tf = "15m"                     # RSI entries/adds on 15m; trend stays 4h EMA200
 oversold = 45.0                # long entries (uptrend) when 15m RSI < 45
 overbought = 55.0              # short entries (downtrend) when 15m RSI > 55

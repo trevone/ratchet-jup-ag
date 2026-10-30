@@ -3475,8 +3475,8 @@ class Bot:
         L.last_bar = str(bar.time)
         self.save()
         self.strategy.begin_bar(bar, account)
-        log.info("bar %s %s close=%.3f rsi=%.1f trend_up=%s oracle=%.3f equity=$%.2f pos=%s | wallet %.6f SOL native (margin) | %s",
-                 self.asset, bar.time, bar.close, bar.rsi, bar.trend_up, price, equity,
+        log.info("bar %s %s close=%.3f ema200_4h=%.3f sma10_15m=%.3f rsi=%.1f(off) trend_up=%s oracle=%.3f equity=$%.2f pos=%s | wallet %.6f SOL native (margin) | %s",
+                 self.asset, bar.time, bar.close, bar.ma_htf, bar.sma, bar.rsi, bar.trend_up, price, equity,
                  pos and f"{pos.side:+d} ${pos.size:.2f} avg {pos.avg_entry:.3f}", margin_sol(st),
                  stake_line(st) if self.cfg.withdraw.enabled else f"SOL {sol_px:.3f}")
         log.info(self.budget.line(self.asset))
@@ -3485,7 +3485,7 @@ class Bot:
         log.info(self.first_entry_line(account.cash))
         if pos is None:
             self.strategy._flat_since = pd.Timestamp(L.flat_since) if L.flat_since else None
-            log.info("entry thresholds: %s", self.strategy.entry_thresholds(bar)[2])
+            log.info("entry: %s", self.strategy.entry_thresholds(bar)[2])
         if pos is not None and self.cfg.trim.enabled:
             log.info(self.trim_status(pos, price))
         if self.bank_on:

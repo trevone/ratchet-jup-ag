@@ -58,6 +58,8 @@ class Bar:
     close: float
     rsi: float
     trend_up: bool | None              # None while the trend filter warms up
+    ma_htf: float = float("nan")       # trend MA value (4h EMA200) known at this bar's close
+    sma: float = float("nan")          # signal-TF SMA (15m SMA10) at this bar's close
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,6 +233,12 @@ class DcaStrategy:
             self._flat_since = bar.time
         long_th, short_th, _ = self.entry_thresholds(bar) if pos is None else (sig.oversold, sig.overbought, "")
         oversold, overbought = bar.rsi < long_th, bar.rsi > short_th
+        if pos is None and sig.entry_rule == "price_ma":
+            side, _ = self.price_ma_side(bar)
+            if side is None:
+                return []
+            return [Intent(Action.OPEN, side, bar.close, self.initial_margin(account.cash),
+                           self.cfg.dca.lev_start)]
         if pos is None:
             if self._flat_too_long(bar):  # relaxed entry: RSI merely on the trend-friendly side of the midline
                 oversold, overbought = bar.rsi < sig.flat_rsi_mid, bar.rsi > sig.flat_rsi_mid
@@ -250,6 +258,30 @@ class DcaStrategy:
                            self.add_leverage(pos))]
         return []
 
+    @staticmethod
+    def _vs(px: float, line: float) -> int:
+        """+1 price above the line (long signal), -1 below (short signal), 0 equal (no signal)."""
+        return 1 if px > line else -1 if px < line else 0
+
+    def price_ma_side(self, bar: Bar) -> tuple[int | None, str]:
+        """Entry rule price_ma: (LONG / SHORT / None, log text). Price = the bar close; lines = 4h EMA200, 15m SMA10."""
+        t, sg = self.cfg.trend, self.cfg.signal
+        px, ema, sma = bar.close, bar.ma_htf, bar.sma
+        names = (f"{t.tf} {t.ma_type.upper()}{t.length}", f"{sg.tf} SMA{sg.entry_sma_length}")
+        if pd.isna(ema) or pd.isna(sma):
+            return None, f"entry check: price {px:.4f}; {names[0]} / {names[1]} warming up -> stay flat"
+        a, b = self._vs(px, ema), self._vs(px, sma)
+        word = {1: "long", -1: "short", 0: "none (equal)"}
+        side = None
+        if a == b == 1 and self.cfg.allow_long:
+            side = LONG
+        elif a == b == -1 and self.cfg.allow_short:
+            side = SHORT
+        why = ("OPEN LONG" if side == LONG else "OPEN SHORT" if side == SHORT
+               else "stay flat (" + ("side disabled" if a == b != 0 else "signals disagree / equal") + ")")
+        return side, (f"entry check: price {px:.4f} vs {names[0]} {ema:.4f} -> {word[a]}; vs {names[1]} {sma:.4f} -> "
+                      f"{word[b]} => {why} (RSI off)")
+
     def idle_step(self, now: pd.Timestamp) -> tuple[int, float]:
         """(loosening step, idle minutes) for a flat bot at ``now`` (bar close); step 0 = normal thresholds."""
         sig = self.cfg.signal
@@ -262,10 +294,17 @@ class DcaStrategy:
         return min(n, 1 + int((idle - sig.idle_after_min) // sig.idle_step_min)), idle
 
     def entry_thresholds(self, bar: Bar) -> tuple[float, float, str]:
-        """Effective (long RSI <, short RSI >, description) for a fresh entry on ``bar`` (idle loosening applied)."""
+        """Effective (long RSI <, short RSI >, description) for a fresh entry on ``bar`` (idle loosening applied).
+        Entry rule price_ma: (nan, nan, the price-vs-EMA/SMA check)."""
+        if self.cfg.signal.entry_rule == "price_ma":
+            return float("nan"), float("nan"), self.price_ma_side(bar)[1]
         return self.thresholds_at(bar.time + self._bar_duration)
 
     def thresholds_at(self, now: pd.Timestamp) -> tuple[float, float, str]:
+        if self.cfg.signal.entry_rule == "price_ma":
+            t, sg = self.cfg.trend, self.cfg.signal
+            return float("nan"), float("nan"), (f"entry rule price_ma: LONG when price > {t.tf} {t.ma_type.upper()}{t.length} "
+                    f"AND > {sg.tf} SMA{sg.entry_sma_length}; SHORT when below both; else flat (RSI / idle loosening off)")
         sig = self.cfg.signal
         step, idle = self.idle_step(now)
         lo, hi = sig.oversold, sig.overbought

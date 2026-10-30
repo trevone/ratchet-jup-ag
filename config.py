@@ -50,6 +50,11 @@ class SignalConfig:
     overbought: float = 70.0
     max_flat_minutes: float | None = None  # flat this long -> enter with trend when RSI is on the right side of 50
     flat_rsi_mid: float = 50.0
+    # --- entry rule (Trevor 2026-10-29 20:52 MT): "price_ma" = open LONG only when price > 4h EMA200 (trend MA) AND
+    # price > signal-TF SMA(entry_sma_length); SHORT only when price < both; disagree / equal = no entry. Price vs line,
+    # never slope. RSI and the idle loosening are not used for entries. "rsi" = the old RSI rule (kept for backtests).
+    entry_rule: Literal["price_ma", "rsi"] = "price_ma"
+    entry_sma_length: int = 10
     # --- idle loosening (Trevor 2026-10-07 20:14 MT): flat with no entry >= idle_after_min -> step the entry RSI
     # thresholds one step every idle_step_min (step 1 at idle_after_min, step 2 at +idle_step_min, ...), capped.
     # Trend filter, PAUSE_UNTIL and KILL still apply. Resets on the next entry.
