@@ -130,3 +130,6 @@ or when the post-add liquidation is not `liq_buffer_atr` ATR beyond the next run
 front-run, TP1/2/3, guard, timer and entry rule are unchanged. The inter-bot / JupSOL next-add loan asks for C_n.
 `ladder_max_rungs` no longer sizes anything; it is kept for the TP3 taper and the partial-zone N scaling.
 `ladder_mode = "legacy"` restores the budget / flat `ladder_fixed_usd` ladder (backtests).
+
+| [risk] liq_model | legacy | jupiter (live) | Liq formula used by the ladder buffer check. jupiter = 1/maxLeverage + close fee + accrued borrow; legacy = maintenance_ratio (backtests). |
+| [risk] jup_max_leverage | 500.0 | 500.0 | Fallback when custody maxLeverage is unavailable. Close-fee fallback = costs.close_fee. |

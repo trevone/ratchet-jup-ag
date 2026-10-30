@@ -169,6 +169,7 @@ class ChainPosition:  # satisfies strategy.PositionView
     last_entry: float
     tp_hits: int
     first_tp_time: pd.Timestamp | None
+    borrow_fee: float = 0.0          # 2026-10-29: on-chain accrued borrow fee USD (liq-buffer check, Jupiter formula)
 
     @property
     def avg_entry(self) -> float:
@@ -365,12 +366,28 @@ class Bot:
             return None
         side, p = open_[0]
         L = self.local
+        self.custody_liq_params(st)
         return ChainPosition(side=side, opened=pd.Timestamp(L.opened or pd.Timestamp.now(tz="UTC")),
                              margin=p["collateralUsd"], size=p["sizeUsd"], qty=p["sizeUsd"] / p["price"], borrow=0.0,
                              n_entries=max(L.n_entries, 1), last_leverage=L.last_leverage or self.cfg.dca.lev_start,
                              first_margin=L.first_margin or p["collateralUsd"], first_entry=L.first_entry or p["price"],
                              last_entry=L.last_entry or p["price"], tp_hits=L.tp_hits,
-                             first_tp_time=pd.Timestamp(L.first_tp_time) if L.first_tp_time else None)
+                             first_tp_time=pd.Timestamp(L.first_tp_time) if L.first_tp_time else None,
+                             borrow_fee=float(p.get("borrowFeeUsd") or 0.0))
+
+    def custody_liq_params(self, st: dict[str, Any]) -> None:
+        """2026-10-29: Jupiter liq formula inputs from the on-chain custody: maxLeverage (500) and decreasePositionBps
+        (close fee, 6 bps). Missing / bad values keep the config fallbacks."""
+        c = st.get("custody") or {}
+        try:
+            ml = float(c.get("maxLeverage") or 0)
+            if ml > 1:
+                self.strategy.liq_max_lev = ml
+            bps = c.get("decreasePositionBps")
+            if bps is not None and 0 <= float(bps) < 1000:
+                self.strategy.liq_close_fee = float(bps) / 1e4
+        except (TypeError, ValueError):
+            pass
 
     def _position_flows(self, rec: dict[str, Any]) -> tuple[float | None, float | None, float | None]:
         """(net SOL, rent, event gross) of this position's own txs since its open tx (shared wallet: other bots / deposits /

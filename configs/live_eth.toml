@@ -229,3 +229,9 @@ partial_min_net_pct = 0.002   # Trevor 2026-10-27 09:19 MT: TP3 at least far eno
                               #   notional after open+close fees + network ($0.15 on a $75 add); f unchanged (0 = off)
 readd_gap_atr = 0.6           # Trevor 2026-10-27 09:19 MT: after a TP3 fill the re-add rests at the more adverse of the closed
                               #   lot entry and last partial +/- 0.6 x ladder ATR, placed exactly there (no front-run creep; 0 = off)
+
+[risk]
+# Trevor 2026-10-29 21:59 MT: ladder liq-buffer check uses Jupiter Perps liq formula (1/maxLeverage 500x + close fee + accrued borrow;
+# custody values read on-chain each tick, these are fallbacks). maintenance_ratio stays for backtests only.
+liq_model = "jupiter"
+jup_max_leverage = 500.0

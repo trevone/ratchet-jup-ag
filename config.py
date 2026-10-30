@@ -227,7 +227,12 @@ class CostsConfig:
 
 @dataclass(frozen=True)
 class RiskConfig:
-    maintenance_ratio: float = 0.01      # liquidated when collateral <= ratio * size
+    maintenance_ratio: float = 0.01      # liquidated when collateral <= ratio * size (backtests; liq_model "legacy")
+    # Trevor 2026-10-29 21:59 MT: "jupiter" = Jupiter Perps' own formula for the ladder liq-buffer check:
+    # liq = avg -/+ (collateral - close_fee - borrow_fee - size / max_leverage) * avg / size. max_leverage (500) and the
+    # close fee (decreasePositionBps) are refreshed from the on-chain custody each tick; these are the fallbacks.
+    liq_model: Literal["legacy", "jupiter"] = "legacy"
+    jup_max_leverage: float = 500.0
 
 
 @dataclass(frozen=True)

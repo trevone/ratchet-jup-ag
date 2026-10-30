@@ -113,6 +113,9 @@ def _warn_once(key: str, msg: str) -> None:
 
 
 def liq_price(side: int, size: float, qty: float, margin: float, borrow: float, maint: float) -> float:
+    """Price where margin - borrow - maint * size is lost. Jupiter (2026-10-29): maint = 1/max_leverage (500x -> 0.2%) +
+    close fee (0.06%), borrow = the position's accrued borrow fee USD; equals docs.jup.ag
+    avg -/+ (collateral - close_fee - borrow_fee - size/max_lev) * avg / size."""
     return (size + side * (borrow + maint * size - margin)) / qty
 
 
@@ -349,7 +352,8 @@ def plan_add(pos: PosLike, lv: Levels | None, *, available_usd: float, lev_step:
         notional = margin * lev
         size = pos.size + notional
         qty = pos.qty + notional / trig
-        liq = liq_price(s, size, qty, pos.margin + margin - notional * open_fee, pos.borrow, maint)
+        liq = liq_price(s, size, qty, pos.margin + margin - notional * open_fee,
+                        pos.borrow + float(getattr(pos, "borrow_fee", 0.0) or 0.0), maint)
         if s * (nxt - liq) > liq_buffer_atr * atr:   # liq must sit >= liq_buffer_atr ATR beyond the next rung
             return AddPlan(trig, margin, lev, size / qty, liq, nxt, target, src)
         margin *= 0.8
@@ -385,7 +389,8 @@ def _plan_scaled(pos: PosLike, lv: Levels | None, rungs: list[Rung], *, availabl
     target = opposing_level(s, trig, lv, max_gap_atr, min_target_gap_atr, target_flipped_supports)
     size = pos.size + notional
     qty = pos.qty + notional / trig
-    liq = liq_price(s, size, qty, pos.margin + margin - notional * open_fee, pos.borrow, maint)
+    liq = liq_price(s, size, qty, pos.margin + margin - notional * open_fee,
+                    pos.borrow + float(getattr(pos, "borrow_fee", 0.0) or 0.0), maint)
     if s * (nxt - liq) > liq_buffer_atr * atr:
         return AddPlan(trig, margin, lev, size / qty, liq, nxt, target, src)
     return None
@@ -403,6 +408,7 @@ class _SimPos:
     first_entry: float | None = None
     n_entries: int = 1
     first_margin: float = 0.0
+    borrow_fee: float = 0.0
 
 
 def project_ladder(pos: PosLike, lv: Levels | None, *, available_usd: float, max_steps: int = 12,
@@ -410,7 +416,7 @@ def project_ladder(pos: PosLike, lv: Levels | None, *, available_usd: float, max
     """Simulate successive adds (each fills at its trigger, re-planned with the remaining collateral)."""
     p = _SimPos(pos.side, pos.size, pos.qty, pos.margin, pos.borrow, pos.last_entry, pos.last_leverage,
                 getattr(pos, "first_entry", None), int(getattr(pos, "n_entries", 1) or 1),
-                float(getattr(pos, "first_margin", 0.0) or 0.0))
+                float(getattr(pos, "first_margin", 0.0) or 0.0), float(getattr(pos, "borrow_fee", 0.0) or 0.0))
     out: list[AddPlan] = []
     avail = available_usd
     fee_per = kw["ladder"].fee_usd_per_add if kw.get("ladder") is not None else 0.0
@@ -424,7 +430,8 @@ def project_ladder(pos: PosLike, lv: Levels | None, *, available_usd: float, max
             break
         n = a.margin * a.leverage
         p = _SimPos(p.side, p.size + n, p.qty + n / a.trigger, p.margin + a.margin - n * of, p.borrow,
-                    a.trigger, a.leverage, p.first_entry, p.n_entries + 1, p.first_margin)
+                    a.trigger, a.leverage, p.first_entry, p.n_entries + 1, p.first_margin,
+                    p.borrow_fee)
         avail -= a.margin + fee_per
     return out
 

@@ -352,6 +352,16 @@ class DcaStrategy:
     def _bar_duration(self) -> pd.Timedelta:
         return pd.Timedelta(self.cfg.signal.tf)
 
+    def liq_maint(self) -> float:
+        """Maintenance fraction of size for the liq-buffer check. "jupiter": 1/max_leverage + close fee (custody values
+        when the bot has read them, else [risk] jup_max_leverage / [costs] close_fee); "legacy": maintenance_ratio."""
+        r = self.cfg.risk
+        if r.liq_model != "jupiter":
+            return r.maintenance_ratio
+        ml = getattr(self, "liq_max_lev", None) or r.jup_max_leverage
+        cf = getattr(self, "liq_close_fee", None)
+        return 1.0 / ml + (self.cfg.costs.close_fee if cf is None else cf)
+
     def plan_kwargs(self) -> dict:
         """All levels-mode sizing inputs (every one a config key under [dca])."""
         d = self.cfg.dca
@@ -364,7 +374,7 @@ class DcaStrategy:
                           scaled=d.ladder_mode == "scaled", lev_start=d.lev_start)
         return dict(lev_step=d.lev_step, lev_cap=d.lev_cap, min_add_usd=d.min_add_usd, min_gap_atr=d.min_gap_atr,
                     max_gap_atr=d.max_gap_atr, target_avg_atr=d.target_avg_atr, fixed_dist=d.trigger_dist,
-                    maint=self.cfg.risk.maintenance_ratio, max_add_frac=d.max_add_frac,
+                    maint=self.liq_maint(), max_add_frac=d.max_add_frac,
                     min_target_gap_atr=d.min_target_gap_atr, min_avg_gap_atr=d.min_avg_gap_atr,
                     fallback_avg_frac=d.fallback_avg_frac, open_fee=self.cfg.costs.open_fee,
                     target_flipped_supports=d.target_flipped_supports, liq_buffer_atr=d.liq_buffer_atr, ladder=lp,

@@ -586,3 +586,10 @@ or when the post-add liquidation is not `liq_buffer_atr` ATR beyond the next run
 front-run, TP1/2/3, guard, timer and entry rule are unchanged. The inter-bot / JupSOL next-add loan asks for C_n.
 `ladder_max_rungs` no longer sizes anything; it is kept for the TP3 taper and the partial-zone N scaling.
 `ladder_mode = "legacy"` restores the budget / flat `ladder_fixed_usd` ladder (backtests).
+
+### Liquidation model: Jupiter formula (2026-10-29, 21:59 MT)
+The ladder liq-buffer check now uses Jupiter Perps liquidation: liq = avg ∓ (collateral − close_fee − borrow_fee − size/maxLeverage)·avg/size (− long, + short).
+maxLeverage (500x, 0.2% maint) and decreasePositionBps (6 bps close fee) are read from on-chain custody each tick; config values are fallbacks.
+Accrued borrow (on-chain borrowFeeUsd) is subtracted for the live position, and 0 for planned adds. Size, collateral (net of open fee) and avg are recomputed per rung.
+The previous model (1% maint, no close fee, borrow 0) put liq ~0.74%·size/qty too close and stopped the ladder about one rung early.
+Note: live/rescue.py liq_price (jupsol loan sizing) still uses the 1% model, which is more conservative and unchanged.
