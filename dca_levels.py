@@ -113,6 +113,9 @@ def _warn_once(key: str, msg: str) -> None:
 
 
 def liq_price(side: int, size: float, qty: float, margin: float, borrow: float, maint: float) -> float:
+    """Price where margin - borrow - maint * size is lost. Jupiter (2026-10-29): maint = 1/max_leverage (500x -> 0.2%) +
+    close fee (0.06%), borrow = the position's accrued borrow fee USD; equals docs.jup.ag
+    avg -/+ (collateral - close_fee - borrow_fee - size/max_lev) * avg / size."""
     return (size + side * (borrow + maint * size - margin)) / qty
 
 
@@ -168,6 +171,8 @@ class LadderParams:
     weight_mult_cap: float = 2.5
     fixed_usd: float = 0.0            # > 0: flat collateral per rung (weights / remainder ignored); 0 = off
     min_usd: float = 0.0              # accel mode: per-rung floor fitted INSIDE the budget (floored rungs fixed, rest rescaled)
+    scaled: bool = False              # 2026-10-29: infinite scaled ladder (see scaled_rung); budgets / fixed_usd ignored
+    lev_start: float = 5.0            # scaled: first-entry leverage (rung 0)
 
 
 def ladder_weights(n: int, lp: "LadderParams") -> list[float]:
@@ -273,6 +278,16 @@ def ladder_budgets(rungs: list[Rung], available_usd: float, lp: LadderParams) ->
     return out
 
 
+def scaled_rung(base: float, n: int, lev_start: float, lev_step: float, lev_cap: float) -> tuple[float, float, float]:
+    """(collateral, leverage, notional) of rung n of the scaled ladder (Trevor 2026-10-29 21:43 MT). n = 0 is the first
+    entry. Multiplier m_n = lev_start + n*lev_step (uncapped); L_n = min(m_n, lev_cap); N_n = m_n * B; C_n = N_n / L_n
+    (= B until the cap, then grows so notional keeps rising by lev_step * B per rung)."""
+    m = lev_start + n * lev_step
+    lev = min(m, lev_cap)
+    notional = m * base
+    return notional / lev, lev, notional
+
+
 def _formula_notional(side: int, size: float, qty: float, trig: float, want_avg: float) -> float:
     """Notional x added at ``trig`` so (size + x) / (qty + x/trig) = want_avg (0 if avg already there)."""
     avg = size / qty
@@ -300,6 +315,12 @@ def plan_add(pos: PosLike, lv: Levels | None, *, available_usd: float, lev_step:
                                             max_gap_atr=max_gap_atr, fixed_dist=fixed_dist, lp=ladder,
                                             first_entry=getattr(pos, "first_entry", None),
                                             fixed_floor_atr=fixed_floor_atr), available_usd, ladder)
+    if ladder is not None and ladder.enabled and ladder.scaled:
+        return _plan_scaled(pos, lv, rungs, available_usd=available_usd, lev_step=lev_step, lev_cap=lev_cap,
+                            min_add_usd=min_add_usd, min_gap_atr=min_gap_atr, max_gap_atr=max_gap_atr, fixed_dist=fixed_dist,
+                            maint=maint, open_fee=open_fee, liq_buffer_atr=liq_buffer_atr, ladder=ladder,
+                            fixed_floor_atr=fixed_floor_atr, min_target_gap_atr=min_target_gap_atr,
+                            target_flipped_supports=target_flipped_supports)
     if rungs:
         trig, src = rungs[0].price, rungs[0].source
     else:
@@ -331,12 +352,47 @@ def plan_add(pos: PosLike, lv: Levels | None, *, available_usd: float, lev_step:
         notional = margin * lev
         size = pos.size + notional
         qty = pos.qty + notional / trig
-        liq = liq_price(s, size, qty, pos.margin + margin - notional * open_fee, pos.borrow, maint)
+        liq = liq_price(s, size, qty, pos.margin + margin - notional * open_fee,
+                        pos.borrow + float(getattr(pos, "borrow_fee", 0.0) or 0.0), maint)
         if s * (nxt - liq) > liq_buffer_atr * atr:   # liq must sit >= liq_buffer_atr ATR beyond the next rung
             return AddPlan(trig, margin, lev, size / qty, liq, nxt, target, src)
         margin *= 0.8
         if margin < min_add_usd:
             return None
+    return None
+
+
+def _plan_scaled(pos: PosLike, lv: Levels | None, rungs: list[Rung], *, available_usd: float, lev_step: float,
+                 lev_cap: float, min_add_usd: float, min_gap_atr: float, max_gap_atr: float, fixed_dist: float, maint: float,
+                 open_fee: float, liq_buffer_atr: float, ladder: LadderParams, fixed_floor_atr: float,
+                 min_target_gap_atr: float, target_flipped_supports: bool) -> AddPlan | None:
+    """Scaled ladder: next rung n = n_entries (adds so far + 1), sized from the trade's stored base B = first_margin.
+    Price placement unchanged (first rung of ladder_rungs / next_add_level). Never shrunk: None when free collateral
+    can't cover collateral + the per-add fee reserve, or the post-add liq isn't liq_buffer_atr ATR beyond the next rung."""
+    s = pos.side
+    atr = lv.atr if lv else fixed_dist
+    base = float(getattr(pos, "first_margin", 0.0) or 0.0)
+    n = max(int(getattr(pos, "n_entries", 1) or 1), 1)
+    if base <= 0:
+        return None
+    margin, lev, notional = scaled_rung(base, n, ladder.lev_start, lev_step, lev_cap)
+    if margin < min_add_usd or margin + ladder.fee_usd_per_add > available_usd + 1e-9:
+        return None
+    if rungs:
+        trig, src = rungs[0].price, rungs[0].source
+        nxt = rungs[1].price if len(rungs) > 1 else None
+    else:
+        trig, src = next_add_level(s, pos.last_entry, lv, min_gap_atr, max_gap_atr, fixed_dist, fixed_floor_atr)
+        nxt = None
+    if nxt is None:
+        nxt, _ = next_add_level(s, trig, lv, min_gap_atr, max_gap_atr, fixed_dist, fixed_floor_atr)
+    target = opposing_level(s, trig, lv, max_gap_atr, min_target_gap_atr, target_flipped_supports)
+    size = pos.size + notional
+    qty = pos.qty + notional / trig
+    liq = liq_price(s, size, qty, pos.margin + margin - notional * open_fee,
+                    pos.borrow + float(getattr(pos, "borrow_fee", 0.0) or 0.0), maint)
+    if s * (nxt - liq) > liq_buffer_atr * atr:
+        return AddPlan(trig, margin, lev, size / qty, liq, nxt, target, src)
     return None
 
 
@@ -350,13 +406,17 @@ class _SimPos:
     last_entry: float
     last_leverage: float
     first_entry: float | None = None
+    n_entries: int = 1
+    first_margin: float = 0.0
+    borrow_fee: float = 0.0
 
 
 def project_ladder(pos: PosLike, lv: Levels | None, *, available_usd: float, max_steps: int = 12,
                    **kw) -> list[AddPlan]:
     """Simulate successive adds (each fills at its trigger, re-planned with the remaining collateral)."""
     p = _SimPos(pos.side, pos.size, pos.qty, pos.margin, pos.borrow, pos.last_entry, pos.last_leverage,
-                getattr(pos, "first_entry", None))
+                getattr(pos, "first_entry", None), int(getattr(pos, "n_entries", 1) or 1),
+                float(getattr(pos, "first_margin", 0.0) or 0.0), float(getattr(pos, "borrow_fee", 0.0) or 0.0))
     out: list[AddPlan] = []
     avail = available_usd
     fee_per = kw["ladder"].fee_usd_per_add if kw.get("ladder") is not None else 0.0
@@ -370,7 +430,8 @@ def project_ladder(pos: PosLike, lv: Levels | None, *, available_usd: float, max
             break
         n = a.margin * a.leverage
         p = _SimPos(p.side, p.size + n, p.qty + n / a.trigger, p.margin + a.margin - n * of, p.borrow,
-                    a.trigger, a.leverage, p.first_entry)
+                    a.trigger, a.leverage, p.first_entry, p.n_entries + 1, p.first_margin,
+                    p.borrow_fee)
         avail -= a.margin + fee_per
     return out
 
