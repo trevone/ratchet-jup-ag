@@ -2522,15 +2522,16 @@ class Bot:
         raises wd_mark by the same amount (so the nightly withdrawal does not pay it out). A trade's payout lands while the
         bot is not idle (window / pay_wait after the close), so it is never a deposit and stays withdrawable profit. The first
         sync after a restart / deploy is only a baseline (chain_idle not yet set): an existing gap is logged, never bumped.
-        Increases below ext_min_usd are float; SOL compares rent-adjusted (other bots' request rent comes and goes)."""
+        Increases below ext_min_usd are float. SOL adds back other bots' locked request rent (2026-10-30)."""
         b = self.local.bank
         if self._busy(st, self.asset == "SOL"):
             b["chain_idle"] = False
             return
         if self.asset == "SOL":
-            v = float(st["wallet"]["sol"]) - self.live.sol_fee_reserve
-            rent = bankmod.rent_held(st)
-            px = self.sol_price(st)
+            # other bots' Perps request rent sits outside the wallet only temporarily and is not this bot's loss: add it back
+            rent = round(bankmod.rent_held(st) - len(st.get("openRequests") or []) * bankmod.REQ_RENT, 9)
+            v = float(st["wallet"]["sol"]) - self.live.sol_fee_reserve + max(0.0, rent)
+            rent, px = 0.0, self.sol_price(st)
         else:
             tok = st.get("sweepTokens") or {}
             if "error" in tok or b["coin"] not in tok:
