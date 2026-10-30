@@ -1080,3 +1080,10 @@ Files: config.py, live/bot.py, live/trim.py, configs/live_100.toml, live_eth.tom
 2026-10-30 MT  Chain mode: own-token increase seen while idle (flat, no payout window, 2 syncs, >= ext_min_usd) raises wd_mark by it (deposit = capital, not withdrawn); payouts after a close stay profit; first sync after restart = baseline only. Nightly withdrawal lowering HWM = the single exception to HWM never down (Trevor 07:20).
 2026-10-30 MT  Chain mode SOL: add back other bots' locked request rent to the SOL bot's balance (was showing as a temporary SOL loss).
 2026-10-30 MT  Chain mode SOL: balance adds back ETH/BTC peer fee debt owed to the SOL wallet (receivable; repay is not a deposit); chain_v=2 re-baselines once at deploy.
+
+2026-10-30 MT  Post-close fixes (Trevor-approved; PR fix/post-close-cooldown-ledger-rent), all three bots, one code path
+  - [entry] post_close_cooldown_sec = 300 (new, default 300): no new entry after a close until the cooldown passed AND the trade is booked AND the flat HWM raise ran from the chain balance.
+  - Fix: a close followed by an open in the same/next tick skipped the flat HWM raise (BTC 08:42 MT close: chain 0.001548240 vs HWM 0.001539433). The booking + flat HWM rule now always run before any entry. BTC HWM not hand-edited; it rises on the next natural flat tick.
+  - Fix: chain-mode "LEDGER trade booked" showed ~-$10 on ETH/BTC (payouts never credited to trade_recv -> net = -first deposit). Net now = equity change since open, excluding fee debt growth.
+  - Fix: 55-min timer close-at-HWM (hwm_check / hwm_equity) now includes SOL's own open request rent (~0.0074 SOL with 2 requests).
+  - Tests: tests/test_post_close_fixes.py; test_bank_booking forced-booking test updated (entry now waits for booking first).

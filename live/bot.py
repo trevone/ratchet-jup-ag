@@ -483,12 +483,36 @@ class Bot:
                         log.warning("BANK true-up applied at booking: SOL withdrawal / HWM block cleared")
                 self._book_row(a)
             else:
-                self._book_row(a, native={"coin": b["coin"], "deposited": b.get("trade_dep", 0.0),
-                                          "received": b.get("trade_recv", 0.0), "coin_px": cpx})
+                dep, recv = b.get("trade_dep", 0.0), b.get("trade_recv", 0.0)
+                net = self.chain_trade_net(sol_px, cpx)
+                if net is not None:   # 2026-10-30: chain mode -> received = what the chain shows came back (net + deposited)
+                    recv = round(net + dep, 9)
+                    b["trade_recv"] = recv
+                self._book_row(a, native={"coin": b["coin"], "deposited": dep, "received": recv, "coin_px": cpx})
         log.info("BANK trade done: deposited %.9f, received %.9f %s (net %+.9f)", b.get("trade_dep", 0.0),
                  b.get("trade_recv", 0.0), b["coin"], b.get("trade_recv", 0.0) - b.get("trade_dep", 0.0))
         b["trade_dep"], b["trade_recv"] = 0.0, 0.0
+        b.pop("trade_start_debt", None)
         self.save()
+
+    def chain_trade_net(self, sol_px: float, cpx: float) -> float | None:
+        """Trevor 2026-10-30 (fix 2): with ext_flow_mode = "chain" the bank balance is the on-chain token and payouts are
+        never credited to trade_recv (the sync just sets bal), while a cancelled resting add's refund is booked against
+        trade_dep: the row showed -deposited (~-$10, ETH 07:51 / BTC 08:46 MT). The trade's own-coin result is the chain:
+        (bal - loans) now minus the same at the open (trade_start_equity + fee debt at the open; trade_start_equity already
+        moves with deposits / withdrawals = capital). The SOL network fees stay separate (fee debt), as before.
+        None = not chain mode / no baseline (old counters used)."""
+        b = self.local.bank
+        if self.cfg.ledger.ext_flow_mode != "chain" or b.get("trade_start_equity") is None:
+            return None
+        debt0 = b.get("trade_start_debt")
+        if debt0 is None:   # trade opened before this fix: the debt now (grew only by this trade's few network fees)
+            debt0 = bankmod.fee_debt_native(b, sol_px, cpx)
+        start = float(b["trade_start_equity"]) + float(debt0)
+        net = round(bankmod.equity(b, 0.0, 0.0) - start, 9)
+        log.info("LEDGER %s chain result: (bal - loans) %.9f - start %.9f (trade_start_equity %.9f + fee debt at open %.9f) "
+                 "= %+.9f %s", self.asset, bankmod.equity(b, 0.0, 0.0), start, b["trade_start_equity"], debt0, net, b["coin"])
+        return net
 
     def sweep(self, st: dict[str, Any], side: int | None) -> None:
         """Every short pays out in its own coin (2026-10-14): no proceeds are swapped. USDC >= $2 in the wallet is a deposit
@@ -576,6 +600,7 @@ class Bot:
             b = L.bank
             nat = round(pos.margin / self.coin_px(st), 9)
             b["trade_start_equity"] = self.bank_equity_flat(st)
+            b["trade_start_debt"] = bankmod.fee_debt_native(b, self.sol_price(st), self.coin_px(st))
             bankmod.debit(b, nat, "collateral", f"adopted position collateral ${pos.margin:.2f} at {self.coin_px(st):.4f}")
             b["window"] = max(b.get("window", 0), self.cfg.ledger.window_ticks)
         lev = round(pos.size / pos.margin, 2) if pos.margin > 0 else L.last_leverage
@@ -690,6 +715,7 @@ class Bot:
             self.halt(f"close not confirmed on-chain: {res}")
             return
         ledger.update(exit=f"{why.split(' ')[0]}@{pd.Timestamp.now(tz='UTC'):%H:%M}")
+        self.mark_closed(why)
         self.bank_payout(pos.margin + pos.pnl(price) - self.cfg.costs.close_fee * pos.size, f"close ({why[:60]})")
         try:
             self.sweep(st2, pos.side)   # SOL out before booking
@@ -1598,10 +1624,44 @@ class Bot:
                 return f"entries paused until {until} ({f})"
         return None
 
+    def mark_closed(self, why: str) -> None:
+        """Trevor 2026-10-30 (fix 1/3): a position close starts the post-close cooldown and makes the flat booking + flat
+        HWM raise (from the chain balance) due before any new entry. Persisted in state.json (bank) so a restart keeps it."""
+        now = str(pd.Timestamp.now(tz="UTC"))
+        self._closed_at = now
+        if self.bank_on and self.local.bank:
+            self.local.bank["closed_at"] = now
+            self.local.bank["flat_hwm_due"] = True
+        log.info("post-close: closed at %s (%s); no new entry for %gs and until the trade is booked and the flat HWM "
+                 "raise has run", now, why[:60], self.cfg.entry.post_close_cooldown_sec)
+
+    def post_close_block(self) -> str | None:
+        """Why a fresh open must wait after a close (None = allowed): [entry] post_close_cooldown_sec since the close, the
+        previous trade's booking (book_pend) and the flat HWM raise from the chain balance (flat_hwm_due). A SOL true-up
+        block keeps its old rule (forced booking at the open) so the bot never stops opening on an unreadable flow read."""
+        cd = float(self.cfg.entry.post_close_cooldown_sec)
+        b = self.local.bank if (self.bank_on and self.local.bank) else {}
+        ts = b.get("closed_at") or getattr(self, "_closed_at", None)
+        if cd > 0 and ts:
+            age = (pd.Timestamp.now(tz="UTC") - pd.Timestamp(ts)).total_seconds()
+            if age < cd:
+                return f"post-close cooldown: {age:.0f}s of {cd:g}s since the close at {ts}"
+        if not b or self.live.dry_run or b.get("trueup_block"):
+            return None
+        if b.get("book_pend"):
+            return "post-close: previous trade not booked yet (payout / refund settling)"
+        if b.get("flat_hwm_due"):
+            return "post-close: flat HWM raise from the chain balance has not run yet"
+        return None
+
     def open_or_add(self, it: Intent, pos: ChainPosition | None, st: dict[str, Any], equity: float) -> None:
         paused = self.entries_paused() if pos is None else None   # adds to an open position are not paused
         if paused:
             log.info("skip open: %s", paused)
+            return
+        wait = self.post_close_block() if pos is None else None   # 2026-10-30: cooldown + booking + flat HWM first
+        if wait:
+            log.info("skip open: %s", wait)
             return
         why = self.guard(it, pos, st, equity)
         if why:
@@ -1650,6 +1710,7 @@ class Bot:
             if pos is None:
                 b["trade_dep"], b["trade_recv"] = 0.0, 0.0
                 b["trade_start_equity"] = self.bank_equity_flat(st)   # per-trade guard baseline, before the opening debit
+                b["trade_start_debt"] = bankmod.fee_debt_native(b, self.sol_price(st), self.coin_px(st))   # chain_trade_net
             bankmod.debit(b, nat, "collateral", f"{it.action.value} {side} ${it.margin:.2f} x{it.leverage:g} sig {res.get('sig')}")
             b["window"] = max(b.get("window", 0), self.cfg.ledger.window_ticks)   # a rejected request refunds the coin
             self.save()
@@ -2597,11 +2658,13 @@ class Bot:
         b["chain_quiet"] = bool(quiet)
         b["chain_v"] = CHAIN_V   # balance-formula version: a change re-baselines once (no wd_mark / HWM move)
         b["pend"] = None
+        self._chain_synced = True
 
     def bank_tick(self, st: dict[str, Any], pos: ChainPosition | None, price: float) -> None:
         """Reconcile this bot's balance with the wallet, settle external-event shares, raise the HWM when flat."""
         b, lc = self.local.bank, self.cfg.ledger
         self._jl_just_lent = False   # set by jupsol_loans._book_lend when a JupSOL loan is booked this tick
+        self._chain_synced = False   # set by chain_balance_sync (2026-10-30: flat HWM raise must use this tick's chain balance)
         if self.live.dry_run:
             return
         sol_px, cpx = self.sol_price(st), self.coin_px(st)
@@ -2675,6 +2738,11 @@ class Bot:
                 log.error("JUPSOL repay failed (retry next tick): %s", e)
         if not b.get("trueup_block") and bankmod.update_hwm(b, flat, bankmod.fee_debt_native(b, sol_px, cpx)):
             log.info("BANK HWM raised (flat): %s", bankmod.status_line(b, cpx, sol_px))
+        if (b.get("flat_hwm_due") and flat and not b.get("trueup_block") and not b.get("book_pend") and not b.get("pend")
+                and not mid_dep and not mid_loan and not mid_jl
+                and (lc.ext_flow_mode != "chain" or getattr(self, "_chain_synced", False))):
+            b.pop("flat_hwm_due", None)   # 2026-10-30: booked + flat HWM rule ran on the synced chain balance -> entries may open
+            log.info("post-close: trade booked and flat HWM rule applied (bal %.9f, hwm %.9f %s)", b["bal"], b["hwm"], b["coin"])
         self.save()
 
     def deposit_tick(self, st: dict[str, Any]) -> bool:
@@ -3162,7 +3230,17 @@ class Bot:
         add = float(ra.get("size_usd") or 0.0) if ra else 0.0
         if rest and add > 0 and pos is not None and self.local.last_size > 0 and pos.size - self.local.last_size > 0.5 * add:
             rest = 0.0   # 2026-10-28: its fill is already in the position size (close value) -> never counted twice
-        return bankmod.equity(b, cv, bankmod.fee_debt_native(b, sol_px, cpx)) + rest - self.sol_fees_unbooked(pos)
+        return (bankmod.equity(b, cv, bankmod.fee_debt_native(b, sol_px, cpx)) + rest - self.sol_fees_unbooked(pos)
+                + self.own_request_rent(pos, st))
+
+    def own_request_rent(self, pos: ChainPosition | None, st: dict[str, Any]) -> float:
+        """Trevor 2026-10-30 (fix 4): SOL bot in chain mode: rent locked in this bot's own open request accounts (TP1/TP2/TP3
+        / resting add, REQ_RENT each) is outside bal (the chain balance adds back only the other bots' rent) but comes back
+        on close, so 'equity if closed' (55-min timer HWM check, BANK line) includes it. ETH / BTC: rent is SOL, not their
+        token (0)."""
+        if (pos is None or self.asset != "SOL" or not self.bank_on or self.cfg.ledger.ext_flow_mode != "chain"):
+            return 0.0
+        return round(len(st.get("openRequests") or []) * bankmod.REQ_RENT, 9)
 
     def sol_fees_unbooked(self, pos: ChainPosition | None) -> float:
         """Trevor 2026-10-27 (SOL bot, open position): network fees this trade has paid so far (ledger_open.json, every tx
@@ -3393,6 +3471,7 @@ class Bot:
                 if not self.cancel_all(st):
                     self.cancel_failed(st["openRequests"], None, "leftover orders after the position closed")
             ledger.update(exit=f"{'TP2' if L.tp_hits else 'external/TP/liq'}@{pd.Timestamp.now(tz='UTC'):%H:%M}")
+            self.mark_closed("position gone on-chain")
             if self.bank_on and L.pg_m_size > 0:   # last seen size / collateral / whole-position avg (2026-10-27; lots: old state)
                 avg = L.pg_avg if L.pg_avg > 0 else \
                     (sum(l["size"] for l in L.lots) / sum(l["size"] / l["price"] for l in L.lots)) if L.lots else price

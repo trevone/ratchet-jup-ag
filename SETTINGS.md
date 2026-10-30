@@ -15,6 +15,7 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 | [entry] | first_collateral_pct | 0.10 | 0.10 | 0.10 | First entry = 10% of bot's free bank (USD) |
 | [entry] | first_collateral_min_usd | 10.50 | 10.50 | 10.50 | Floor for first entry collateral |
 | [entry] | fee_reserve_usd | 0.10 | 0.10 | 0.10 | Kept back from first entry for add fees |
+| [entry] | post_close_cooldown_sec | 300 | 300 | 300 | After any close: no new entry until this passes AND the trade is booked AND the flat HWM rule ran (default 300) |
 | [dca] | mode | levels | levels | levels | Adds at analyst S/R levels |
 | [dca] | levels_path | market-analysis/latest.json | market-analysis/eth/latest.json | market-analysis/btc/latest.json | Analyst levels file |
 | [dca] | levels_max_age_min | 45 | 45 | 45 | Older -> fallback spacing |

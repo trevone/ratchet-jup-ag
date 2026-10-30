@@ -99,6 +99,11 @@ def test_new_open_inside_the_window_books_the_previous_trade_first(bbot, monkeyp
     st1 = _st(57447 + 11981, size=52.5, price=82493.7)
     bbot.chain = lambda: st1
     bbot.sync_tp_ladder = lambda pos: None
+    calls = []
+    bbot.cmd, real_cmd = (lambda n, a: calls.append(n) or real_cmd(n, a)), bbot.cmd
+    bbot.open_or_add(Intent(Action.OPEN, LONG, 82493.7, margin=10.5, leverage=5), None, _st(69428), 100.0)
+    assert "increase" not in calls and len(wd.read_trades(ledger.TRADES)) == 0   # 2026-10-30: no entry before booking
+    bbot.post_close_block = lambda: None                  # forced booking at a new open stays as the safety net
     bbot.open_or_add(Intent(Action.OPEN, LONG, 82493.7, margin=10.5, leverage=5), None, _st(69428), 100.0)
     rows = wd.read_trades(ledger.TRADES)
     assert len(rows) == 1 and float(rows[0]["net_native"]) == pytest.approx(0.00000157, abs=1e-12)

@@ -90,10 +90,15 @@ class EntryConfig:
     first_collateral_min_usd: float = 10.50
     first_collateral_max_usd: float | None = None   # None = no cap
     fee_reserve_usd: float = 0.10        # kept free for the open's network/request fee
+    # Trevor 2026-10-30: after any position close no new entry until this many seconds have passed AND the trade is booked
+    # and the flat HWM raise has run from the chain balance (0 = no time wait; the booking / HWM wait always applies)
+    post_close_cooldown_sec: float = 300.0
 
     def __post_init__(self) -> None:
         if not 0.0 < self.first_collateral_pct <= 1.0:
             raise ValueError("entry.first_collateral_pct must be in (0, 1]")
+        if self.post_close_cooldown_sec < 0:
+            raise ValueError("entry.post_close_cooldown_sec must be >= 0")
         if self.first_collateral_min_usd < 0 or self.fee_reserve_usd < 0:
             raise ValueError("entry.first_collateral_min_usd / fee_reserve_usd must be >= 0")
         if self.first_collateral_max_usd is not None and self.first_collateral_max_usd < self.first_collateral_min_usd:
