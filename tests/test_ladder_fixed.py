@@ -39,7 +39,7 @@ def test_live_configs_run_preset_c_resting_and_pct_guard(path):   # Trevor 2026-
     d = c.dca
     assert (d.ladder_fixed_usd, d.min_add_usd, d.lev_start, d.lev_step, d.lev_cap, d.ladder_max_rungs, d.ladder_deep) == \
         (10.0, 10.0, 5.0, 2.5, 20.0, 10, False)
-    assert (c.entry.first_collateral_mode, c.sizing.mode, c.sizing.initial_margin_usd) == ("fixed", "fixed_usd", 10.0)
+    assert (c.entry.first_collateral_mode, c.sizing.mode, c.sizing.initial_margin_usd) == ("pct", "fixed_usd", 10.0)   # 2026-10-29 21:24 MT: first entry pct; [sizing] kept for fixed mode
     r = c.resting
     assert r.adds_enabled and r.partials_enabled and r.last_partial_rule
     assert (c.ledger.min_profit_pct_hwm, c.ledger.min_profit_pct_per_partial) == (0.002, 0.0005)

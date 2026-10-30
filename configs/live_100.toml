@@ -104,8 +104,8 @@ initial_margin_usd = 10.0  # 2026-10-12 preset C/resting LIVE (Trevor 00:04 MT)
 
 [entry]
 # Trevor 2026-10-07 18:24 MT: first entry scales with the wallet ("fixed" = the [sizing] $10.50 above).
-first_collateral_mode = "fixed"  # 2026-10-12 preset C/resting LIVE (Trevor 00:04 MT)
-first_collateral_pct = 0.10     # fraction of free native-SOL collateral (wallet SOL - 0.02 reserve, USD) at each fresh open
+first_collateral_mode = "pct"    # Trevor 2026-10-29 21:24 MT: pct of this bot's free collateral (was fixed $10 since 2026-10-12)
+first_collateral_pct = 0.10     # fraction of this bot's free collateral at each fresh open (bank on: own bank bal x coin price, USD; the 'free $' on the budget line)
 first_collateral_min_usd = 10.50  # floor: Jupiter's $10 TP minimum always met
 # first_collateral_max_usd = 50.0  # optional cap (omitted = off)
 fee_reserve_usd = 0.10          # first entry <= free collateral - this; adds then budget from what is left
