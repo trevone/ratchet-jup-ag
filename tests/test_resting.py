@@ -232,9 +232,34 @@ def test_no_qualifying_add_no_tp3_and_old_one_cancelled(bot):
     assert not bot.calls and not L.partials
     L.partials = [{"pubkey": "PX", "lots": ["t"], "lot_time": "t", "size": 10.0, "px": 107.0}]
     bot.chain = lambda: state()
+    for _ in range(bot.cfg.resting.tp3_skip_confirm_ticks - 1):   # 2026-10-31: skip confirmed over ticks first
+        bot.partial_sync(pos, 105.0)
+        assert not bot.calls and L.partials
     bot.partial_sync(pos, 105.0)
     assert [a["request"] for n, a in bot.calls if n == "cancel"] == ["PX"] and not L.partials
 
+
+def test_tp3_one_skewed_skip_does_not_cancel(bot):
+    """07:38 MT 10-31: one tick's reference read skewed -> skip; next tick the plan is back -> TP3 kept, counter reset."""
+    L = bot.local
+    pos = bot.chain_position(state())
+    bot.partial_sync(pos, 105.5)
+    assert len(L.partials) == 1
+    bot.calls.clear()
+    real = bot.partial_plan
+    bot.partial_plan = lambda p: None
+    bot.partial_sync(pos, 105.5)                 # skewed tick
+    assert not bot.calls and len(L.partials) == 1
+    bot.partial_plan = real
+    bot.partial_sync(pos, 105.5)                 # plan back, unchanged -> nothing done
+    assert not bot.calls and len(L.partials) == 1 and bot._tp3_skip_n == 0
+
+
+@pytest.mark.parametrize("path", ["configs/live_100.toml", "configs/live_eth.toml", "configs/live_btc.toml"])
+def test_tp3_skip_confirm_config(path):
+    assert load_config(path).resting.tp3_skip_confirm_ticks == 3
+    with pytest.raises(ValueError):
+        load_config(path, ["resting.tp3_skip_confirm_ticks=0"])
 
 def test_add_order_gone_without_fill_drops_record(bot):
     ra, _ = fill_setup(bot)

@@ -508,6 +508,11 @@ class RestingConfig:
     # Trevor 2026-10-27: TP3 at least far enough that the furthest add lot nets this fraction of its own notional after
     # open + close fees and network (0.002 = $0.15 on a $75 add); 0 = off (f alone)
     partial_min_net_pct: float = 0.0
+    # Trevor 2026-10-31: a resting TP3 is cancelled for "skipped" (no add beyond the reference avg / no lot nets) only after
+    # the skip held this many consecutive ticks. The reference (true breakeven) reads the shared wallet's SOL; a peer bot's
+    # request cancel / re-place can skew one read (07:38 MT: +0.0037 SOL rent -> breakeven 95.1492 vs 94.84-94.94) and
+    # cancelled a valid TP3 that was re-placed at the same price 3 min later. 1 = old behaviour (cancel on the first skip).
+    tp3_skip_confirm_ticks: int = 3
     # Trevor 2026-10-27: after a TP3 fill the resting add re-arms at the more adverse of the closed lot's entry and the last
     # partial price + this x ladder (analyst) ATR (short: above / long: below), placed there with no extra front-run;
     # 0 = off (old re-arm: closed lot's entry, then the add front-run)
@@ -516,6 +521,8 @@ class RestingConfig:
     def __post_init__(self) -> None:
         if not 1 <= self.partial_levels_min <= self.partial_levels_max:
             raise ValueError("resting: 1 <= partial_levels_min <= partial_levels_max")
+        if self.tp3_skip_confirm_ticks < 1:
+            raise ValueError("resting: tp3_skip_confirm_ticks must be >= 1")
         if self.partial_min_net_pct < 0 or self.readd_gap_atr < 0:
             raise ValueError("resting: partial_min_net_pct and readd_gap_atr must be >= 0")
 

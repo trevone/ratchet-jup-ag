@@ -2460,6 +2460,16 @@ class Bot:
                     min_net_pct=R.partial_min_net_pct), logging.WARNING)
         else:
             self.__dict__.setdefault("_rest_notes", {}).pop("tp3_skip", None)
+        if tgt is None and old and not old.get("manual"):
+            # 2026-10-31: confirm a skip over consecutive ticks before cancelling a resting TP3 (one skewed read must not
+            # cancel a valid TP3); the counter is per process (a restart starts it again = never cancels sooner)
+            n = self.__dict__["_tp3_skip_n"] = self.__dict__.get("_tp3_skip_n", 0) + 1
+            if n < self.cfg.resting.tp3_skip_confirm_ticks:
+                log.info("TP3 skip %d/%d: resting TP3 %s kept until the skip is confirmed", n,
+                         self.cfg.resting.tp3_skip_confirm_ticks, old.get("pubkey"))
+                return
+        else:
+            self.__dict__["_tp3_skip_n"] = 0
         if old and old.get("manual") and tgt and abs(float(old["size"]) - tgt["size"]) < 0.01:   # 2026-10-29: TP3_SET
             return   # price held until the next add / resize changes the TP3 size, then normal planning resumes
         if old and tgt and abs(float(old["size"]) - tgt["size"]) < 0.01 and abs(float(old["px"]) - tgt["px"]) < max(0.005, 0.0003 * price):   # hysteresis: breakeven drifts with the coin / SOL price
