@@ -1087,3 +1087,10 @@ Files: config.py, live/bot.py, live/trim.py, configs/live_100.toml, live_eth.tom
   - Fix: chain-mode "LEDGER trade booked" showed ~-$10 on ETH/BTC (payouts never credited to trade_recv -> net = -first deposit). Net now = equity change since open, excluding fee debt growth.
   - Fix: 55-min timer close-at-HWM (hwm_check / hwm_equity) now includes SOL's own open request rent (~0.0074 SOL with 2 requests).
   - Tests: tests/test_post_close_fixes.py; test_bank_booking forced-booking test updated (entry now waits for booking first).
+
+2026-10-31 (Trevor 07:27 / 07:28 MT) PR fix/chain-payout-recv-tp-lag:
+  - trades.csv: ETH row closed 07:49 MT 10-30 rewritten from chain: dep 0.00470093, recv 0.00487667, net +0.00017574 ETH (~$+0.39) (was -0.00470093 / -$10.41).
+    BTC row closed 08:45 MT 10-30: dep 0.00013578, recv 0.00013949, net +0.00000371 WBTC (~$+0.29) (was -$10.44). Backups *.bak-20261031-rowfix.
+  - chain mode: payout seen on chain credited to trade_recv (ETH / BTC); cancelled-add refund no longer reads as money in.
+  - chain mode: payout seen on chain clears pay_wait -> TPs re-placed next tick after a per-add partial (was ~14 min lag:
+    pay_wait was only cleared by the stored-bank recon, which chain mode never runs, so it counted down 20 ticks).

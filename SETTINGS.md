@@ -137,3 +137,12 @@ front-run, TP1/2/3, guard, timer and entry rule are unchanged. The inter-bot / J
 | [risk] jup_max_leverage | 500.0 | 500.0 | Fallback when custody maxLeverage is unavailable. Close-fee fallback = costs.close_fee. |
 
 | (state) tp3_filled | false | per trade | Not a setting: set when a TP3 partial fills; disables the 55-min TP timer until flat (Trevor 2026-10-30 05:51 MT). |
+
+### [ledger] chain_payout_recv / chain_payout_clears_wait (2026-10-31, Trevor 07:27 / 07:28 MT)
+- `chain_payout_recv = true` (default, all bots; ETH / BTC use it): with `ext_flow_mode = "chain"`, an own-token change the
+  chain sync sees while a payout is due (payout window / pay_wait / booking pending) is credited to the trade's received
+  amount. A cancelled resting add's refund only reverses its deposit; it is never money put in, and the payout is always
+  seen. (ETH 07:49 and BTC 08:45 MT 10-30 rows read ~-$10 because of this.)
+- `chain_payout_clears_wait = true` (default, all bots): a rise of the own token on chain while pay_wait is set (per-add
+  partial / TP payout) clears pay_wait, so the TP re-place at the guard price runs on the next tick instead of after
+  GUARD_DEFER_MAX (20) ticks (~14 min; BTC 09:32-09:46 and 14:23-14:37 MT 10-30). Bookkeeping only; order logic unchanged.
