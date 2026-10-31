@@ -146,3 +146,9 @@ front-run, TP1/2/3, guard, timer and entry rule are unchanged. The inter-bot / J
 - `chain_payout_clears_wait = true` (default, all bots): a rise of the own token on chain while pay_wait is set (per-add
   partial / TP payout) clears pay_wait, so the TP re-place at the guard price runs on the next tick instead of after
   GUARD_DEFER_MAX (20) ticks (~14 min; BTC 09:32-09:46 and 14:23-14:37 MT 10-30). Bookkeeping only; order logic unchanged.
+
+### [resting] tp3_skip_confirm_ticks = 3 (2026-10-31, Trevor 07:43 MT)
+A resting TP3 is cancelled for "TP3 skipped" only after the skip held 3 consecutive ticks (1 = old: first skip). The TP3
+reference (true breakeven) reads the shared wallet's SOL; a peer bot's request cancel / re-place can skew one read
+(SOL 07:38 MT 10-31: BTC's TP cancel returned 0.0037 SOL rent before the request list caught up -> breakeven 95.1492
+instead of ~94.84-94.94 -> valid TP3 at 94.69 cancelled, re-placed at 94.69 at 07:41). Placement rule unchanged.

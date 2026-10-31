@@ -1094,3 +1094,7 @@ Files: config.py, live/bot.py, live/trim.py, configs/live_100.toml, live_eth.tom
   - chain mode: payout seen on chain credited to trade_recv (ETH / BTC); cancelled-add refund no longer reads as money in.
   - chain mode: payout seen on chain clears pay_wait -> TPs re-placed next tick after a per-add partial (was ~14 min lag:
     pay_wait was only cleared by the stored-bank recon, which chain mode never runs, so it counted down 20 ticks).
+
+2026-10-31 (Trevor 07:43 MT) PR fix/tp3-skip-confirm: SOL TP3 94.69 cancelled 07:38 after one skewed breakeven read (95.1492;
+  BTC's post-restart TP cancel returned 0.0037 SOL rent to the shared wallet before allOpenRequests dropped it). Not state loss,
+  not PR #19 logic. Fix: [resting] tp3_skip_confirm_ticks = 3 (skip must hold 3 ticks before a resting TP3 is cancelled).
