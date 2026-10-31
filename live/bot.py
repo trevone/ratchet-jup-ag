@@ -488,6 +488,9 @@ class Bot:
                 if net is not None:   # 2026-10-30: chain mode -> received = what the chain shows came back (net + deposited)
                     recv = round(net + dep, 9)
                     b["trade_recv"] = recv
+                elif dep > 0 and recv <= 0:   # 2026-10-31: never book "-deposited" silently
+                    log.warning("LEDGER %s booking with no payout seen (dep %.9f, recv 0): row may read -deposited; "
+                                "check the chain", self.asset, dep)
                 self._book_row(a, native={"coin": b["coin"], "deposited": dep, "received": recv, "coin_px": cpx})
         log.info("BANK trade done: deposited %.9f, received %.9f %s (net %+.9f)", b.get("trade_dep", 0.0),
                  b.get("trade_recv", 0.0), b["coin"], b.get("trade_recv", 0.0) - b.get("trade_dep", 0.0))
@@ -2642,16 +2645,21 @@ class Bot:
             log.info("BANK chain balance %s: bal %.9f -> %.9f (%+.9f)", b["coin"], b["bal"], v, diff)
         dep = round(diff + (rent - float(b.get("chain_rent", rent))), 9)
         big = dep > 0 and dep * (px or 0.0) >= self.cfg.ledger.ext_min_usd and b.get("chain_v") == CHAIN_V
+        capital = False
         if idle and b.get("chain_idle") and big:
+            capital = True
             self.chain_capital(dep, None, px, "own-token increase while idle")
         elif pos is not None and quiet and b.get("chain_quiet") and big:
             # 2026-10-30 08:20 MT: an own-token arrival mid-trade (no payout window / true-up pending) is capital, not
             # trade P&L: HWM, wd_mark and the trade-start equity rise with it so the guard / TP timer / close accounting
             # never see it as profit and the nightly withdrawal does not pay it out
+            capital = True
             self.chain_capital(dep, pos, px, "own-token increase mid-trade")
         elif b.get("chain_v") != CHAIN_V and abs(diff) > bankmod.DUST[b["coin"]]:
             log.warning("BANK chain baseline %s: first sync, gap %+.9f vs booked bal taken as baseline (wd_mark/HWM unchanged)",
                         b["coin"], diff)
+        if not capital and b.get("chain_v") == CHAIN_V and abs(diff) > bankmod.DUST[b["coin"]]:
+            self._chain_payout_seen(diff)
         b["bal"] = v
         b["chain_rent"] = rent
         b["chain_idle"] = bool(idle)
@@ -2659,6 +2667,22 @@ class Bot:
         b["chain_v"] = CHAIN_V   # balance-formula version: a change re-baselines once (no wd_mark / HWM move)
         b["pend"] = None
         self._chain_synced = True
+
+    def _chain_payout_seen(self, diff: float) -> None:
+        """Chain mode (Trevor 2026-10-31): an own-token change not booked by the bank, seen while a payout is due
+        (payout window / pay_wait / booking pending), is the trade's payout. The bank already booked its own moves
+        (collateral debits, a cancelled add's refund) into bal, so the sum of these diffs is exactly what came back.
+        ETH / BTC: credited to trade_recv (chain_payout_recv). Any bot: a rise clears pay_wait (chain_payout_clears_wait)
+        so the guard-price TP re-place runs on the next tick. Bookkeeping only: no order is placed here."""
+        b, lc = self.local.bank, self.cfg.ledger
+        if not (b.get("window", 0) > 0 or b.get("pay_wait", 0) > 0 or b.get("book_pend")):
+            return
+        if lc.chain_payout_recv and self.asset != "SOL":
+            b["trade_recv"] = round(b.get("trade_recv", 0.0) + diff, 9)
+            log.info("BANK payout seen on chain %+.9f %s -> trade received %.9f", diff, b["coin"], b["trade_recv"])
+        if lc.chain_payout_clears_wait and diff > 0 and b.get("pay_wait", 0) > 0:
+            b["pay_wait"] = 0
+            log.info("BANK payout seen on chain: pay_wait cleared (guard TPs re-placed next tick)")
 
     def bank_tick(self, st: dict[str, Any], pos: ChainPosition | None, price: float) -> None:
         """Reconcile this bot's balance with the wallet, settle external-event shares, raise the HWM when flat."""

@@ -448,6 +448,14 @@ class LedgerConfig:
     # except by the daily withdrawal (capital out). USDC deposits (live/deposit.py) unchanged.
     ext_flow_mode: str = "alert"
     window_ticks: int = 3                   # ticks after a payout event during which own-token changes are trade flows
+    # Trevor 2026-10-31: chain mode, ETH / BTC. An own-token change the chain sync sees while a payout is due (payout
+    # window / pay_wait / booking pending) is the trade's payout: credited to trade_recv, so a cancelled add's refund
+    # (booked against trade_dep) can no longer leave the row at "-deposited, received 0" (ETH 07:49 / BTC 08:45 MT 10-30).
+    chain_payout_recv: bool = True
+    # Trevor 2026-10-31: chain mode. A rise of the own token on chain while pay_wait is set (per-add partial / TP payout)
+    # = payout seen: pay_wait cleared, so the guard-price TP re-place runs on the next tick instead of waiting
+    # GUARD_DEFER_MAX ticks (~14 min, BTC 09:32-09:46 / 14:23-14:37 MT 10-30).
+    chain_payout_clears_wait: bool = True
     withdraw_enabled: bool = True           # daily HWM-gain withdrawal to JupSOL (replaces the old SOL-bot nightly stake)
     withdraw_time_mt: str = "00:05"
     withdraw_fraction: float = 0.5
