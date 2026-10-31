@@ -108,6 +108,7 @@ def test_true_up_waits_for_a_consistent_snapshot(sbot):
     sbot._fl["v"] = None                                            # flows unavailable
     sbot.sol_pay_trueup(_st(), _pos())
     assert L.pay_check and b["bal"] == bal
+    sbot._pay_trueup_next = 0.0                                     # unavailable -> backoff; once it is over:
     sbot._fl["v"] = -0.3
     sbot.sol_pay_trueup(_st(), _pos())
     assert not L.pay_check and b["bal"] != bal
