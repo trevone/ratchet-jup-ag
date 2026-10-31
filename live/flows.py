@@ -15,15 +15,16 @@ log = logging.getLogger("flows")
 LAMPORTS = 1_000_000_000
 
 
-def position_net_sol(position: str, open_sig: str | None, jup: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None
-                     ) -> tuple[float | None, dict[str, Any]]:
+def position_net_sol(position: str, open_sig: str | None, jup: Callable[..., dict[str, Any]] | None = None,
+                     timeout: float | None = None) -> tuple[float | None, dict[str, Any]]:
     """(net SOL of the trade from its own position txs, raw result); (None, res) if unavailable."""
     if not position or not open_sig:
         return None, {"error": "no position / open_sig"}
     if jup is None:
         from live.live_broker import jup as _j
         jup = _j
-    res = jup("position-flows", {"position": position, "sinceSig": open_sig})
+    a = {"position": position, "sinceSig": open_sig}
+    res = jup("position-flows", a, timeout=timeout) if timeout else jup("position-flows", a)
     if not res.get("ok") or res.get("netLamports") is None:
         log.warning("position flows unavailable: %s", {k: res.get(k) for k in ("ok", "error", "missing", "nTx")})
         return None, res

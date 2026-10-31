@@ -48,7 +48,7 @@ def sbot(monkeypatch, tmp_path):
     fl = {"v": -0.39, "dec": 1, "calls": 0}
     b._fl = fl
 
-    def flows(pos, sig):
+    def flows(pos, sig, **k):
         fl["calls"] += 1
         return fl["v"], {"ok": True, "nTx": 51, "decreases": fl["dec"], "eventErrors": []}
     monkeypatch.setattr(B, "position_net_sol", flows)
@@ -108,6 +108,7 @@ def test_true_up_waits_for_a_consistent_snapshot(sbot):
     sbot._fl["v"] = None                                            # flows unavailable
     sbot.sol_pay_trueup(_st(), _pos())
     assert L.pay_check and b["bal"] == bal
+    sbot._pay_trueup_next = 0.0                                     # unavailable -> backoff; once it is over:
     sbot._fl["v"] = -0.3
     sbot.sol_pay_trueup(_st(), _pos())
     assert not L.pay_check and b["bal"] != bal
@@ -158,3 +159,51 @@ def test_position_gone_estimate_uses_the_whole_position_avg(sbot, monkeypatch):
         sbot.tick()
     c = sbot.cfg.costs.close_fee
     assert seen[0] == pytest.approx(5.0 + 50.0 * (100.55 - 99.77) / 100.55 - c * 50.0)   # was (100.0531 - 99.77) / 100.0531
+
+
+def test_failed_read_backs_off_and_does_not_retry_every_tick(sbot, monkeypatch):
+    """2026-10-31 13:50 MT: position-flows timed out (RPC 429) every tick, ~240 s each -> guard reads stale."""
+    import live.bot as B
+    seen = []
+
+    def boom(pos, sig, **k):
+        seen.append(k.get("timeout"))
+        raise TimeoutError("position-flows timed out")
+    monkeypatch.setattr(B, "position_net_sol", boom)
+    L = sbot.local
+    sbot.bank_payout(11.0, "TP fill")
+    assert L.pay_check is True
+    sbot.sol_pay_trueup(_st(), _pos())
+    sbot.sol_pay_trueup(_st(), _pos())                              # next tick: inside the backoff -> no read
+    assert seen == [sbot.cfg.ledger.pay_trueup_timeout_sec] and L.pay_check is True
+    sbot._pay_trueup_next = 0.0                                     # backoff over -> one more try
+    sbot.sol_pay_trueup(_st(), _pos())
+    assert len(seen) == 2
+
+
+def test_unavailable_flows_also_back_off(sbot, monkeypatch):
+    import live.bot as B
+    n = []
+    monkeypatch.setattr(B, "position_net_sol", lambda pos, sig, **k: (n.append(1), (None, {"ok": False}))[1])
+    sbot.bank_payout(11.0, "TP fill")
+    sbot.sol_pay_trueup(_st(), _pos())
+    sbot.sol_pay_trueup(_st(), _pos())
+    assert len(n) == 1
+
+
+def test_trueup_settings_in_config():
+    for p in ("configs/live_100.toml", "configs/live_eth.toml", "configs/live_btc.toml"):
+        lc = load_config(p).ledger
+        assert lc.pay_trueup_timeout_sec == 30.0 and lc.pay_trueup_backoff_sec == 900.0
+    with pytest.raises(ValueError):
+        load_config("configs/live_100.toml", ["ledger.pay_trueup_timeout_sec=0"])
+
+
+def test_position_net_sol_passes_timeout():
+    from live.flows import position_net_sol
+    got = {}
+    position_net_sol("P", "S", jup=lambda c, a, timeout=None: got.update(t=timeout) or {"ok": True, "netLamports": 1})
+    assert got["t"] is None
+    position_net_sol("P", "S", jup=lambda c, a, timeout=None: got.update(t=timeout) or {"ok": True, "netLamports": 1},
+                     timeout=30)
+    assert got["t"] == 30

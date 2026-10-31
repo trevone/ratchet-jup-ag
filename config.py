@@ -448,6 +448,12 @@ class LedgerConfig:
     # except by the daily withdrawal (capital out). USDC deposits (live/deposit.py) unchanged.
     ext_flow_mode: str = "alert"
     window_ticks: int = 3                   # ticks after a payout event during which own-token changes are trade flows
+    # Trevor 2026-10-31 14:45 MT (SOL bot): the open-trade payout true-up (sol_pay_trueup) reads the position's txs
+    # (position-flows). With the RPCs rate-limited it blocked ~240 s every tick (guard read 250-334 s stale, bars skipped).
+    # Its read now times out after pay_trueup_timeout_sec and, after a failed / unavailable read, is retried at most every
+    # pay_trueup_backoff_sec (the payout estimate stays booked meanwhile; the flat true-up still corrects it exactly).
+    pay_trueup_timeout_sec: float = 30.0
+    pay_trueup_backoff_sec: float = 900.0
     # Trevor 2026-10-31: chain mode, ETH / BTC. An own-token change the chain sync sees while a payout is due (payout
     # window / pay_wait / booking pending) is the trade's payout: credited to trade_recv, so a cancelled add's refund
     # (booked against trade_dep) can no longer leave the row at "-deposited, received 0" (ETH 07:49 / BTC 08:45 MT 10-30).
@@ -474,6 +480,8 @@ class LedgerConfig:
     def __post_init__(self) -> None:
         if self.min_profit_native < 0 or not 0.0 <= self.withdraw_fraction <= 1.0 or self.ext_min_usd <= 0:
             raise ValueError("ledger: min_profit_native >= 0, 0 <= withdraw_fraction <= 1, ext_min_usd > 0")
+        if self.pay_trueup_timeout_sec <= 0 or self.pay_trueup_backoff_sec < 0:
+            raise ValueError("ledger: pay_trueup_timeout_sec > 0 and pay_trueup_backoff_sec >= 0")
         if self.ext_flow_mode not in ("alert", "split", "chain"):
             raise ValueError("ledger.ext_flow_mode must be 'alert', 'split' or 'chain'")
         if abs(sum(self.ext_split) - 1.0) > 1e-9:
