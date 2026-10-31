@@ -26,10 +26,11 @@ CLI_TIMEOUT_SEC = 240
 log = logging.getLogger("live")
 
 
-def jup(cmd: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Run one read-only / simulate command of the TS CLI and return its JSON result."""
+def jup(cmd: str, args: dict[str, Any] | None = None, timeout: float | None = None) -> dict[str, Any]:
+    """Run one read-only / simulate command of the TS CLI and return its JSON result (timeout: seconds, default
+    CLI_TIMEOUT_SEC; a caller may pass a shorter one, 2026-10-31)."""
     proc = subprocess.run([*CLI, cmd, json.dumps(args or {})], cwd=LIVE_DIR, capture_output=True,
-                          text=True, timeout=CLI_TIMEOUT_SEC, env={**__import__("os").environ, "NODE_NO_WARNINGS": "1"})
+                          text=True, timeout=timeout or CLI_TIMEOUT_SEC, env={**__import__("os").environ, "NODE_NO_WARNINGS": "1"})
     lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("{")]
     return json.loads(lines[-1]) if lines else {"ok": False, "error": proc.stderr[-300:]}
 

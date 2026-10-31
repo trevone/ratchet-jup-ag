@@ -1098,3 +1098,6 @@ Files: config.py, live/bot.py, live/trim.py, configs/live_100.toml, live_eth.tom
 2026-10-31 (Trevor 07:43 MT) PR fix/tp3-skip-confirm: SOL TP3 94.69 cancelled 07:38 after one skewed breakeven read (95.1492;
   BTC's post-restart TP cancel returned 0.0037 SOL rent to the shared wallet before allOpenRequests dropped it). Not state loss,
   not PR #19 logic. Fix: [resting] tp3_skip_confirm_ticks = 3 (skip must hold 3 ticks before a resting TP3 is cancelled).
+
+2026-10-31 14:45 MT PR fix/pay-trueup-backoff: SOL payout true-up blocked ~240 s/tick (position-flows, RPC 429) since 13:50 MT.
+  Now [ledger] pay_trueup_timeout_sec = 30 and pay_trueup_backoff_sec = 900 (retry at most every 15 min after a failure).

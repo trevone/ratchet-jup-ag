@@ -152,3 +152,9 @@ A resting TP3 is cancelled for "TP3 skipped" only after the skip held 3 consecut
 reference (true breakeven) reads the shared wallet's SOL; a peer bot's request cancel / re-place can skew one read
 (SOL 07:38 MT 10-31: BTC's TP cancel returned 0.0037 SOL rent before the request list caught up -> breakeven 95.1492
 instead of ~94.84-94.94 -> valid TP3 at 94.69 cancelled, re-placed at 94.69 at 07:41). Placement rule unchanged.
+
+### [ledger] pay_trueup_timeout_sec = 30, pay_trueup_backoff_sec = 900 (2026-10-31, 14:45 MT)
+SOL open-trade payout true-up (position-flows read): times out after 30 s (was the 240 s CLI default) and after a failed /
+unavailable read is retried at most every 900 s (15 min). Since 13:50 MT 10-31 RPC 429s made it block ~240 s every tick
+(guard read 250-334 s stale, "NO CLOSE this tick", drift check skipped, bars skipped). The payout estimate stays booked
+meanwhile; the flat true-up still makes it exact.

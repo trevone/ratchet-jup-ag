@@ -3296,14 +3296,20 @@ class Bot:
             return
         if L.pending_cancels:
             return
+        lc = self.cfg.ledger
+        now = time.monotonic()
+        if now < getattr(self, "_pay_trueup_next", 0.0):   # 2026-10-31: backoff after a failed read (never every tick)
+            return
         try:
             o = json.loads(ledger.OPEN.read_text()) if ledger.OPEN.exists() else {}
             reqs = sorted(str(r.get("pubkey")) for r in st["openRequests"])
-            flows, fres = position_net_sol(o.get("position"), o.get("open_sig"))
+            flows, fres = position_net_sol(o.get("position"), o.get("open_sig"), timeout=lc.pay_trueup_timeout_sec)
             need = len(L.partials_done) + L.tp_hits + len(L.trims)
             if flows is None or fres.get("eventErrors") or int(fres.get("decreases") or 0) < need:
-                log.warning("BANK payout true-up deferred: position flows %s, decreases %s of %d, errors %s", flows,
-                            fres.get("decreases"), need, fres.get("eventErrors"))
+                wait = lc.pay_trueup_backoff_sec if flows is None else 0.0   # read failed: back off; not indexed yet: next tick
+                self._pay_trueup_next = time.monotonic() + wait
+                log.warning("BANK payout true-up deferred: position flows %s, decreases %s of %d, errors %s; next try in "
+                            "%.0f s", flows, fres.get("decreases"), need, fres.get("eventErrors"), wait)
                 return
             st2 = self.chain()
             pos2 = self.chain_position(st2)
@@ -3311,9 +3317,11 @@ class Bot:
                     or abs(pos2.size - pos.size) > 0.01):
                 log.warning("BANK payout true-up deferred: requests / size changed during the read")
                 return
-        except Exception as e:  # noqa: BLE001 - accounting must never stop the trading loop; retried next tick
-            log.warning("BANK payout true-up failed: %s", e)
+        except Exception as e:  # noqa: BLE001 - accounting must never stop the trading loop; retried after the backoff
+            self._pay_trueup_next = time.monotonic() + lc.pay_trueup_backoff_sec
+            log.warning("BANK payout true-up failed: %s; next try in %.0f s", e, lc.pay_trueup_backoff_sec)
             return
+        self._pay_trueup_next = 0.0
         b = L.bank
         booked = round(b.get("trade_recv", 0.0) - b.get("trade_dep", 0.0), 9)
         rent = round(bankmod.REQ_RENT * len(reqs), 9)
