@@ -1104,3 +1104,5 @@ Files: config.py, live/bot.py, live/trim.py, configs/live_100.toml, live_eth.tom
 
 2026-10-31 20:48 MT PR fix/flows-incremental: position-flows incremental (cache file, until= paging, batches, 429 backoff,
   20 s budget) for the open-trade and close-time true-ups. [ledger] flows_* settings, see SETTINGS.md.
+2026-10-31 21:15 MT follow-up: flows_budget_sec 15, flows_timeout_margin_sec 20 (tsx start-up ate the margin: killed at 30 s
+  with progress); a hard-timeout kill now retries after flows_partial_retry_sec, not 15 min.

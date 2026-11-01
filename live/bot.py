@@ -19,6 +19,7 @@ import json
 import math
 import logging
 import os
+import subprocess
 import time
 import types
 from dataclasses import asdict, dataclass, field, fields
@@ -3305,7 +3306,7 @@ class Bot:
             o = json.loads(ledger.OPEN.read_text()) if ledger.OPEN.exists() else {}
             reqs = sorted(str(r.get("pubkey")) for r in st["openRequests"])
             tmo, fo = flows_opts(lc, ledger.OPEN.with_name("position_flows_cache.json"))
-            flows, fres = position_net_sol(o.get("position"), o.get("open_sig"), timeout=min(tmo, lc.pay_trueup_timeout_sec), opts=fo)
+            flows, fres = position_net_sol(o.get("position"), o.get("open_sig"), timeout=tmo, opts=fo)
             need = len(L.partials_done) + L.tp_hits + len(L.trims)
             if flows is None or fres.get("eventErrors") or int(fres.get("decreases") or 0) < need:
                 # read failed: back off; partial (budget hit, cache grew): soon; not indexed yet: next tick
@@ -3321,8 +3322,10 @@ class Bot:
                 log.warning("BANK payout true-up deferred: requests / size changed during the read")
                 return
         except Exception as e:  # noqa: BLE001 - accounting must never stop the trading loop; retried after the backoff
-            self._pay_trueup_next = time.monotonic() + lc.pay_trueup_backoff_sec
-            log.warning("BANK payout true-up failed: %s; next try in %.0f s", e, lc.pay_trueup_backoff_sec)
+            # killed at the hard timeout: the cache kept every finished batch -> partial, retried soon (2026-10-31)
+            wait = lc.flows_partial_retry_sec if isinstance(e, subprocess.TimeoutExpired) else lc.pay_trueup_backoff_sec
+            self._pay_trueup_next = time.monotonic() + wait
+            log.warning("BANK payout true-up failed: %s; next try in %.0f s", str(e)[-160:], wait)
             return
         self._pay_trueup_next = 0.0
         b = L.bank
