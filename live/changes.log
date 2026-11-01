@@ -1101,3 +1101,6 @@ Files: config.py, live/bot.py, live/trim.py, configs/live_100.toml, live_eth.tom
 
 2026-10-31 14:45 MT PR fix/pay-trueup-backoff: SOL payout true-up blocked ~240 s/tick (position-flows, RPC 429) since 13:50 MT.
   Now [ledger] pay_trueup_timeout_sec = 30 and pay_trueup_backoff_sec = 900 (retry at most every 15 min after a failure).
+
+2026-10-31 20:48 MT PR fix/flows-incremental: position-flows incremental (cache file, until= paging, batches, 429 backoff,
+  20 s budget) for the open-trade and close-time true-ups. [ledger] flows_* settings, see SETTINGS.md.

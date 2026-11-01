@@ -53,7 +53,7 @@ def sbot(monkeypatch, tmp_path):
     b.local.bank = bk
     flows = {"v": 0.001155254}
     b._flows = flows
-    monkeypatch.setattr(B, "position_net_sol", lambda pos, sig: (flows["v"], {"ok": True, "nTx": 25, "rentLamports": 0}))
+    monkeypatch.setattr(B, "position_net_sol", lambda pos, sig, **k: (flows["v"], {"ok": True, "nTx": 25, "rentLamports": 0}))
     staked = []
     import live.stake as S
     monkeypatch.setattr(S, "stake_sol", lambda cfg, amt, **k: staked.append(amt) or {"ok": True, "sig": "WD", "jupsol_out": amt * 0.8})

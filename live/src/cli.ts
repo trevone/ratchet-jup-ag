@@ -76,7 +76,8 @@ async function main() {
   } else if (cmd === "position-increases") {   // read-only: recent increase (add) fills of this position
     out = await positionIncreases(conn, new PublicKey(a.position), Number(a.limit ?? 40));
   } else if (cmd === "position-flows") {   // read-only: this position's own SOL flows since its open tx
-    out = await positionFlows(conn, OWNER, new PublicKey(a.position), a.sinceSig);
+    out = await positionFlows(conn, OWNER, new PublicKey(a.position), a.sinceSig, { cachePath: a.cachePath, budgetMs: a.budgetMs,
+      batch: a.batch, retries: a.retries, backoffMs: a.backoffMs });
   } else if (cmd === "token-accounts") {   // read-only: the owner's bot token accounts (rent deposits = owner capital)
     const atas = ownerTokenAccounts(OWNER);
     const names = Object.keys(atas);

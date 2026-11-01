@@ -454,6 +454,19 @@ class LedgerConfig:
     # pay_trueup_backoff_sec (the payout estimate stays booked meanwhile; the flat true-up still corrects it exactly).
     pay_trueup_timeout_sec: float = 30.0
     pay_trueup_backoff_sec: float = 900.0
+    # Trevor 2026-10-31 20:48 MT: position-flows is incremental. Fetched tx rows are cached in live/position_flows_cache.json
+    # (runtime, not committed; per position + open tx); new signatures are paged with until= the last listed one; uncached
+    # txs are fetched flows_batch at a time, retried flows_retries times on 429 with flows_backoff_ms doubling; one call
+    # stops after flows_budget_sec (progress saved) and is killed at budget + flows_timeout_margin_sec. A partial read
+    # (budget hit, progress made) is retried after flows_partial_retry_sec instead of the full pay_trueup_backoff_sec.
+    # The close-time true-up (book_flat) uses the same budget (was the 240 s CLI default).
+    flows_cache: bool = True
+    flows_budget_sec: float = 20.0
+    flows_timeout_margin_sec: float = 10.0
+    flows_batch: int = 4
+    flows_retries: int = 3
+    flows_backoff_ms: int = 1000
+    flows_partial_retry_sec: float = 60.0
     # Trevor 2026-10-31: chain mode, ETH / BTC. An own-token change the chain sync sees while a payout is due (payout
     # window / pay_wait / booking pending) is the trade's payout: credited to trade_recv, so a cancelled add's refund
     # (booked against trade_dep) can no longer leave the row at "-deposited, received 0" (ETH 07:49 / BTC 08:45 MT 10-30).
@@ -482,6 +495,10 @@ class LedgerConfig:
             raise ValueError("ledger: min_profit_native >= 0, 0 <= withdraw_fraction <= 1, ext_min_usd > 0")
         if self.pay_trueup_timeout_sec <= 0 or self.pay_trueup_backoff_sec < 0:
             raise ValueError("ledger: pay_trueup_timeout_sec > 0 and pay_trueup_backoff_sec >= 0")
+        if (self.flows_budget_sec <= 0 or self.flows_timeout_margin_sec <= 0 or self.flows_batch < 1 or self.flows_retries < 0
+                or self.flows_backoff_ms < 0 or self.flows_partial_retry_sec < 0):
+            raise ValueError("ledger: flows_budget_sec/flows_timeout_margin_sec > 0, flows_batch >= 1, flows_retries/"
+                             "flows_backoff_ms/flows_partial_retry_sec >= 0")
         if self.ext_flow_mode not in ("alert", "split", "chain"):
             raise ValueError("ledger.ext_flow_mode must be 'alert', 'split' or 'chain'")
         if abs(sum(self.ext_split) - 1.0) > 1e-9:

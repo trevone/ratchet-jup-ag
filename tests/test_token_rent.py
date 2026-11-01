@@ -183,7 +183,7 @@ def test_ts_keeps_token_accounts_persistent():
     dec = jup[jup.index("export async function buildDecrease"):jup.index("export async function buildCancelRequest")]
     assert "createCloseAccountInstruction" not in dec          # TP payout accounts are never closed
     pf = jup[jup.index("export async function positionFlows"):jup.index("export async function buildCloseEmptyAtas")]
-    assert "ownerTokenAccounts(owner)" in pf and "net += d.heldLamports" in pf
+    assert "ownerTokenAccounts(owner)" in pf and "deltaLamports: d.heldLamports" in pf and "net += r.deltaLamports" in pf
     stake = (ROOT / "live/src/stake.ts").read_text()
     sw_ = stake[stake.index("export async function buildSwap"):stake.index("export async function buildSendJupsol")]
     # swap: wSOL ATA re-created in the same tx after Jupiter's unwrap; input ATA never closed by our code

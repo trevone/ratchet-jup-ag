@@ -54,7 +54,7 @@ def bbot(monkeypatch, tmp_path):
     bk["trade_dep"], bk["trade_recv"] = 0.00023592, 0.00011768
     b.local.bank = bk
     b.local.side = LONG
-    monkeypatch.setattr(B, "position_net_sol", lambda pos, sig: (-0.172687841, {"ok": True, "nTx": 65, "rentLamports": 0,
+    monkeypatch.setattr(B, "position_net_sol", lambda pos, sig, **k: (-0.172687841, {"ok": True, "nTx": 65, "rentLamports": 0,
                                                                                  "pnlUsd": 0.493901, "decreases": 3,
                                                                                  "eventErrors": []}))
     ledger.on_open("2026-10-08 02:42:34+00:00", LONG, 1.807310633, "4Fch", 5000, position="H4H6")
@@ -133,7 +133,7 @@ def test_sol_row_waits_for_the_cancelled_add_refund(bbot, monkeypatch):
     import live.bot as B
     bbot.asset, bbot.local.bank["coin"] = "SOL", "SOL"
     flows = {"v": -0.095138230}
-    monkeypatch.setattr(B, "position_net_sol", lambda pos, sig: (flows["v"], {"ok": True, "nTx": 5, "rentLamports": 0}))
+    monkeypatch.setattr(B, "position_net_sol", lambda pos, sig, **k: (flows["v"], {"ok": True, "nTx": 5, "rentLamports": 0}))
     b = bbot.local.bank
     bbot.bank_flat(bbot.book_flat(_st(0), LONG))
     assert not ledger.TRADES.exists() and "book_pend" in b

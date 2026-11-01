@@ -37,7 +37,7 @@ from strategy import LONG, SHORT, Action, DcaStrategy, Intent
 from dca_levels import level_tf, load_analyst_levels
 from asset_scale import atr_from_klines, levels_with_fallback, scale_config, scaled_summary
 from live.budget import budget_from_state
-from live.flows import flow_extras, position_net_sol
+from live.flows import flow_extras, flows_opts, position_net_sol
 from live import sweep as sweepmod
 from live import trim as trimmod
 from live import bank as bankmod
@@ -399,7 +399,8 @@ class Bot:
         flows, rent, gross = None, None, None
         try:   # this position's own txs since its open tx (shared wallet: other bots / deposits / stakes excluded)
             o = json.loads(ledger.OPEN.read_text()) if ledger.OPEN.exists() else {}
-            flows, fres = position_net_sol(o.get("position") or rec.get("pubkey"), o.get("open_sig"))
+            tmo, fo = flows_opts(self.cfg.ledger, ledger.OPEN.with_name("position_flows_cache.json"))   # same budget as the true-up
+            flows, fres = position_net_sol(o.get("position") or rec.get("pubkey"), o.get("open_sig"), timeout=tmo, opts=fo)
             if flows is not None:
                 rent, gross = flow_extras(fres)   # token-account rent (capital, excluded) + event gross P&L
                 log.info("LEDGER position flows: %d txs, net %+.9f SOL (token-account rent %s SOL excluded; legacy %s), "
@@ -3303,10 +3304,12 @@ class Bot:
         try:
             o = json.loads(ledger.OPEN.read_text()) if ledger.OPEN.exists() else {}
             reqs = sorted(str(r.get("pubkey")) for r in st["openRequests"])
-            flows, fres = position_net_sol(o.get("position"), o.get("open_sig"), timeout=lc.pay_trueup_timeout_sec)
+            tmo, fo = flows_opts(lc, ledger.OPEN.with_name("position_flows_cache.json"))
+            flows, fres = position_net_sol(o.get("position"), o.get("open_sig"), timeout=min(tmo, lc.pay_trueup_timeout_sec), opts=fo)
             need = len(L.partials_done) + L.tp_hits + len(L.trims)
             if flows is None or fres.get("eventErrors") or int(fres.get("decreases") or 0) < need:
-                wait = lc.pay_trueup_backoff_sec if flows is None else 0.0   # read failed: back off; not indexed yet: next tick
+                # read failed: back off; partial (budget hit, cache grew): soon; not indexed yet: next tick
+                wait = 0.0 if flows is not None else lc.flows_partial_retry_sec if fres.get("partial") else lc.pay_trueup_backoff_sec
                 self._pay_trueup_next = time.monotonic() + wait
                 log.warning("BANK payout true-up deferred: position flows %s, decreases %s of %d, errors %s; next try in "
                             "%.0f s", flows, fres.get("decreases"), need, fres.get("eventErrors"), wait)

@@ -158,3 +158,15 @@ SOL open-trade payout true-up (position-flows read): times out after 30 s (was t
 unavailable read is retried at most every 900 s (15 min). Since 13:50 MT 10-31 RPC 429s made it block ~240 s every tick
 (guard read 250-334 s stale, "NO CLOSE this tick", drift check skipped, bars skipped). The payout estimate stays booked
 meanwhile; the flat true-up still makes it exact.
+
+### [ledger] flows_* - incremental position-flows (2026-10-31, 20:48 MT)
+Since 13:50 MT the SOL true-up failed every 15 min (RPC 429s; 65+ txs re-fetched one by one). position-flows now keeps the
+already-fetched tx rows in `live/position_flows_cache.json` (runtime, git-ignored, keyed by position + open tx), pages new
+signatures with `until=` the last listed one and only fetches uncached txs.
+- `flows_cache = true` - use the cache file.
+- `flows_budget_sec = 20` - one call stops after this (progress saved, `partial`), next call continues.
+- `flows_timeout_margin_sec = 10` - subprocess hard kill at budget + margin.
+- `flows_batch = 4` - txs fetched in parallel per batch.
+- `flows_retries = 3`, `flows_backoff_ms = 1000` - retries on 429, backoff doubling.
+- `flows_partial_retry_sec = 60` - a partial read (budget hit) is retried after this, not the 15 min `pay_trueup_backoff_sec`.
+The close-time true-up (book_flat) uses the same budget (was 240 s).

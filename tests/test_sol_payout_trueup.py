@@ -175,7 +175,7 @@ def test_failed_read_backs_off_and_does_not_retry_every_tick(sbot, monkeypatch):
     assert L.pay_check is True
     sbot.sol_pay_trueup(_st(), _pos())
     sbot.sol_pay_trueup(_st(), _pos())                              # next tick: inside the backoff -> no read
-    assert seen == [sbot.cfg.ledger.pay_trueup_timeout_sec] and L.pay_check is True
+    assert seen == [30.0] and L.pay_check is True
     sbot._pay_trueup_next = 0.0                                     # backoff over -> one more try
     sbot.sol_pay_trueup(_st(), _pos())
     assert len(seen) == 2
@@ -207,3 +207,41 @@ def test_position_net_sol_passes_timeout():
     position_net_sol("P", "S", jup=lambda c, a, timeout=None: got.update(t=timeout) or {"ok": True, "netLamports": 1},
                      timeout=30)
     assert got["t"] == 30
+
+
+def test_partial_read_retries_soon_with_cache_opts(sbot, monkeypatch):
+    """2026-10-31 20:48 MT: incremental position-flows; a budget-limited partial read comes back after flows_partial_retry_sec."""
+    import live.bot as B
+    seen = []
+
+    def part(pos, sig, **k):
+        seen.append(k)
+        return None, {"ok": False, "partial": True}
+    monkeypatch.setattr(B, "position_net_sol", part)
+    sbot.bank_payout(11.0, "TP fill")
+    t0 = B.time.monotonic()
+    sbot.sol_pay_trueup(_st(), _pos())
+    lc = sbot.cfg.ledger
+    assert seen[0]["opts"]["cachePath"].endswith("position_flows_cache.json") and seen[0]["opts"]["budgetMs"] == 20000
+    assert seen[0]["opts"]["batch"] == lc.flows_batch and seen[0]["timeout"] == 30.0
+    assert sbot._pay_trueup_next - t0 == pytest.approx(lc.flows_partial_retry_sec, abs=5)
+
+
+def test_flows_settings_validated():
+    lc = load_config("configs/live_100.toml").ledger
+    assert (lc.flows_cache, lc.flows_budget_sec, lc.flows_batch, lc.flows_retries) == (True, 20.0, 4, 3)
+    for bad in ("ledger.flows_budget_sec=0", "ledger.flows_batch=0", "ledger.flows_retries=-1"):
+        with pytest.raises(ValueError):
+            load_config("configs/live_100.toml", [bad])
+
+
+def test_flows_opts_and_cli_args(tmp_path):
+    from live.flows import flows_opts, position_net_sol
+    lc = load_config("configs/live_100.toml").ledger
+    tmo, fo = flows_opts(lc, tmp_path / "c.json")
+    assert tmo == lc.flows_budget_sec + lc.flows_timeout_margin_sec and fo["cachePath"] == str(tmp_path / "c.json")
+    got = {}
+    position_net_sol("P", "S", jup=lambda c, a, timeout=None: got.update(a=a, t=timeout) or {"ok": True, "netLamports": 5},
+                     timeout=tmo, opts=fo)
+    assert got["a"]["budgetMs"] == 20000 and got["a"]["position"] == "P" and got["t"] == tmo
+    assert flows_opts(dataclasses.replace(lc, flows_cache=False), "x")[1].get("cachePath") is None

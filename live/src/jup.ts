@@ -2,6 +2,7 @@
 // Every market-specific call takes `market` (default "SOL" = the original single-market behaviour).
 import { AnchorProvider, BN, BorshEventCoder, Program, Wallet } from "@coral-xyz/anchor";
 import bs58 from "bs58";
+import * as fs from "fs";
 import {
   ComputeBudgetProgram, Connection, Keypair, PublicKey, SystemProgram,
   TransactionInstruction, TransactionMessage, VersionedTransaction,
@@ -386,47 +387,111 @@ export async function buildUpdateTrigger(conn: Connection, owner: PublicKey, req
  * that account: still the owner's (recoverable) capital, so it no longer counts as a trade loss (and a later close/refund
  * no longer counts as profit). ``rentLamports`` = that rent movement (info); ``legacyNetLamports`` = the old
  * native + wSOL-only number. ``pnlUsd`` / ``feeUsd`` = realized gross P&L and Jupiter fees from the program's own events. */
-export async function positionFlows(conn: Connection, owner: PublicKey, position: PublicKey, sinceSig: string) {
-  const first = await conn.getTransaction(sinceSig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
-  if (!first) throw new Error("sinceSig not found");
-  const minSlot = first.slot;
-  const sigs: { signature: string; slot: number }[] = [];
-  let before: string | undefined;
-  for (let page = 0; page < 10; page++) {
-    const batch = await conn.getSignaturesForAddress(position, { before, limit: 1000 }, "confirmed");
-    for (const b of batch) if (b.slot >= minSlot) sigs.push({ signature: b.signature, slot: b.slot });
-    if (batch.length < 1000 || batch[batch.length - 1].slot < minSlot) break;
-    before = batch[batch.length - 1].signature;
+export type FlowOpts = { cachePath?: string; budgetMs?: number; batch?: number; retries?: number; backoffMs?: number };
+
+/** 2026-10-31 (RPC 429s): incremental. Already-fetched tx rows are kept in ``cachePath`` (runtime file, not committed); new
+ * signatures are paged with ``until`` = the newest fully-listed signature; uncached txs are fetched ``batch`` at a time with
+ * backoff + ``retries`` on 429; the whole call stops at ``budgetMs`` (cache saved, ok=false, partial=true) and the next call
+ * continues where it stopped. ok=true only when every listed tx is in the cache. */
+export async function positionFlows(conn: Connection, owner: PublicKey, position: PublicKey, sinceSig: string, o: FlowOpts = {}) {
+  const t0 = Date.now();
+  const budget = o.budgetMs ?? 600_000, batch = Math.max(1, o.batch ?? 4), retries = Math.max(0, o.retries ?? 3);
+  const backoff = o.backoffMs ?? 1000;
+  const left = () => budget - (Date.now() - t0);
+  const sleep = (ms: number) => new Promise(r => setTimeout(r, Math.max(0, Math.min(ms, left()))));
+  const is429 = (e: any) => /429|Too Many Requests|rate limit/i.test(String(e?.message ?? e));
+  let n429 = 0;
+  async function call<T>(f: () => Promise<T>): Promise<T> {
+    for (let k = 0; ; k++) {
+      if (left() <= 0) throw new Error("budget");
+      try {   // each RPC call is capped by the remaining budget (web3's own 429 retries can run long)
+        let timer: any;
+        const cap = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error("budget")), Math.max(1, left())); });
+        try { return await Promise.race([f(), cap]); } finally { clearTimeout(timer); }
+      } catch (e) {
+        if (!is429(e) || k >= retries || left() <= 0) throw e;
+        n429++; await sleep(backoff * 2 ** k);
+      }
+    }
   }
-  if (!sigs.some(x => x.signature === sinceSig)) sigs.push({ signature: sinceSig, slot: minSlot });
+  // own connection to the same RPC without web3's built-in 429 retry loop: our backoff / budget decide (2026-10-31)
+  conn = new Connection(conn.rpcEndpoint, { commitment: "confirmed", disableRetryOnRateLimit: true });
+  const pos = position.toBase58();
+  type Row = { sig: string; slot: number; blockTime: number | null; deltaLamports: number; rentLamports: number; legacy: number;
+               fee: number; ownerPaid: boolean; err: boolean; ev: any };
+  let cache: { position: string; sinceSig: string; minSlot?: number; head?: string; sigs: { signature: string; slot: number }[];
+               rows: Record<string, Row> } = { position: pos, sinceSig, sigs: [], rows: {} };
+  if (o.cachePath && fs.existsSync(o.cachePath)) {
+    try { const c = JSON.parse(fs.readFileSync(o.cachePath, "utf8")); if (c.position === pos && c.sinceSig === sinceSig) cache = c; } catch { /* rebuild */ }
+  }
+  const save = () => { if (o.cachePath) { const tmp = o.cachePath + ".tmp"; fs.writeFileSync(tmp, JSON.stringify(cache)); fs.renameSync(tmp, o.cachePath); } };
   const atas = ownerTokenAccounts(owner);
   const ownerS = owner.toBase58();
-  let net = 0, legacy = 0, rent = 0, fees = 0, missing = 0, pnlUsd = 0, feeUsd = 0, decreases = 0, liquidations = 0;
+  const getTx = (s: string) => call(() => conn.getTransaction(s, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }));
+  let partial = false, missing = 0;
+  try {
+    if (cache.minSlot === undefined) {
+      const first = await getTx(sinceSig);
+      if (!first) throw new Error("sinceSig not found");
+      cache.minSlot = first.slot;
+    }
+    const minSlot = cache.minSlot!;
+    const fresh: { signature: string; slot: number }[] = [];
+    let before: string | undefined, listed = true;
+    for (let page = 0; page < 10; page++) {
+      if (left() <= 0) { listed = false; break; }
+      const b = await call(() => conn.getSignaturesForAddress(position, { before, until: cache.head, limit: 1000 }, "confirmed"));
+      for (const x of b) if (x.slot >= minSlot) fresh.push({ signature: x.signature, slot: x.slot });
+      if (b.length < 1000 || b[b.length - 1].slot < minSlot) break;
+      before = b[b.length - 1].signature;
+    }
+    if (listed) {
+      const known = new Set(cache.sigs.map(x => x.signature));
+      for (const x of fresh) if (!known.has(x.signature)) cache.sigs.push(x);
+      if (!cache.sigs.some(x => x.signature === sinceSig)) cache.sigs.push({ signature: sinceSig, slot: minSlot });
+      if (fresh.length) cache.head = fresh[0].signature;
+    } else partial = true;
+    const todo = cache.sigs.filter(x => !cache.rows[x.signature]);
+    for (let i = 0; i < todo.length; i += batch) {
+      if (left() <= 0) { partial = true; break; }
+      const got = await Promise.all(todo.slice(i, i + batch).map(x => getTx(x.signature).catch(e => { if (is429(e) || /budget/.test(String(e?.message ?? e))) { partial = true; return undefined; } return null; })));
+      got.forEach((t: any, j) => {
+        const s = todo[i + j].signature;
+        if (t === undefined) return;   // not fetched (budget / 429): next call
+        if (!t?.meta) { missing++; return; }
+        const d = ownerTxDeltas(t, ownerS, atas);
+        const keys0 = t.transaction.message.staticAccountKeys[0];
+        const payer = (keys0?.toBase58 ? keys0.toBase58() : String(keys0)) === ownerS;
+        cache.rows[s] = { sig: s, slot: t.slot, blockTime: t.blockTime ?? null, deltaLamports: d.heldLamports, rentLamports: d.rentLamports,
+          legacy: d.nativeLamports + (d.accounts.WSOL?.lamports ?? 0), fee: payer ? t.meta.fee : 0, ownerPaid: payer,
+          err: !!t.meta.err, ev: t.meta.err ? null : positionEvents(t, pos) };
+      });
+      save();
+    }
+  } catch (e: any) {
+    save();
+    return { ok: false, partial: true, error: String(e?.message ?? e).slice(0, 200), position: pos, sinceSig,
+             cached: Object.keys(cache.rows).length, listed: cache.sigs.length, n429, elapsedMs: Date.now() - t0 };
+  }
+  save();
+  let net = 0, legacy = 0, rent = 0, fees = 0, pnlUsd = 0, feeUsd = 0, decreases = 0, liquidations = 0;
   const evErrors: string[] = [];
   const rows: any[] = [];
-  for (const { signature } of sigs) {
-    let t: any = null;
-    for (let k = 0; k < 4 && !t; k++) {
-      t = await conn.getTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" }).catch(() => null);
-      if (!t) await new Promise(r => setTimeout(r, 800));
-    }
-    if (!t?.meta) { missing++; continue; }
-    const d = ownerTxDeltas(t, ownerS, atas);
-    const keys0 = t.transaction.message.staticAccountKeys[0];
-    const payer = (keys0?.toBase58 ? keys0.toBase58() : String(keys0)) === ownerS;
-    if (payer) fees += t.meta.fee;
-    net += d.heldLamports;
-    rent += d.rentLamports;
-    legacy += d.nativeLamports + (d.accounts.WSOL?.lamports ?? 0);
-    const ev = t.meta.err ? null : positionEvents(t, position.toBase58());
+  for (const { signature } of cache.sigs) {
+    const r = cache.rows[signature];
+    if (!r) { if (!partial) missing = Math.max(missing, 1); continue; }
+    net += r.deltaLamports; rent += r.rentLamports; legacy += r.legacy; fees += r.fee;
+    const ev = r.ev;
     if (ev) { pnlUsd += ev.pnlUsd; feeUsd += ev.feeUsd; decreases += ev.decreases; liquidations += ev.liquidations; if (ev.error) evErrors.push(ev.error); }
-    rows.push({ sig: signature, slot: t.slot, blockTime: t.blockTime, deltaLamports: d.heldLamports, rentLamports: d.rentLamports,
-                ownerPaid: payer, err: t.meta.err ? true : false, ...(ev && (ev.decreases || ev.liquidations) ? { pnlUsd: ev.pnlUsd } : {}) });
+    rows.push({ sig: r.sig, slot: r.slot, blockTime: r.blockTime, deltaLamports: r.deltaLamports, rentLamports: r.rentLamports,
+                ownerPaid: r.ownerPaid, err: r.err, ...(ev && (ev.decreases || ev.liquidations) ? { pnlUsd: ev.pnlUsd } : {}) });
   }
-  return { ok: missing === 0, position: position.toBase58(), sinceSig, netLamports: net, netSol: net / 1e9,
+  const complete = rows.length === cache.sigs.length;
+  return { ok: complete && !partial && missing === 0, partial: !complete || partial, position: pos, sinceSig, netLamports: net, netSol: net / 1e9,
            rentLamports: rent, legacyNetLamports: legacy, pnlUsd: Math.round(pnlUsd * 1e6) / 1e6, feeUsd: Math.round(feeUsd * 1e6) / 1e6,
            decreases, liquidations, eventErrors: evErrors.slice(0, 3),
-           ownerFeeLamports: fees, nTx: rows.length, missing, txs: rows.sort((a, b) => a.slot - b.slot) };
+           ownerFeeLamports: fees, nTx: rows.length, listed: cache.sigs.length, missing: cache.sigs.length - rows.length, n429,
+           elapsedMs: Date.now() - t0, txs: rows.sort((a, b) => a.slot - b.slot) };
 }
 
 /** Close the owner's EMPTY bot token accounts (amount exactly 0) back into the owner: the rent-reclaim helper
