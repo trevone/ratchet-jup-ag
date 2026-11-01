@@ -461,8 +461,8 @@ class LedgerConfig:
     # (budget hit, progress made) is retried after flows_partial_retry_sec instead of the full pay_trueup_backoff_sec.
     # The close-time true-up (book_flat) uses the same budget (was the 240 s CLI default).
     flows_cache: bool = True
-    flows_budget_sec: float = 20.0
-    flows_timeout_margin_sec: float = 10.0
+    flows_budget_sec: float = 15.0
+    flows_timeout_margin_sec: float = 20.0   # node/tsx start-up (~8-12 s on the droplet) + final save
     flows_batch: int = 4
     flows_retries: int = 3
     flows_backoff_ms: int = 1000

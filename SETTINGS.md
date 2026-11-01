@@ -164,8 +164,8 @@ Since 13:50 MT the SOL true-up failed every 15 min (RPC 429s; 65+ txs re-fetched
 already-fetched tx rows in `live/position_flows_cache.json` (runtime, git-ignored, keyed by position + open tx), pages new
 signatures with `until=` the last listed one and only fetches uncached txs.
 - `flows_cache = true` - use the cache file.
-- `flows_budget_sec = 20` - one call stops after this (progress saved, `partial`), next call continues.
-- `flows_timeout_margin_sec = 10` - subprocess hard kill at budget + margin.
+- `flows_budget_sec = 15` - one call stops after this (progress saved, `partial`), next call continues.
+- `flows_timeout_margin_sec = 20` - subprocess hard kill at budget + margin (node/tsx start-up ~8-12 s); a kill is treated as partial (cache keeps finished batches) and retried after `flows_partial_retry_sec`.
 - `flows_batch = 4` - txs fetched in parallel per batch.
 - `flows_retries = 3`, `flows_backoff_ms = 1000` - retries on 429, backoff doubling.
 - `flows_partial_retry_sec = 60` - a partial read (budget hit) is retried after this, not the 15 min `pay_trueup_backoff_sec`.
