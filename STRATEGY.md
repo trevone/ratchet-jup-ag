@@ -625,3 +625,4 @@ Note: live/rescue.py liq_price (jupsol loan sizing) still uses the 1% model, whi
 - 2026-10-31: TP3 "skipped" cancels a resting TP3 only after `resting.tp3_skip_confirm_ticks` (3) consecutive skip ticks, so one skewed breakeven read (shared-wallet rent race) cannot cancel a valid TP3. Zone rule unchanged.
 
 2026-11-01 22:50 MT TP3 zone f: partial_zone_f_first 0.40, partial_zone_f_deep 0.15 in [resting] of all three live configs (code defaults 0.50/0.27 unchanged).
+2026-11-01 22:54 MT partial_min_net_pct 0.002 -> 0.003 in all three live configs.

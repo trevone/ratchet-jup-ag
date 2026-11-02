@@ -30,7 +30,7 @@ def test_defaults_off_and_live_values():
     assert (c.partial_min_net_pct, c.readd_gap_atr) == (0.0, 0.0)
     for f in ("configs/live_100.toml", "configs/live_eth.toml", "configs/live_btc.toml"):
         r = load_config(f).resting
-        assert (r.partial_min_net_pct, r.readd_gap_atr) == (0.002, 0.6)
+        assert (r.partial_min_net_pct, r.readd_gap_atr) == (0.003, 0.6)
         assert (r.partial_zone_f_first, r.partial_zone_f_deep) == (0.40, 0.15)   # live f (Trevor 2026-11-01)
     with pytest.raises(ValueError):
         RestingConfig(partial_min_net_pct=-0.001)
