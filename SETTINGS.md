@@ -172,3 +172,4 @@ signatures with `until=` the last listed one and only fetches uncached txs.
 The close-time true-up (book_flat) uses the same budget (was 240 s).
 
 2026-11-01 22:50 MT TP3 zone f: partial_zone_f_first 0.40, partial_zone_f_deep 0.15 in [resting] of all three live configs (code defaults 0.50/0.27 unchanged).
+2026-11-01 22:54 MT partial_min_net_pct 0.002 -> 0.003 in all three live configs.

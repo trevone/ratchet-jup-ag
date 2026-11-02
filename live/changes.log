@@ -1108,3 +1108,4 @@ Files: config.py, live/bot.py, live/trim.py, configs/live_100.toml, live_eth.tom
   with progress); a hard-timeout kill now retries after flows_partial_retry_sec, not 15 min.
 
 2026-11-01 22:50 MT TP3 zone f: partial_zone_f_first 0.40, partial_zone_f_deep 0.15 in [resting] of all three live configs (code defaults 0.50/0.27 unchanged).
+2026-11-01 22:54 MT partial_min_net_pct 0.002 -> 0.003 in all three live configs.
