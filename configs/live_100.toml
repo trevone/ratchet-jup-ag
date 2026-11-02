@@ -223,6 +223,8 @@ partial_min_net_pct = 0.002   # Trevor 2026-10-27 09:19 MT: TP3 at least far eno
                               #   notional after open+close fees + network ($0.15 on a $75 add); f unchanged (0 = off)
 readd_gap_atr = 0.6           # Trevor 2026-10-27 09:19 MT: after a TP3 fill the re-add rests at the more adverse of the closed
                               #   lot entry and last partial +/- 0.6 x ladder ATR, placed exactly there (no front-run creep; 0 = off)
+partial_zone_f_first = 0.40   # Trevor 2026-11-01 22:50 MT: TP3 f at rung 1 (default 0.50)
+partial_zone_f_deep = 0.15    # Trevor 2026-11-01 22:50 MT: TP3 f at rung >= ladder_max_rungs (default 0.27)
 
 [scale]
 enabled = false             # SOL keeps its USD distances
