@@ -25,7 +25,7 @@ How the code does it (`[ledger] ext_flow_mode = "chain"`, live on all three bots
 
 ## Post-close sequence (Trevor 2026-10-30, all three bots, one code path)
 - After any close (TP, timer, guard, position gone) the bot records `closed_at` and `flat_hwm_due` in the bank.
-- No new entry until `[entry] post_close_cooldown_sec` (default 300 s) has passed AND the trade is booked (no `book_pend`) AND a flat tick has applied the HWM rule from this tick's chain balance (flat, payout window over, nothing in flight: `HWM = max(HWM, on-chain token)`). The entry rule and the ladder are unchanged; this only delays the next open.
+- No new entry until `[entry] post_close_cooldown_sec` (code default 300 s; live configs 900 s = 15 min since 2026-11-02) has passed AND the trade is booked (no `book_pend`) AND a flat tick has applied the HWM rule from this tick's chain balance (flat, payout window over, nothing in flight: `HWM = max(HWM, on-chain token)`). The entry rule and the ladder are unchanged; this only delays the next open.
 - An unresolved true-up block does not hold entries (bots never halt on it).
 - Booked net in chain mode (`ext_flow_mode = "chain"`, ETH/BTC native booking): net = equity at booking - (equity at open + fee debt at open). The LEDGER line now matches the chain result (it showed -first deposit, ~-$10, because chain mode never credits payouts to `trade_recv`). Rare mid-trade fee-debt settlement can skew one row.
 - Close-at-HWM checks ("equity if closed", 55-min timer `hwm_check`): SOL adds back its own open request accounts' rent (count x 0.0037236 SOL), which returns to the wallet when they close. ETH/BTC unchanged (rent is SOL, not their coin).

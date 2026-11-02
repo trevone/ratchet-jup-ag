@@ -13,7 +13,7 @@ from tests.test_chain_balance import _bot
 
 @pytest.mark.parametrize("p", ["configs/live_100.toml", "configs/live_eth.toml", "configs/live_btc.toml"])
 def test_cooldown_config_all_bots(p):
-    assert load_config(p).entry.post_close_cooldown_sec == 300.0
+    assert load_config(p).entry.post_close_cooldown_sec == 900.0
 
 
 def test_cooldown_default_and_validation():
@@ -39,7 +39,7 @@ def test_open_blocked_during_cooldown_then_after_booking_and_hwm(monkeypatch, tm
     b = _btc(monkeypatch, tmp_path)
     b.mark_closed("tp_timer")
     assert "cooldown" in b.post_close_block()
-    b.local.bank["closed_at"] = str(pd.Timestamp.now(tz="UTC") - pd.Timedelta(seconds=301))
+    b.local.bank["closed_at"] = str(pd.Timestamp.now(tz="UTC") - pd.Timedelta(seconds=b.cfg.entry.post_close_cooldown_sec + 1))
     assert "flat HWM" in b.post_close_block()
     b.local.bank["book_pend"] = {"x": 1}
     assert "not booked" in b.post_close_block()
@@ -54,7 +54,7 @@ def test_open_blocked_during_cooldown_then_after_booking_and_hwm(monkeypatch, tm
 def test_hwm_gate_waits_for_window(monkeypatch, tmp_path):
     b = _btc(monkeypatch, tmp_path)
     b.mark_closed("x")
-    b.local.bank["closed_at"] = str(pd.Timestamp.now(tz="UTC") - pd.Timedelta(seconds=400))
+    b.local.bank["closed_at"] = str(pd.Timestamp.now(tz="UTC") - pd.Timedelta(seconds=b.cfg.entry.post_close_cooldown_sec + 100))
     b.local.bank["window"] = 3
     b.bank_tick(_btc_st(154824), None, 77000.0)
     assert b.local.bank.get("flat_hwm_due") is True           # payout window still open: not flat yet
