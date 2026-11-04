@@ -1659,6 +1659,35 @@ class Bot:
             return "post-close: flat HWM raise from the chain balance has not run yet"
         return None
 
+    def quote_out(self, in_mint: str, atoms: int) -> int:
+        """Jupiter ExactIn quote (USDC atoms out) for `atoms` of in_mint -> USDC."""
+        L = self.live
+        url = f"{L.swap_quote_url}?inputMint={in_mint}&outputMint={bankmod.MINT['USDC']}&amount={int(atoms)}&slippageBps={int(L.swap_min_out_slippage_bps)}"
+        with urllib.request.urlopen(url, timeout=L.swap_quote_timeout_sec) as r:
+            return int(json.loads(r.read())["outAmount"])
+
+    def swap_min_out(self, in_mint: str, atoms: int, margin: float) -> int:
+        """jupiterMinimumOut (USDC atoms) for the keeper's collateral swap (2026-11-03): live quote for the actual input
+        x (1 - swap_min_out_slippage_bps); on quote failure / off / implausible quote: margin x (1 - price_slippage_pct)."""
+        L = self.live
+        fallback = int(margin * (1 - L.price_slippage_pct) * USDC_ATOMS)
+        if not L.swap_min_out_quote:
+            return fallback
+        try:
+            q = self.quote_out(in_mint, atoms)
+        except Exception as e:  # noqa: BLE001 - network / API error -> old rule
+            log.warning("swap min-out: quote failed (%s); fallback %.6f USDC", str(e)[:120], fallback / USDC_ATOMS)
+            return fallback
+        mo = int(q * (1 - L.swap_min_out_slippage_bps / 1e4))
+        floor = int(margin * (1 - L.swap_min_out_max_bps / 1e4) * USDC_ATOMS)
+        if mo < floor or q <= 0:
+            log.warning("swap min-out: quote %.6f USDC implausible (min %.6f < floor %.6f); fallback %.6f", q / USDC_ATOMS,
+                        mo / USDC_ATOMS, floor / USDC_ATOMS, fallback / USDC_ATOMS)
+            return fallback
+        log.info("swap min-out: quote %.6f USDC for %d atoms -> min %.6f (-%d bps; old rule %.6f)", q / USDC_ATOMS, atoms,
+                 mo / USDC_ATOMS, L.swap_min_out_slippage_bps, fallback / USDC_ATOMS)
+        return mo
+
     def open_or_add(self, it: Intent, pos: ChainPosition | None, st: dict[str, Any], equity: float) -> None:
         paused = self.entries_paused() if pos is None else None   # adds to an open position are not paused
         if paused:
@@ -1686,13 +1715,13 @@ class Bot:
             nat = atoms / 10 ** bankmod.DECIMALS[coin]
             args.update(collateralAtoms=str(atoms), inputMint=bankmod.MINT[coin])
             if it.side == SHORT:   # keeper swaps ETH / WBTC -> USDC collateral inside the request
-                args["jupiterMinimumOut"] = str(int(it.margin * (1 - slip) * USDC_ATOMS))
+                args["jupiterMinimumOut"] = str(self.swap_min_out(bankmod.MINT[coin], atoms, it.margin))
         elif self.bank_on:
             nat = int(sol * LAMPORTS) / LAMPORTS
             if it.side == SHORT:
-                args["jupiterMinimumOut"] = str(int(it.margin * (1 - slip) * USDC_ATOMS))
+                args["jupiterMinimumOut"] = str(self.swap_min_out(bankmod.MINT["SOL"], int(sol * LAMPORTS), it.margin))
         elif it.side == SHORT:  # SOL input swapped to USDC collateral by the request
-            args["jupiterMinimumOut"] = str(int(it.margin * (1 - slip) * USDC_ATOMS))
+            args["jupiterMinimumOut"] = str(self.swap_min_out(bankmod.MINT["SOL"], int(sol * LAMPORTS), it.margin))
         elif self.asset != "SOL":  # long ETH/BTC: SOL input swapped to the custody token (ETH / WBTC) by the request
             args["jupiterMinimumOut"] = str(int(it.margin * (1 - slip) / price * 10 ** COLLATERAL_DECIMALS[self.asset]))
         if self.add_pending_wait(st, pos):   # Trevor 2026-10-12 08:52 MT: never a second add on an unresolved one

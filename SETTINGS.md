@@ -31,6 +31,9 @@ Edit the config, back it up first (`*.bak-YYYYMMDD-HHMM`), then `sudo systemctl 
 | [dca] | lev_start / lev_step / lev_cap | 5 / 1 / 20 | 5 / 1 / 20 | 5 / 1 / 20 | Leverage 5x first entry, +1x per add, cap 20x |
 | [live] | max_leverage | 20 | 20 | 20 | Hard leverage cap |
 | [live] | sol_fee_reserve | 0.02 | 0.02 | 0.02 | Native SOL kept for fees |
+| [live] | swap_min_out_quote | true | true | true | Short open: keeper collateral swap (SOL / ETH / WBTC -> USDC) min-out from a live Jupiter quote for the actual input amount (2026-11-03) |
+| [live] | swap_min_out_slippage_bps | 200 | 200 | 200 | min-out = quote x (1 - 2%); quote failure or off -> old rule margin x (1 - price_slippage_pct) |
+| [live] | swap_min_out_max_bps | 300 | 300 | 300 | Quote-based min-out below margin x (1 - 3%) is rejected -> old rule (sanity) |
 | [live] | max_collateral_usd / max_position_usd / max_daily_loss_usd | 1e12 | 1e12 | 1e12 | Caps effectively off |
 | [live] | kill_switch_path | live/KILL | live/eth/KILL | live/btc/KILL | Per-bot kill file (global: live/KILL_ALL) |
 | [tp] | levels (TP1 / TP2 dist) | $0.45 / $0.75 (mode price_abs) | 0.45% / 0.75% | 0.45% / 0.75% | Close split 50% / 100%; dist only used when tp1_pct / tp2_pct are unset |

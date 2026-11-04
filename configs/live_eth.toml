@@ -58,6 +58,9 @@ max_daily_loss_usd = 1.0e12        # effectively off (Trevor's choice)
 min_collateral_usd = 10.0
 kill_switch_path = "live/eth/KILL"
 close_all_on_kill = false
+swap_min_out_quote = true          # short collateral swap min-out from a live Jupiter quote (2026-11-03)
+swap_min_out_slippage_bps = 200    # min-out = quote x (1 - 2%); quote failure -> margin x (1 - price_slippage_pct)
+swap_min_out_max_bps = 300         # quote-based min below margin x (1 - 3%) is rejected -> fallback
 
 [dca]
 max_adds = 100000              # effectively unlimited; wallet / liq rule stop adds
