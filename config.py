@@ -256,6 +256,13 @@ class LiveConfig:
     kill_switch_path: str = "live/KILL"  # if this file exists: no new orders
     close_all_on_kill: bool = False
     price_slippage_pct: float = 0.01     # worst acceptable fill vs oracle for market requests
+    # keeper collateral swap (short: SOL / ETH / WBTC -> USDC): jupiterMinimumOut = live Jupiter quote for the actual
+    # input atoms x (1 - swap_min_out_slippage_bps); quote failure / off / implausible -> margin x (1 - price_slippage_pct)
+    swap_min_out_quote: bool = True
+    swap_min_out_slippage_bps: int = 200
+    swap_min_out_max_bps: int = 300      # quote-based min below margin x (1 - this) is rejected -> fallback
+    swap_quote_url: str = "https://lite-api.jup.ag/swap/v1/quote"
+    swap_quote_timeout_sec: float = 5.0
     max_oracle_age_sec: int = 60
     request_timeout_sec: int = 60        # keeper fulfillment wait before treating a request as failed
     poll_interval_sec: float = 30.0

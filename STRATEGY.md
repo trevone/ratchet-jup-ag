@@ -626,3 +626,11 @@ Note: live/rescue.py liq_price (jupsol loan sizing) still uses the 1% model, whi
 
 2026-11-01 22:50 MT TP3 zone f: partial_zone_f_first 0.40, partial_zone_f_deep 0.15 in [resting] of all three live configs (code defaults 0.50/0.27 unchanged).
 2026-11-01 22:54 MT partial_min_net_pct 0.002 -> 0.003 in all three live configs.
+
+## Short open: collateral-swap min-out from a live quote (Trevor 2026-11-03)
+A short open funded with SOL / ETH / WBTC makes the keeper swap the input to USDC collateral; the request's
+`jupiterMinimumOut` was margin x (1 - `price_slippage_pct`) = 99% of the oracle value. BTC's shorts 17:31-18:31 MT
+2026-11-03 were all returned by the keeper with memo `6008 Collateral slippage` (WBTC trades below the BTC oracle,
+leaving < 1% for the keeper's route). Now: min-out = live Jupiter ExactIn quote (`[live] swap_quote_url`) for the exact
+input atoms x (1 - `swap_min_out_slippage_bps`, 200 = 2%). Quote error / timeout, `swap_min_out_quote = false`, or a
+quote-based min below margin x (1 - `swap_min_out_max_bps`, 300 = 3%) -> the old 99% rule. Logged as `swap min-out:`.
