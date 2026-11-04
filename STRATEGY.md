@@ -634,3 +634,5 @@ A short open funded with SOL / ETH / WBTC makes the keeper swap the input to USD
 leaving < 1% for the keeper's route). Now: min-out = live Jupiter ExactIn quote (`[live] swap_quote_url`) for the exact
 input atoms x (1 - `swap_min_out_slippage_bps`, 200 = 2%). Quote error / timeout, `swap_min_out_quote = false`, or a
 quote-based min below margin x (1 - `swap_min_out_max_bps`, 300 = 3%) -> the old 99% rule. Logged as `swap min-out:`.
+
+**Trevor 2026-11-03 - live guard base 0.4%**: `[profit_guard] min_profit_pct_trade` 0.003 -> 0.004 in all three live tomls (code default 0.002): target = `trade_start_equity` x 1.004. Guard TPs follow the live guard price via the existing drift re-place.
