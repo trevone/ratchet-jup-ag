@@ -1115,3 +1115,5 @@ Files: config.py, live/bot.py, live/trim.py, configs/live_100.toml, live_eth.tom
 2026-11-03 MT short open jupiterMinimumOut from a live Jupiter quote x (1 - swap_min_out_slippage_bps 200), fallback margin x (1 - price_slippage_pct); new [live] keys swap_min_out_quote / swap_min_out_slippage_bps / swap_min_out_max_bps in all three live configs. Cause: BTC shorts 17:31-18:31 MT returned by keeper "6008 Collateral slippage".
 
 2026-11-03 20:20 MT [profit_guard] min_profit_pct_trade 0.003 -> 0.004 (0.4%) in all three live configs.
+
+2026-11-03 20:55 MT profit guard target = HWM x (1 + min_profit_pct_trade) (trade_start_equity no longer the guard base); new ALARM HWM (flat booked balance < HWM - [ledger] hwm_alarm_tol_native: ERROR + live/HWM_ALARM, no halt) with the key in all three live configs.

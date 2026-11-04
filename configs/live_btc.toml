@@ -202,6 +202,7 @@ guard_only_underwater = true   # Trevor 2026-10-11 06:31 MT: profit guard close 
 # HWM rises only while flat. Unexplained wallet changes >= ext_min_usd: ALERT only (ext_flow_mode), never P&L, never charged to the bots.
 enabled = true
 min_profit_native = 0.00000195          # WBTC (~$0.17; owner 2026-10-09 08:46 MT, was 0.0000013)
+hwm_alarm_tol_native = 0.0000007   # WBTC (~$0.05): flat booked balance below HWM by more -> ERROR ALARM HWM + live/HWM_ALARM (no halt; 2026-11-03)
 min_profit_pct_hwm = 0.002            # Trevor 2026-10-12: replaces min_profit_native: target = hwm x (0.2% +
 min_profit_pct_per_partial = 0.0005   #   0.05% x partials taken this trade [trims + TP3 fills])
 swap_cost_pct = 0.002           # est. USDC -> coin swap cost in the guard's close value (ETH/BTC shorts)

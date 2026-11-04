@@ -48,7 +48,7 @@ def sb(b, monkeypatch):
 
 
 def set_target(b, tgt):
-    b.local.bank["trade_start_equity"] = tgt / (1 + b.cfg.profit_guard.min_profit_pct_trade)
+    b.local.bank["hwm"] = tgt / (1 + b.cfg.profit_guard.min_profit_pct_trade)
 
 
 def test_equity_is_the_chain_formula_and_ignores_bot_records(sb):

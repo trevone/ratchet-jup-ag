@@ -155,6 +155,9 @@ def last_close_time() -> str | None:
         return None
 
 
+HWM_ALARM_PATH = "live/HWM_ALARM"   # 2026-11-03: flat balance < HWM alarm file (quickcheck: ALERT HWM)
+
+
 class GuardChainUnreadable(Exception):
     """2026-10-29: the guard TP price needs a fresh, complete chain read; none available -> keep the resting TPs."""
 
@@ -2801,6 +2804,9 @@ class Bot:
                 jlmod.repay_tick(self, sol_px, cpx)
             except Exception as e:   # noqa: BLE001 - retried next tick
                 log.error("JUPSOL repay failed (retry next tick): %s", e)
+        if (flat and not b.get("trueup_block") and not b.get("book_pend") and not b.get("pend")
+                and (lc.ext_flow_mode != "chain" or getattr(self, "_chain_synced", False))):
+            self.hwm_alarm_check(b, sol_px, cpx)
         if not b.get("trueup_block") and bankmod.update_hwm(b, flat, bankmod.fee_debt_native(b, sol_px, cpx)):
             log.info("BANK HWM raised (flat): %s", bankmod.status_line(b, cpx, sol_px))
         if (b.get("flat_hwm_due") and flat and not b.get("trueup_block") and not b.get("book_pend") and not b.get("pend")
@@ -3376,20 +3382,32 @@ class Bot:
         b = self.local.bank
         return round(bankmod.equity(b, 0.0, bankmod.fee_debt_native(b, self.sol_price(st), self.coin_px(st))), 9)
 
+    def hwm_alarm_check(self, b: dict[str, Any], sol_px: float, cpx: float) -> bool:
+        """Trevor 2026-11-03: flat + booked on-chain balance below HWM is an ALARM (something needs fixing). ERROR log +
+        append to live/HWM_ALARM (quickcheck shows ALERT HWM). Never halts. Tolerance [ledger] hwm_alarm_tol_native."""
+        eq = round(b["bal"] - bankmod.fee_debt_native(b, sol_px, cpx) - bankmod.loan_outstanding(b) + bankmod.ib_adj(b)
+                   + bankmod.park_adj(b), 9)   # same formula as update_hwm
+        short = b["hwm"] - eq
+        if short <= self.cfg.ledger.hwm_alarm_tol_native:
+            return False
+        msg = (f"{pd.Timestamp.now(tz='UTC')} {self.asset} flat balance {eq:.9f} < HWM {b['hwm']:.9f} by {short:.9f} {b['coin']} "
+               f"(tol {self.cfg.ledger.hwm_alarm_tol_native:g})")
+        log.error("ALARM HWM: %s - something needs fixing (no halt)", msg)
+        try:
+            with open(HWM_ALARM_PATH, "a") as f:
+                f.write(msg + "\n")
+        except OSError as e:
+            log.error("ALARM HWM: could not write %s: %s", HWM_ALARM_PATH, e)
+        return True
+
     def guard_target(self, st: dict[str, Any]) -> float:
-        """Per-trade profit guard (Trevor 2026-10-14): target = trade_start_equity x (1 + min_profit_pct_trade). The baseline
-        is saved when the trade opens (before the opening debit). A position already open without one (deploy / adopt) gets
-        the bank HWM, which equals the flat equity at its open (HWM only rises while flat): one-off, logged, never HWM-written."""
-        b = self.local.bank
-        if b.get("trade_start_equity") is None:
-            b["trade_start_equity"] = b["hwm"]
-            log.warning("MIGRATION: trade_start_equity unset on an open position -> %.9f (= hwm, the flat equity at its open); hwm/wd_mark untouched", b["hwm"])
-            self.save()
-        return b["trade_start_equity"] * (1 + self.cfg.profit_guard.min_profit_pct_trade)
+        """Per-trade profit guard (Trevor 2026-11-03: no trade-start balance): target = bank HWM x (1 + min_profit_pct_trade).
+        HWM already moves with deposits / withdrawals (capital), so mid-trade flows stay neutral."""
+        return self.local.bank["hwm"] * (1 + self.cfg.profit_guard.min_profit_pct_trade)
 
     def guard_check(self, pos: ChainPosition, st: dict[str, Any], price: float) -> tuple[bool, str]:
         eq, tgt = self.hwm_equity(pos, st, price), self.guard_target(st)
-        return eq >= tgt - 1e-12, (f"trade guard: equity if closed now {eq:.9f} vs start {self.local.bank['trade_start_equity']:.9f} x (1+{self.cfg.profit_guard.min_profit_pct_trade:g}) = {tgt:.9f}"
+        return eq >= tgt - 1e-12, (f"trade guard: equity if closed now {eq:.9f} vs HWM {self.local.bank['hwm']:.9f} x (1+{self.cfg.profit_guard.min_profit_pct_trade:g}) = {tgt:.9f}"
                                    + self.guard_sole_note(pos, st, price, eq, tgt))
 
     GUARD_CHAIN_MAX_AGE_S = 60.0   # a chain read older than this is stale for the guard's close decision
@@ -3480,7 +3498,7 @@ class Bot:
         if eq is None:
             return False, f"on-chain guard: NO CLOSE this tick ({why})"
         tgt = self.guard_target(st)
-        return eq >= tgt - 1e-12, (f"trade guard (on chain): {why} vs start {self.local.bank['trade_start_equity']:.9f} x "
+        return eq >= tgt - 1e-12, (f"trade guard (on chain): {why} vs HWM {self.local.bank['hwm']:.9f} x "
                                    f"(1+{self.cfg.profit_guard.min_profit_pct_trade:g}) = {tgt:.9f}")
 
     def guard_recheck_chain(self, pos: ChainPosition) -> tuple[bool, str, ChainPosition | None, float]:
@@ -3676,7 +3694,7 @@ class Bot:
             if lev.stop is not None and pos.side * (price - lev.stop.price) <= 0:
                 self.close(pos, price, f"stop {lev.stop.reason.value} @ {lev.stop.price:.3f}")
                 return
-            if self.bank_on:   # per-trade profit guard (Trevor 2026-10-14): close all once equity >= trade_start_equity x 1.002 (never moves TPs)
+            if self.bank_on:   # per-trade profit guard (Trevor 2026-10-14): close all once equity >= HWM x (1 + min_profit_pct_trade) (never moves TPs)
                 if self.hwm_close_armed():
                     ok, note = self.guard_check_chain(st, pos)   # 2026-10-28: on-chain equity only
                     if ok and self.guard_tps_resting(st):   # Trevor 2026-10-29 21:05 MT: resting guard TPs own the close
