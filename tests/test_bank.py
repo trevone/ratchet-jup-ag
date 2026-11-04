@@ -313,14 +313,14 @@ def _arm(ebot, side=LONG):
 def test_trade_guard_fires_on_equity_vs_baseline_not_price_vs_avg(ebot):
     b = ebot.local.bank
     _arm(ebot)
-    b["bal"], b["hwm"], b["trade_start_equity"] = 0.0100, 0.0155, 0.0150     # hwm must not matter
+    b["bal"], b["hwm"], b["trade_start_equity"] = 0.0100, 0.0150, 0.0155     # trade_start_equity must not matter (2026-11-03)
     assert ebot.guard_target(_st()) == pytest.approx(0.0150 * 1.004)
     lo = _st(side="long", price=2400.0)
     assert not ebot.guard_check(ebot.chain_position(lo), lo, 2400.0)[0]
     hi = _st(side="long", price=2600.0)                                          # far above avg: still fires
     pos = hi_pos = ebot.chain_position(hi)
     assert pos.side * (2600.0 - pos.avg_entry) > 0 and ebot.guard_check(hi_pos, hi, 2600.0)[0]
-    b["trade_start_equity"] = 1.0                                                # hwm 0.0155 is ignored; baseline decides
+    b["hwm"] = 1.0                                                               # HWM decides
     assert not ebot.guard_check(hi_pos, hi, 2600.0)[0]
 
 
@@ -330,9 +330,9 @@ def test_trade_guard_target_boundary(ebot):
     st = _st(side="long", price=2500.0)
     pos = ebot.chain_position(st)
     eq = ebot.hwm_equity(pos, st, 2500.0)
-    b["trade_start_equity"] = eq / 1.004 + 1e-9
+    b["hwm"] = eq / 1.004 + 1e-9
     assert not ebot.guard_check(pos, st, 2500.0)[0]
-    b["trade_start_equity"] = eq / 1.004 - 1e-9
+    b["hwm"] = eq / 1.004 - 1e-9
     assert ebot.guard_check(pos, st, 2500.0)[0]
 
 
@@ -348,11 +348,11 @@ def test_baseline_set_on_flat_open_persisted_and_reset_next_trade(ebot):
     assert b["bal"] < 0.015
 
 
-def test_missing_baseline_migrates_once_to_hwm_without_touching_hwm(ebot):
+def test_guard_target_is_hwm_without_baseline(ebot):
     b = ebot.local.bank
     b.pop("trade_start_equity", None)
     wd = b["wd_mark"]
-    assert ebot.guard_target(_st()) == pytest.approx(b["hwm"] * 1.004) and b["trade_start_equity"] == b["hwm"] and b["wd_mark"] == wd
+    assert ebot.guard_target(_st()) == pytest.approx(b["hwm"] * 1.004) and "trade_start_equity" not in b and b["wd_mark"] == wd
 
 
 def test_sol_rent_churn_across_bots_does_not_alert_real_outflow_does():

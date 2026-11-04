@@ -145,7 +145,7 @@ def test_guard_does_not_fire_on_the_double_counted_add(b, monkeypatch):
     true_eq = b.hwm_equity(pos, GROWN_LISTED, 103.31)   # the add's collateral is in the close value only
     L.rest_add = ra
     # target between the true equity and the inflated one (true + the add's nat, the 14:01 MT false trigger)
-    L.bank["trade_start_equity"] = (true_eq + NAT / 2) / (1 + b.cfg.profit_guard.min_profit_pct_trade)
+    L.bank["hwm"] = (true_eq + NAT / 2) / (1 + b.cfg.profit_guard.min_profit_pct_trade)
     # before the reconcile books it (size grown, record listed): never counted twice
     assert b.hwm_equity(pos, GROWN_LISTED, 103.31) == pytest.approx(true_eq)
     assert not b.guard_check(pos, GROWN_LISTED, 103.31)[0]

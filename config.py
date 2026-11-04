@@ -439,6 +439,7 @@ class LedgerConfig:
     enabled: bool = False
     guard_only_underwater: bool = False     # OBSOLETE (2026-10-14: per-trade guard ignores it; key kept so live tomls still load)
     min_profit_native: float = 0.001        # guard target = hwm + this (native units: SOL / ETH / WBTC)
+    hwm_alarm_tol_native: float = 0.0       # 2026-11-03: flat booked balance below HWM by more than this -> ALARM HWM (rent / fee rounding only)
     # Trevor 2026-10-12 00:08/00:13 MT: > 0 replaces min_profit_native: target = hwm x (min_profit_pct_hwm +
     # min_profit_pct_per_partial x partials taken this trade [trims + partial-TP fills])
     min_profit_pct_hwm: float = 0.0

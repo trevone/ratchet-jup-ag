@@ -22,7 +22,7 @@ def _setup(monkeypatch, tmp_path, flags, short=False, boost=0.01):
     pos = b.chain_position(st)
     b.local.bank = bankmod.new_bank("SOL", 1.0)
     eq = b.hwm_equity(pos, st, 106.6)   # target = equity now x (1 + boost): guard not yet met
-    b.local.bank["trade_start_equity"] = eq * (1 + boost) / (1 + b.cfg.profit_guard.min_profit_pct_trade)
+    b.local.bank["hwm"] = eq * (1 + boost) / (1 + b.cfg.profit_guard.min_profit_pct_trade)
     return b, st, pos
 
 
@@ -128,7 +128,7 @@ FLAG = "profit_guard.tp_guard_gap_pct=0.003"
 # ---- 2026-10-15: stale-bank deferral (BTC 07:40 incident: TPs computed before the partial's WBTC payout was credited)
 def _btc_bank(b, pay_wait=0, wallet=None):
     bk = bankmod.new_bank("BTC", 0.001)
-    bk["trade_start_equity"] = b.local.bank["trade_start_equity"]
+    bk["hwm"] = b.local.bank["hwm"]
     bk["pay_wait"] = pay_wait
     b.local.bank = bk
     return bk
@@ -183,7 +183,7 @@ def test_no_defer_without_resting_tps(monkeypatch, tmp_path):
 def test_implausibly_far_tp_deferred_then_placed_after_cap(monkeypatch, tmp_path):
     b, st, pos = _setup(monkeypatch, tmp_path, ON + [FLAG], boost=0.01)
     bk = _btc_bank(b)
-    bk["trade_start_equity"] = b.hwm_equity(pos, st, 106.6) * 1.2 / (1 + b.cfg.profit_guard.min_profit_pct_trade)   # target 20% above equity now: guard price implausibly far (coin px follows the evaluated price)
+    bk["hwm"] = b.hwm_equity(pos, st, 106.6) * 1.2 / (1 + b.cfg.profit_guard.min_profit_pct_trade)   # target 20% above equity now: guard price implausibly far (coin px follows the evaluated price)
     _tok(st, bk["bal"])
     b.sync_tp_ladder(pos)
     assert b.calls == [] and bk["tp_defer"] == 1

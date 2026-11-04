@@ -123,7 +123,7 @@ def test_close_at_tp_guard_price_meets_the_target_after_the_true_up(sbot):
     sbot.bank_payout(11.8789, "per-add partial $75.00")
     L.partials_done = [{"pubkey": "P1"}]
     pct = sbot.cfg.profit_guard.min_profit_pct_trade
-    b["trade_start_equity"] = (sbot.hwm_equity(pos, st, SOL_PX) + 0.002) / (1 + pct)   # target 0.002 SOL above "now"
+    b["hwm"] = (sbot.hwm_equity(pos, st, SOL_PX) + 0.002) / (1 + pct)   # target 0.002 SOL above "now"
     gp_est = sbot.guard_price(pos, st)
     sbot._fl["v"] = round(-0.40 + 0.11855 - 0.00055 - 2 * K.REQ_RENT, 9)
     sbot.sol_pay_trueup(st, pos)
